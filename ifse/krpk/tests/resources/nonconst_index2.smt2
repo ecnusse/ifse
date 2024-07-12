@@ -1,0 +1,7 @@
+(set-logic ALL)
+(set-arch X86)
+(declare-const arg00 (Array (_ BitVec 32) (_ BitVec 8)))
+(assert (ensure_index arg00 #x0000000a))
+(assert (= #x2d (select arg00 #x00000000)))
+(assert (= #x00 (select arg00 #x00000001)))
+(assert (= #x00 (select arg00 ((_ extract 31 0) ((_ sign_extend 32) ((_ zero_extend 31) (bool2bv (= #x2b (select arg00 #x00000000)))))))))

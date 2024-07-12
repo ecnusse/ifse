@@ -1,0 +1,37 @@
+[workspace]
+members = ["match-template"]
+
+[package]
+name = "krpk"
+version = "0.1.0"
+edition = "2021"
+authors = ["Chuyang Chen <chuyangchen2018@outlook.com>"]
+description = "A toy SAT solver for learning SAT/SMT techniques"
+
+[dependencies]
+bimap = "0.6.3"
+clap = { version = "4.4.8", features = ["derive"] }
+combine = { version = "4.6.6", features = ["std", "regex"] }
+either = "1.9.0"
+itertools = "0.11.0"
+log = "0.4.20"
+regex = "1.9.5"
+tempdir = "0.3.7"
+trim-margin = "0.1.0"
+utf8-decode = "1.0.1"
+uuid = { version = "1.4.1", features = ["v4"] }
+walkdir = "2.4.0"
+match-template = {path = "./match-template"}
+ordered-map = "0.4.2"
+sorted-vec = "0.8.3"
+multiset = "0.0.5"
+
+[lib]
+name = "krpk"
+path = "src/lib.rs"
+crate-type = ["cdylib", "lib"]
+doctest = false
+
+[[bin]]
+name = "krpk"
+path = "src/main.rs"

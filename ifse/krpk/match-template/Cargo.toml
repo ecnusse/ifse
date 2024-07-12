@@ -1,0 +1,15 @@
+[package]
+name = "match-template"
+version = "0.0.2"
+edition = "2018"
+description = "match-template is a procedural macro that generates repeated match arms by pattern."
+license = "Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+either = "1.9.0"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "1", features = ["full", "extra-traits", "fold"] }
