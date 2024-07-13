@@ -1,6 +1,6 @@
 # IFSE
 
-IFSE is an open-source symbolic execution tool that integrates various methods for combining symbolic execution with fuzzing into KLEE.
+IFSE is an open-souce tool that incorporates various existing techniques to integrate fuzz solving with symbolic execution.
 
 ## Setup
 
