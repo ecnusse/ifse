@@ -62,15 +62,19 @@ TODO(根据打包出来的具体情况进行介绍)
 
 We evaluated IFSE on 79 programs in CoreUtils, a a widely used open-source core tool program collection in Unix-like operating system, to demonstrate IFSE's effectiveness when facing real-world applications. We compared IFSE with its baseline KLEE with 4 hours timeout and 8 seconds fuzz solver timeout and calculate the average branch coverage obtained in 10 repeated experiments. 
 
-Due to limited space in the paper, we only presented the overall situation of the experiment. Some supplementary details of the experiment are as follows:
+Due to limited space in the paper, we only presented the overall situation of the experiment and list some supplementary details as follows.
 
 ### Line Coverage
 
 IFSE achieves a higher average line coverage for most of the programs (63 programs) ranging from relative 0.8\% to 217.2\% over KLEE and achieves an average line coverage of 54.8\% (while KLEE averaged 42.7\%), which demonstrates the path exploration ability of IFSE. Meanwhile, IFSE achieves relative higher branch coverage of 12.3\% over KLEE. The coverage details of all programs are as follows:
 
+TODO
+
 ### Branch Coverage
 
-As for branch coverage, IFSE achieves a higher average line coverage for most of the programs (58 programs) ranging from relative TODO\% to TODO\% over KLEE and achieves an average line coverage of TODO\% (while KLEE averaged TODO\%), which demonstrates the branch exploration ability of IFSE.
+As for branch coverage, IFSE achieves a higher average line coverage for most of the programs (51 programs) ranging from relative TODO\% to TODO\% over KLEE and achieves an average line coverage of 64.2\% (while KLEE averaged 57.7\%), which demonstrates the branch exploration ability of IFSE, the details are as follows:
+
+TODO
 
 ### Optimizations
 
