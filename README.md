@@ -219,7 +219,7 @@ Branch Coverage Comparison of IFSE and KLEE:
 The details of all programs are as follows:
 
  
-|      # &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;    | <div style="width:290px">Program</div>  |   <div style="width:290px">KLEE</div>   |   <div style="width:290px">IFSE</div>   |  <div style="width:290px">Union</div>   | <div style="width:290px">Improvement</div> |
+|       #     | Program  |   KLEE   |   IFSE   |  Union   | Improvement |
 | :---------: | :------: | :------: | :------: | :------: | :---------: |
 |      1      |  base64  |    50    |   73.5   |   74.1   |    47.0     |
 |      2      | basename |   88.9   |   98.9   |   98.8   |    11.2     |
@@ -336,3 +336,21 @@ The following figure shows the branch coverage of 12 programs in CoreUtils with 
 ### Experiment Reproduction
 
 You can refer to the `README.md` in `\home\user\coreutils-test`  inside Docker to reproduce our experiment.
+
+<style>
+table th:first-of-type {
+    width: 10%;
+}
+table th:nth-of-type(2) {
+    width: 18%;
+}
+table th:nth-of-type(3) {
+    width: 18%;
+}
+table th:nth-of-type(4) {
+    width: 18%;
+}
+table th:nth-of-type(5) {
+    width: 18%;
+}
+</style>
