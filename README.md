@@ -116,7 +116,7 @@ Line Coverage Comparison of IFSE and KLEE:
 
 The details of all programs are as follows:
 
-|     &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  #    &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;   | &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Program  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; |  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  KLEE   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; |  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  IFSE   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; |  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Union  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  | &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Improvement  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;|
+|     &nbsp; &nbsp; &nbsp; &nbsp;   #    &nbsp; &nbsp; &nbsp; &nbsp;   |  &nbsp; &nbsp; &nbsp; &nbsp; Program  &nbsp; &nbsp; &nbsp; &nbsp;  |  &nbsp; &nbsp; &nbsp; &nbsp;  KLEE   &nbsp; &nbsp; &nbsp; &nbsp;  |   &nbsp; &nbsp; &nbsp; &nbsp;  IFSE   &nbsp; &nbsp; &nbsp; &nbsp;  |   &nbsp; &nbsp; &nbsp; &nbsp; Union &nbsp; &nbsp; &nbsp; &nbsp;  |  &nbsp; &nbsp; &nbsp; &nbsp; Improvement  &nbsp; &nbsp; &nbsp; &nbsp; |
 | :---------: | :------: | :------: | :------: | :------: | :---------: |
 |      1      |  base64  |   49.2   |   72.5   |   72.8   |    47.4     |
 |      2      | basename |   64.1   |   81.9   |   81.6   |    27.8     |
