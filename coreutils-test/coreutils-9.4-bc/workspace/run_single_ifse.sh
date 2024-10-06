@@ -3,7 +3,7 @@ KLEE_OUT_DIR_ALL=${PWD}/"result_all"
 mkdir -p ${KLEE_OUT_DIR_ALL}
 
 KLEE_EXE_PATH="/home/user/ifse/build/bin/klee"
-MAX_EXE_TIME="120min"
+MAX_EXE_TIME="240min"
 SEARCH="bfs"
 ARGS="--sym-args 0 1 10 --sym-args 0 2 7 --sym-files 1 8 --sym-stdin 8 --sym-stdout"
 EXTERNAL_FUNCTION="memchr,memcpy,memset,strchr,strcoll,strcspn,strlen,strncmp,strpbrk,strspn,strtok,memcmp,memmove,strcat,strcmp,strcpy,strerror,strncat,strncpy,strrchr,strstr,strxfrm"
@@ -29,7 +29,7 @@ ARGS="--sym-args 0 3 10 --sym-files 2 12 --sym-stdin 12 --sym-stdout"
 elif [ ${driver_name} = "pathchk" ];then
 ARGS="--sym-args 0 1 2 --sym-args 0 1 30 --sym-files 1 8 --sym-stdin 8 --sym-stdout"
 elif [ ${driver_name} = "printf" ];then
-ARGS="--sym-args 0 3 10 --sym-files 2 12 --sym-stdin 12 --sym-stdout"	
+ARGS="--sym-args 0 3 10 --sym-files 2 12 --sym-stdin 12 --sym-stdout"
 fi
 
 KLEE_OUT_DIR=${KLEE_OUT_DIR_ALL}/${driver_name}"-"${MAX_EXE_TIME}"-ifse"

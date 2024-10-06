@@ -9,7 +9,7 @@ sum sync tac tail tee touch tr tsort tty uname unexpand uniq unlink uptime users
 output_dict = {}
 for program in program_list:
     print(f"====> {program}")
-    command = f"./collect_cov.sh {program}"
+    command = f"./collect.sh {program}"
     try:
         result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         output_lines = result.stdout.decode('utf-8').split('\n')
