@@ -219,7 +219,7 @@ Branch Coverage Comparison of IFSE and KLEE:
 The details of all programs are as follows:
 
  
-|      <div style="width:290px">#</div>    | <div style="width:290px">Program</div>  |   <div style="width:290px">KLEE</div>   |   <div style="width:290px">IFSE</div>   |  <div style="width:290px">Union</div>   | <div style="width:290px">Improvement</div> |
+|      # &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;    | <div style="width:290px">Program</div>  |   <div style="width:290px">KLEE</div>   |   <div style="width:290px">IFSE</div>   |  <div style="width:290px">Union</div>   | <div style="width:290px">Improvement</div> |
 | :---------: | :------: | :------: | :------: | :------: | :---------: |
 |      1      |  base64  |    50    |   73.5   |   74.1   |    47.0     |
 |      2      | basename |   88.9   |   98.9   |   98.8   |    11.2     |
