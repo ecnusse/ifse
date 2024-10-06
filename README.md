@@ -19,7 +19,7 @@ A Docker container is built from a Docker image. A Docker image encapsulates an 
 
 Follow these links for installation instructions on [Ubuntu](https://docs.docker.com/engine/install/ubuntu/), [OS X](https://docs.docker.com/desktop/install/mac-install/) and [Windows](https://docs.docker.com/desktop/install/windows-install/).
 
-## 2. Pull docker image
+### 2. Pull docker image
 
 We have packaged and pushed the docker image of IFSE to DockerHub, you can pull the docker image by following instruction:
 
@@ -35,7 +35,7 @@ If the image is pulled successfully, you can use the following command to have a
 TODO
 ```
 
-### 2. Run docker image
+### 3. Run docker image
 
 To run the image, use the following command:
 
@@ -68,6 +68,12 @@ Due to limited space in the paper, we only presented the overall situation of th
 
 IFSE achieves a higher average line coverage for most of the programs (63 programs) ranging from relative 0.8\% to 217.2\% over KLEE and achieves an average line coverage of 54.8\% (while KLEE averaged 42.7\%), which demonstrates the path exploration ability of IFSE. Meanwhile, IFSE achieves relative higher branch coverage of 12.3\% over KLEE. The coverage details of all programs are as follows:
 
+|      |      |      |
+| ---- | ---- | ---- |
+|      |      |      |
+|      |      |      |
+|      |      |      |
+
 TODO
 
 ### Branch Coverage
@@ -80,10 +86,8 @@ TODO
 
 As an open-source tool, IFSE employs various optimization strategies to enhance its usability.  Among these strategies, the `splitter` and `predictor` hold relatively significant importance. The former focuses on identifying constraints that are likely to be unsolvable and immediately returning results, thus reducing unnecessary solving. The latter focuses on removing parts of the constraints that do not affect the solving result, thus reducing the search space for solving.
 
-To study their impact on the performance of IFSE, we also conducted ablation experiments. The results show that `splitter` improve the average branch coverage by relative 15.8\% and `predictor` improve the average branch coverage by 3.5\%. Using them together enhances the coverage by relative 23.5\%, indicating that the two optimazations are complementary as the `predictor` may assess the satisfiability of large constraints more accurately when these constraints are scaled down first by the `splitter`. 
-
-在12个程序上的结果需要放到这里（TODO）
-
+To study their impact on the performance of IFSE, we also conducted ablation experiments with four configurations: IFSE with neither, IFSE with predictor, IFSE with splitter and IFSE with both. In evaluating the 79 CoreUtils programs, the  results show that `splitter` improve the average branch coverage by relative 15.8\% and `predictor` improve the average branch coverage by 3.5\%. Using them together enhances the coverage by relative 23.5\%, indicating that the two optimazations are complementary as the `predictor` may assess the satisfiability of large constraints more accurately when these constraints are scaled down first by the `splitter`.   The following figure shows the branch coverage of 12 programs in CoreUtils with the largest coverage improment  in Table 2 under different configurations. Other programs shows similar trend.
+[这是图片](../../Downloads/opt_cmp.pdf)
 ### Experiment Reproduction
 
 You can refer to the `README.md` in `coreutils-test` to reproduce our experiment.
