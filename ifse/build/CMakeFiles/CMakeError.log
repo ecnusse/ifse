@@ -1,0 +1,122 @@
+Determining if the include file sys/capability.h exists failed with the following output:
+Change Dir: /home/user/ifse/build/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/usr/bin/ninja cmTC_eaa9c && [1/2] Building C object CMakeFiles/cmTC_eaa9c.dir/CheckIncludeFile.c.o
+FAILED: CMakeFiles/cmTC_eaa9c.dir/CheckIncludeFile.c.o 
+/tmp/llvm-130-install_O_D_A/bin/clang    -MD -MT CMakeFiles/cmTC_eaa9c.dir/CheckIncludeFile.c.o -MF CMakeFiles/cmTC_eaa9c.dir/CheckIncludeFile.c.o.d -o CMakeFiles/cmTC_eaa9c.dir/CheckIncludeFile.c.o -c /home/user/ifse/build/CMakeFiles/CMakeTmp/CheckIncludeFile.c
+/home/user/ifse/build/CMakeFiles/CMakeTmp/CheckIncludeFile.c:1:10: fatal error: 'sys/capability.h' file not found
+#include <sys/capability.h>
+         ^~~~~~~~~~~~~~~~~~
+1 error generated.
+ninja: build stopped: subcommand failed.
+
+
+
+Determining if the include file util.h exists failed with the following output:
+Change Dir: /home/user/ifse/build/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/usr/bin/ninja cmTC_7adbf && [1/2] Building C object CMakeFiles/cmTC_7adbf.dir/CheckIncludeFile.c.o
+FAILED: CMakeFiles/cmTC_7adbf.dir/CheckIncludeFile.c.o 
+/tmp/llvm-130-install_O_D_A/bin/clang    -MD -MT CMakeFiles/cmTC_7adbf.dir/CheckIncludeFile.c.o -MF CMakeFiles/cmTC_7adbf.dir/CheckIncludeFile.c.o.d -o CMakeFiles/cmTC_7adbf.dir/CheckIncludeFile.c.o -c /home/user/ifse/build/CMakeFiles/CMakeTmp/CheckIncludeFile.c
+/home/user/ifse/build/CMakeFiles/CMakeTmp/CheckIncludeFile.c:1:10: fatal error: 'util.h' file not found
+#include <util.h>
+         ^~~~~~~~
+1 error generated.
+ninja: build stopped: subcommand failed.
+
+
+
+Determining if the include file libutil.h exists failed with the following output:
+Change Dir: /home/user/ifse/build/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/usr/bin/ninja cmTC_d5a7c && [1/2] Building C object CMakeFiles/cmTC_d5a7c.dir/CheckIncludeFile.c.o
+FAILED: CMakeFiles/cmTC_d5a7c.dir/CheckIncludeFile.c.o 
+/tmp/llvm-130-install_O_D_A/bin/clang    -MD -MT CMakeFiles/cmTC_d5a7c.dir/CheckIncludeFile.c.o -MF CMakeFiles/cmTC_d5a7c.dir/CheckIncludeFile.c.o.d -o CMakeFiles/cmTC_d5a7c.dir/CheckIncludeFile.c.o -c /home/user/ifse/build/CMakeFiles/CMakeTmp/CheckIncludeFile.c
+/home/user/ifse/build/CMakeFiles/CMakeTmp/CheckIncludeFile.c:1:10: fatal error: 'libutil.h' file not found
+#include <libutil.h>
+         ^~~~~~~~~~~
+1 error generated.
+ninja: build stopped: subcommand failed.
+
+
+
+Determining if the malloc_zone_statistics exist failed with the following output:
+Change Dir: /home/user/ifse/build/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/usr/bin/ninja cmTC_b38c7 && [1/2] Building CXX object CMakeFiles/cmTC_b38c7.dir/CheckSymbolExists.cxx.o
+FAILED: CMakeFiles/cmTC_b38c7.dir/CheckSymbolExists.cxx.o 
+/tmp/llvm-130-install_O_D_A/bin/clang++   -std=gnu++17 -MD -MT CMakeFiles/cmTC_b38c7.dir/CheckSymbolExists.cxx.o -MF CMakeFiles/cmTC_b38c7.dir/CheckSymbolExists.cxx.o.d -o CMakeFiles/cmTC_b38c7.dir/CheckSymbolExists.cxx.o -c /home/user/ifse/build/CMakeFiles/CMakeTmp/CheckSymbolExists.cxx
+/home/user/ifse/build/CMakeFiles/CMakeTmp/CheckSymbolExists.cxx:2:10: fatal error: 'malloc/malloc.h' file not found
+#include <malloc/malloc.h>
+         ^~~~~~~~~~~~~~~~~
+1 error generated.
+ninja: build stopped: subcommand failed.
+
+
+File /home/user/ifse/build/CMakeFiles/CMakeTmp/CheckSymbolExists.cxx:
+/* */
+#include <malloc/malloc.h>
+
+int main(int argc, char** argv)
+{
+  (void)argv;
+#ifndef malloc_zone_statistics
+  return ((int*)(&malloc_zone_statistics))[argc];
+#else
+  (void)argc;
+  return 0;
+#endif
+}
+Determining if the include file selinux/selinux.h exists failed with the following output:
+Change Dir: /home/user/ifse/build/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/usr/bin/ninja cmTC_3ae9b && [1/2] Building C object CMakeFiles/cmTC_3ae9b.dir/CheckIncludeFile.c.o
+FAILED: CMakeFiles/cmTC_3ae9b.dir/CheckIncludeFile.c.o 
+/tmp/llvm-130-install_O_D_A/bin/clang    -MD -MT CMakeFiles/cmTC_3ae9b.dir/CheckIncludeFile.c.o -MF CMakeFiles/cmTC_3ae9b.dir/CheckIncludeFile.c.o.d -o CMakeFiles/cmTC_3ae9b.dir/CheckIncludeFile.c.o -c /home/user/ifse/build/CMakeFiles/CMakeTmp/CheckIncludeFile.c
+/home/user/ifse/build/CMakeFiles/CMakeTmp/CheckIncludeFile.c:1:10: fatal error: 'selinux/selinux.h' file not found
+#include <selinux/selinux.h>
+         ^~~~~~~~~~~~~~~~~~~
+1 error generated.
+ninja: build stopped: subcommand failed.
+
+
+
+Determining if the include file sys/acl.h exists failed with the following output:
+Change Dir: /home/user/ifse/build/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/usr/bin/ninja cmTC_2d1dc && [1/2] Building C object CMakeFiles/cmTC_2d1dc.dir/CheckIncludeFile.c.o
+FAILED: CMakeFiles/cmTC_2d1dc.dir/CheckIncludeFile.c.o 
+/tmp/llvm-130-install_O_D_A/bin/clang    -MD -MT CMakeFiles/cmTC_2d1dc.dir/CheckIncludeFile.c.o -MF CMakeFiles/cmTC_2d1dc.dir/CheckIncludeFile.c.o.d -o CMakeFiles/cmTC_2d1dc.dir/CheckIncludeFile.c.o -c /home/user/ifse/build/CMakeFiles/CMakeTmp/CheckIncludeFile.c
+/home/user/ifse/build/CMakeFiles/CMakeTmp/CheckIncludeFile.c:1:10: fatal error: 'sys/acl.h' file not found
+#include <sys/acl.h>
+         ^~~~~~~~~~~
+1 error generated.
+ninja: build stopped: subcommand failed.
+
+
+
+Performing C SOURCE FILE Test FSTATAT_PATH_ACCEPTS_NULL failed with the following output:
+Change Dir: /home/user/ifse/build/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/usr/bin/ninja cmTC_33ed3 && [1/2] Building C object CMakeFiles/cmTC_33ed3.dir/src.c.o
+FAILED: CMakeFiles/cmTC_33ed3.dir/src.c.o 
+/tmp/llvm-130-install_O_D_A/bin/clang -DFSTATAT_PATH_ACCEPTS_NULL   -MD -MT CMakeFiles/cmTC_33ed3.dir/src.c.o -MF CMakeFiles/cmTC_33ed3.dir/src.c.o.d -o CMakeFiles/cmTC_33ed3.dir/src.c.o -c /home/user/ifse/build/CMakeFiles/CMakeTmp/src.c
+/home/user/ifse/build/CMakeFiles/CMakeTmp/src.c:9:35: error: null passed to a callee that requires a non-null argument [-Werror,-Wnonnull]
+          fstatat(0, NULL, &buf, 0);
+                     ~~~~         ^
+1 error generated.
+ninja: build stopped: subcommand failed.
+
+
+Source file was:
+
+        #include <fcntl.h>
+        #include <stddef.h>
+        #include <sys/stat.h>
+
+        int main(void) {
+          struct stat buf;
+          #pragma GCC diagnostic error "-Wnonnull"
+          fstatat(0, NULL, &buf, 0);
+        }
+        
