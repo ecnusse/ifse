@@ -40,6 +40,8 @@ ENV KLEE_RUNTIME_BUILD="Debug+Asserts"
 ENV SQLITE_VERSION=3400100
 LABEL maintainer="KLEE Developers"
 
+RUN sed -E 's/http:\/\/(archive|security)\.ubuntu\.com/http:\/\/mirror.sjtu.edu.cn/g' -i /etc/apt/sources.list
+
 # TODO remove adding sudo package
 # Create ``user`` user for container with password ``user``.
 # and give it password-less sudo access (temporarily so we can use the CI scripts)
@@ -62,7 +64,7 @@ RUN sudo ln -s "/tmp/"
 RUN sudo apt-get update && sudo apt-get install -y openssh-server gdb gdbserver rsync vim git cmake \
     ninja-build libgoogle-perftools-dev libsqlite3-dev python3-pip python-is-python3 gcc-multilib \
     g++-multilib python3-tabulate clangd curl
-RUN pip config list  
+RUN sudo pip config set global.index-url https://mirror.nju.edu.cn/pypi/web/simple
 RUN sudo pip install lit
 
 RUN echo "root:user" | sudo chpasswd
