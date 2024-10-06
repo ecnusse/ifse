@@ -116,7 +116,7 @@ Line Coverage Comparison of IFSE and KLEE:
 
 The details of all programs are as follows:
 
-|      #      | Program  |   KLEE   |   IFSE   |  Union   | Improvement |
+|     &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  #    &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;   | &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Program  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; |  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  KLEE   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; |  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  IFSE   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; |  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Union  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  | &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Improvement  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;|
 | :---------: | :------: | :------: | :------: | :------: | :---------: |
 |      1      |  base64  |   49.2   |   72.5   |   72.8   |    47.4     |
 |      2      | basename |   64.1   |   81.9   |   81.6   |    27.8     |
@@ -219,7 +219,7 @@ Branch Coverage Comparison of IFSE and KLEE:
 The details of all programs are as follows:
 
  
-|       #     | Program  |   KLEE   |   IFSE   |  Union   | Improvement |
+|       &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; #  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;    |   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Program  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; |   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; KLEE  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;   |   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; IFSE  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;   |   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Union  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;   |   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Improvement  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;|
 | :---------: | :------: | :------: | :------: | :------: | :---------: |
 |      1      |  base64  |    50    |   73.5   |   74.1   |    47.0     |
 |      2      | basename |   88.9   |   98.9   |   98.8   |    11.2     |
@@ -336,21 +336,3 @@ The following figure shows the branch coverage of 12 programs in CoreUtils with 
 ### Experiment Reproduction
 
 You can refer to the `README.md` in `\home\user\coreutils-test`  inside Docker to reproduce our experiment.
-
-<style>
-table th:first-of-type {
-    width: 10%;
-}
-table th:nth-of-type(2) {
-    width: 18%;
-}
-table th:nth-of-type(3) {
-    width: 18%;
-}
-table th:nth-of-type(4) {
-    width: 18%;
-}
-table th:nth-of-type(5) {
-    width: 18%;
-}
-</style>
