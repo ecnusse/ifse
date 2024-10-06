@@ -24,7 +24,7 @@ Follow these links for installation instructions on [Ubuntu](https://docs.docker
 We have packaged and pushed the docker image of IFSE to DockerHub, you can pull the docker image by following instruction:
 
 ```sh
-TODO
+docker pull achilles0425/ifse-image:stable
 ```
 
  This command builds a Docker image named `ifse-image`, which contains the complete runtime environment, source code and evaluation scripts. 
@@ -32,7 +32,9 @@ TODO
 If the image is pulled successfully, you can use the following command to have a check. You should find that an image named `ifse-image` exists.
 
 ```
-TODO
+$ docker images
+REPOSITORY                                     TAG       IMAGE ID       CREATED         SIZE
+achilles0425/ifse-image                        stable    a78bcd0cfa67   2 months ago    11.3GB
 ```
 
 ### 3. Run docker image
@@ -50,11 +52,14 @@ docker run -it ifse-image:stable
 The following items can be found in the docker container:
 
 - `Coreutils-test` is the experiment directory, which contains:
-  - `coreutils-9.4-bc`, which provides all compiled byte code files of programs in CoreUtils and  all scripts for reproducing evaluation.
-  - `Coreutils-9.4-src`, which contains source code of all programs in CoreUtils-9.4.
-- `Ifse` contains all source code of our tool, including:
-  - klee,  the symbolic execution engine part in which we have extended over 4600 lines of C++ code.
-  - Krpk, a highly modularized fuzz solver that contains over 19000 lines of Rust code and can easily support complex theories like floating-point theory and different backend fuzzers.
+  - `coreutils-9.4-bc`: All compiled byte code files of programs in CoreUtils-9.4 and  all scripts for reproducing evaluation.
+  - `Coreutils-9.4-src`: Source code of all programs in CoreUtils-9.4.
+  - `README.md`: Guide on how to reproduce our experiment.
+- `Ifse` contains all source code and executable artifacts of our tool, including:
+  - `build`: Compiled binary code of IFSE.
+  - `klee`: The symbolic execution engine part in which we have extended over 4600 lines of C++ code.
+  - `krpk`: A highly modularized fuzz solver that contains over 19000 lines of Rust code and can easily support complex theories like floating-point theory and different backend fuzzers.
+  - `DEVELOPMENT.md`: Guide on how to recompile IFSE after modifying its source code.
 
 TODO(根据打包出来的具体情况进行介绍)
 
@@ -87,7 +92,9 @@ TODO
 As an open-source tool, IFSE employs various optimization strategies to enhance its usability.  Among these strategies, the `splitter` and `predictor` hold relatively significant importance. The former focuses on identifying constraints that are likely to be unsolvable and immediately returning results, thus reducing unnecessary solving. The latter focuses on removing parts of the constraints that do not affect the solving result, thus reducing the search space for solving.
 
 To study their impact on the performance of IFSE, we also conducted ablation experiments with four configurations: IFSE with neither, IFSE with predictor, IFSE with splitter and IFSE with both. In evaluating the 79 CoreUtils programs, the  results show that `splitter` improve the average branch coverage by relative 15.8\% and `predictor` improve the average branch coverage by 3.5\%. Using them together enhances the coverage by relative 23.5\%, indicating that the two optimazations are complementary as the `predictor` may assess the satisfiability of large constraints more accurately when these constraints are scaled down first by the `splitter`.   The following figure shows the branch coverage of 12 programs in CoreUtils with the largest coverage improment  in Table 2 under different configurations. Other programs shows similar trend.
-[这是图片](../../Downloads/opt_cmp.pdf)
+
+![alt text](images/opt_cmp.jpg)
+
 ### Experiment Reproduction
 
 You can refer to the `README.md` in `coreutils-test` to reproduce our experiment.
