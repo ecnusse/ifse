@@ -71,7 +71,7 @@ After starting the docker container, the following items can be found in your en
 
   - `README.md`: Guide on how to reproduce our experiment.
 
-- `Ifse` contains all source code and executable artifacts of our tool, including:
+- `ifse` contains all source code and executable artifacts of our tool, including:
 
   - `build`: Compiled binary code of IFSE.
 
@@ -336,3 +336,22 @@ The following figure shows the branch coverage of 12 programs in CoreUtils with 
 ### Experiment Reproduction
 
 You can refer to the `README.md` in `\home\user\coreutils-test`  inside Docker to reproduce our experiment.
+
+
+## Main maintainers/contributors
+
+- Qichang Wang, East China Normal University, China
+
+- Chuyang Chen, The Ohio State University, USA
+
+- Ruiyang Xu, East China Normal University, China
+
+We appreciate the contributions and support from:
+
+- [Ting Su](https://tingsu.github.io/), East China Normal University, China
+
+- Haiying Sun, East China Normal University, China
+
+- Chengcheng Wan, East China Normal University, China
+
+We welcome any feedback or questions on IFSE. Free feel to share your ideas, open issues or pull requests. We are actively maintaining IFSE to benefit our community.
