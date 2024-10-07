@@ -199,7 +199,9 @@ The details of all programs are as follows:
 |     79      |  whoami  |    76    |    76    |    76    |     0.0     |
 | **Average** |  **-**   | **42.7** | **54.8** | **55.9** |  **38.3**   |
 
+![alt text](images/line_1.jpg)
 
+![alt text](images/line_2.jpg)
 
 
 ### Branch Coverage
@@ -302,7 +304,9 @@ The details of all programs are as follows:
 |     79      |  whoami  |    80    |    80    |    80    |     0.0     |
 | **Average** |  **-**   | **57.2** | **64.2** | **65.8** |  **12.2**   |
 
+![alt text](images/branch_1.jpg)
 
+![alt text](images/branch_2.jpg)
 
 ### Optimization Strategies
 
