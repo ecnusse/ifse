@@ -197,7 +197,7 @@ The details of all programs are as follows:
 |     77      |  users   |   59.3   |   59.3   |   59.3   |     0.0     |
 |     78      |   who    |   16.3   |   27.3   |    27    |    67.5     |
 |     79      |  whoami  |    76    |    76    |    76    |     0.0     |
-| **Average** |  **-**   | **42.7** | **54.8** | **55.9** |  **38.3**   |
+| **Average** |  **-**   | **42.7** | **54.8** | **55.9** |  **28.3**   |
 
 ![alt text](images/line_1.jpg)
 
