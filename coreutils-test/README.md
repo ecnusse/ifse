@@ -1,6 +1,6 @@
 # Reproduce the Experimental Results
 
-Change directory to `/home/user/coreutils-test/coreutils-9.4-bc/workspace`, there are several scripts for reproduce the experiment and collect the results:
+Navigate to the directory /home/user/coreutils-test/coreutils-9.4-bc/workspace, where you will find several scripts designed to reproduce the experiment and collect the results:
 
 ``` shell
 /home/user/coreutils-test/coreutils-9.4-bc/workspace
