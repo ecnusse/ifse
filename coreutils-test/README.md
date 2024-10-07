@@ -5,9 +5,13 @@ Navigate to the directory /home/user/coreutils-test/coreutils-9.4-bc/workspace, 
 ``` shell
 /home/user/coreutils-test/coreutils-9.4-bc/workspace
 ├── collect.py  # Collect the line/branch coverage results
+|
 ├── collect.sh  # Collect the line/branch coverage results
+|
 ├── run_multi.sh  # Run the whole programs
+|
 ├── run_single_ifse.sh # Run one program using ifse (which you can specify)
+|
 └── run_single_klee.sh # Run one program using klee (which you can specify)
 ```
 
