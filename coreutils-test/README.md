@@ -1,50 +1,34 @@
-# Step 1: Build coreutils with gcov
+# Reproduce the Experimental Results
 
-let's build a version of coreutils with gcov support. We will use this later to get coverage information on the test cases produced by KLEE.
+Change directory to `/home/user/coreutils-test/coreutils-9.4-bc/workspace`, there are several scripts for reproduce the experiment and collect the results:
 
-
-Change directory to coreutils-9.4-src
-
-```shell
-coreutils-9.4-src# FORCE_UNSAFE_CONFIGURE=1 ./configure --disable-nls CFLAGS="-g -fprofile-arcs -ftest-coverage"
-coreutils-9.4-src# make
-```
-(If you have problems with make, you can try compiling with clang)
-
-> the `configure` script is being run as the root user. This is generally not recommended for security reasons, as it can lead to inadvertent changes to system files.
->
-> However, if we understand the risks and still want to proceed, we can bypass this check by setting the `FORCE_UNSAFE_CONFIGURE` environment variable to `1`
->
-> We build with `--disable-nls` because this adds a lot of extra initialization in the C library which we are not interested in testing. Even though these aren’t the executables that KLEE will be running on, we want to use the same compiler flags so that the test cases KLEE generates are most likely to work correctly when run on the uninstrumented binaries.
-
-We should now have a set of `coreutils` in the `coreutils-9.4-src/src` directory, and we can use them to get the precise ICov because `gcov` is only considering lines in that one file, not the entire application.
-
-# Step 2: Run a KLEE evaluation
-
-Change directory to coreutils-9.4-bc/workspace, there are four scripts for using ifse to test coreutils programs.
-
-For example, you can test echo like this
-
-```shell
-coreutils-9.4-bc/workspace# ./run_single_colossus.sh echo
+``` shell
+/home/user/coreutils-test/coreutils-9.4-bc/workspace
+├── collect.py  # Collect the line/branch coverage results
+├── collect.sh  # Collect the line/branch coverage results
+├── run_multi.sh  # Run the whole programs
+├── run_single_ifse.sh # Run one program using ifse (which you can specify)
+└── run_single_klee.sh # Run one program using klee (which you can specify)
 ```
 
-After testing, We could see the outputs over the `coreutils-9.4-bc/workspace/result_all`.
+## Step 1: Run a KLEE Evaluation
 
-# Step 3: Replay KLEE generated test cases
-
-We can use the `klee-replay` tool to run a set of test cases at once, one after the other. Now change directory to the `coreutils-9.4-src/src`, we are going to use `gcov` to see exactly what lines were covered and which weren't.
-
-Let's take `echo` as an example:
+To reproduce the experiment, you can just run the `run_multi.sh` script:
 
 ```shell
-src# rm -f *.gcda # Get rid of any stale gcov files
-src# klee-replay ./echo /home/user/coreutils-test/coreutils-9.4-bc/workspace/result_all/echo_output/*.ktest
-...
-src# gcov -b -c echo
-...
-Lines executed: xx.xx % of xxx
-...
+/home/user/coreutils-test/coreutils-9.4-bc/workspace# ./run_multi.sh
 ```
 
-As `gcov` is only considering lines in that one file, not the entire application, we should finally have reasonable coverage of `echo.c`.
+After that, We could see the outputs over the `coreutils-9.4-bc/workspace/result_all`.
+
+## Step 2: Replay KLEE Generated Test Cases
+
+We can use provided script `collect.py` to collect the line/branch coverage:
+
+``` shell
+/home/user/coreutils-test/coreutils-9.4-bc/workspace# python3 collect.py
+```
+
+**Note**: During the replay process, certain test cases may introduce noise. For instance, providing `3day` as input to the `sleep` command (which causes a bash program to pause), or feeding `infinity` to `seq` (which generates sequential numbers), can result in non-representative behavior. It is advisable to manually remove such test cases.
+
+After collecting results, you can find `program_output.csv` which stores the results of branch and line coverage in current directory.
