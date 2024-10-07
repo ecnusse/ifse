@@ -11,7 +11,7 @@ Navigate to the directory /home/user/coreutils-test/coreutils-9.4-bc/workspace, 
 └── run_single_klee.sh # Run one program using klee (which you can specify)
 ```
 
-## Step 1: Run a KLEE Evaluation
+## Step 1: Run a IFSE/KLEE Evaluation
 
 To reproduce the experiment, you can just run the `run_multi.sh` script:
 
@@ -21,7 +21,7 @@ To reproduce the experiment, you can just run the `run_multi.sh` script:
 
 After that, We could see the outputs over the `coreutils-9.4-bc/workspace/result_all`.
 
-## Step 2: Replay KLEE Generated Test Cases
+## Step 2: Replay IFSE/KLEE Generated Test Cases
 
 We can use provided script `collect.py` to collect the line/branch coverage:
 
