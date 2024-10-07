@@ -1,0 +1,989 @@
+        -:    0:Source:src/ln.c
+        -:    0:Graph:ln.gcno
+        -:    0:Data:ln.gcda
+        -:    0:Runs:48
+        -:    1:/* 'ln' program to create links between files.
+        -:    2:   Copyright (C) 1986-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Mike Parker and David MacKenzie. */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <stdio.h>
+        -:   21:#include <sys/types.h>
+        -:   22:#include <getopt.h>
+        -:   23:
+        -:   24:#include "system.h"
+        -:   25:#include "backupfile.h"
+        -:   26:#include "fcntl-safer.h"
+        -:   27:#include "filenamecat.h"
+        -:   28:#include "file-set.h"
+        -:   29:#include "force-link.h"
+        -:   30:#include "hash.h"
+        -:   31:#include "hash-triple.h"
+        -:   32:#include "priv-set.h"
+        -:   33:#include "relpath.h"
+        -:   34:#include "same.h"
+        -:   35:#include "unlinkdir.h"
+        -:   36:#include "yesno.h"
+        -:   37:#include "canonicalize.h"
+        -:   38:
+        -:   39:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   40:#define PROGRAM_NAME "ln"
+        -:   41:
+        -:   42:#define AUTHORS \
+        -:   43:  proper_name ("Mike Parker"), \
+        -:   44:  proper_name ("David MacKenzie")
+        -:   45:
+        -:   46:/* FIXME: document */
+        -:   47:static enum backup_type backup_type;
+        -:   48:
+        -:   49:/* If true, make symbolic links; otherwise, make hard links.  */
+        -:   50:static bool symbolic_link;
+        -:   51:
+        -:   52:/* If true, make symbolic links relative  */
+        -:   53:static bool relative;
+        -:   54:
+        -:   55:/* If true, hard links are logical rather than physical.  */
+        -:   56:static bool logical = !!LINK_FOLLOWS_SYMLINKS;
+        -:   57:
+        -:   58:/* If true, ask the user before removing existing files.  */
+        -:   59:static bool interactive;
+        -:   60:
+        -:   61:/* If true, remove existing files unconditionally.  */
+        -:   62:static bool remove_existing_files;
+        -:   63:
+        -:   64:/* If true, list each file as it is moved. */
+        -:   65:static bool verbose;
+        -:   66:
+        -:   67:/* If true, allow the superuser to *attempt* to make hard links
+        -:   68:   to directories.  However, it appears that this option is not useful
+        -:   69:   in practice, since even the superuser is prohibited from hard-linking
+        -:   70:   directories on most existing systems (Solaris being an exception).  */
+        -:   71:static bool hard_dir_link;
+        -:   72:
+        -:   73:/* If true, watch out for creating or removing hard links to directories.  */
+        -:   74:static bool beware_hard_dir_link;
+        -:   75:
+        -:   76:/* If nonzero, and the specified destination is a symbolic link to a
+        -:   77:   directory, treat it just as if it were a directory.  Otherwise, the
+        -:   78:   command 'ln --force --no-dereference file symlink-to-dir' deletes
+        -:   79:   symlink-to-dir before creating the new link.  */
+        -:   80:static bool dereference_dest_dir_symlinks = true;
+        -:   81:
+        -:   82:/* This is a set of destination name/inode/dev triples for hard links
+        -:   83:   created by ln.  Use this data structure to avoid data loss via a
+        -:   84:   sequence of commands like this:
+        -:   85:   rm -rf a b c; mkdir a b c; touch a/f b/f; ln -f a/f b/f c && rm -r a b */
+        -:   86:static Hash_table *dest_set;
+        -:   87:
+        -:   88:/* Initial size of the dest_set hash table.  */
+        -:   89:enum { DEST_INFO_INITIAL_CAPACITY = 61 };
+        -:   90:
+        -:   91:static struct option const long_options[] =
+        -:   92:{
+        -:   93:  {"backup", optional_argument, nullptr, 'b'},
+        -:   94:  {"directory", no_argument, nullptr, 'F'},
+        -:   95:  {"no-dereference", no_argument, nullptr, 'n'},
+        -:   96:  {"no-target-directory", no_argument, nullptr, 'T'},
+        -:   97:  {"force", no_argument, nullptr, 'f'},
+        -:   98:  {"interactive", no_argument, nullptr, 'i'},
+        -:   99:  {"suffix", required_argument, nullptr, 'S'},
+        -:  100:  {"target-directory", required_argument, nullptr, 't'},
+        -:  101:  {"logical", no_argument, nullptr, 'L'},
+        -:  102:  {"physical", no_argument, nullptr, 'P'},
+        -:  103:  {"relative", no_argument, nullptr, 'r'},
+        -:  104:  {"symbolic", no_argument, nullptr, 's'},
+        -:  105:  {"verbose", no_argument, nullptr, 'v'},
+        -:  106:  {GETOPT_HELP_OPTION_DECL},
+        -:  107:  {GETOPT_VERSION_OPTION_DECL},
+        -:  108:  {nullptr, 0, nullptr, 0}
+        -:  109:};
+        -:  110:
+        -:  111:/* Return an errno value for a system call that returned STATUS.
+        -:  112:   This is zero if STATUS is zero, and is errno otherwise.  */
+        -:  113:
+        -:  114:static int
+function errnoize called 48 returned 100% blocks executed 80%
+       48:  115:errnoize (int status)
+        -:  116:{
+      48*:  117:  return status < 0 ? errno : 0;
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  118:}
+        -:  119:
+        -:  120:/* Return FROM represented as relative to the dir of TARGET.
+        -:  121:   The result is malloced.  */
+        -:  122:
+        -:  123:static char *
+function convert_abs_rel called 0 returned 0% blocks executed 0%
+    #####:  124:convert_abs_rel (char const *from, char const *target)
+        -:  125:{
+        -:  126:  /* Get dirname to generate paths relative to.  We don't resolve
+        -:  127:     the full TARGET as the last component could be an existing symlink.  */
+    #####:  128:  char *targetdir = dir_name (target);
+call    0 never executed
+        -:  129:
+    #####:  130:  char *realdest = canonicalize_filename_mode (targetdir, CAN_MISSING);
+call    0 never executed
+    #####:  131:  char *realfrom = canonicalize_filename_mode (from, CAN_MISSING);
+call    0 never executed
+        -:  132:
+    #####:  133:  char *relative_from = nullptr;
+    #####:  134:  if (realdest && realfrom)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  135:    {
+        -:  136:      /* Write to a PATH_MAX buffer.  */
+    #####:  137:      relative_from = xmalloc (PATH_MAX);
+call    0 never executed
+        -:  138:
+    #####:  139:      if (!relpath (realfrom, realdest, relative_from, PATH_MAX))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  140:        {
+    #####:  141:          free (relative_from);
+    #####:  142:          relative_from = nullptr;
+        -:  143:        }
+        -:  144:    }
+        -:  145:
+    #####:  146:  free (targetdir);
+    #####:  147:  free (realdest);
+    #####:  148:  free (realfrom);
+        -:  149:
+    #####:  150:  return relative_from ? relative_from : xstrdup (from);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  151:}
+        -:  152:
+        -:  153:/* Link SOURCE to DESTDIR_FD + DEST_BASE atomically.  DESTDIR_FD is
+        -:  154:   the directory containing DEST_BASE.  Return 0 if successful, a
+        -:  155:   positive errno value on failure, and -1 if an atomic link cannot be
+        -:  156:   done.  This handles the common case where the destination does not
+        -:  157:   already exist and -r is not specified.  */
+        -:  158:
+        -:  159:static int
+function atomic_link called 48 returned 100% blocks executed 56%
+       48:  160:atomic_link (char const *source, int destdir_fd, char const *dest_base)
+        -:  161:{
+        -:  162:  return (symbolic_link
+      48*:  163:          ? (relative ? -1
+    #####:  164:             : errnoize (symlinkat (source, destdir_fd, dest_base)))
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+      96*:  165:          : beware_hard_dir_link ? -1
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+      96*:  166:          : errnoize (linkat (AT_FDCWD, source, destdir_fd, dest_base,
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+call    2 returned 100%
+call    3 returned 100%
+       48:  167:                              logical ? AT_SYMLINK_FOLLOW : 0)));
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  168:}
+        -:  169:
+        -:  170:/* Link SOURCE to a directory entry under DESTDIR_FD named DEST_BASE.
+        -:  171:   DEST is the full name of the destination, useful for diagnostics.
+        -:  172:   LINK_ERRNO is zero if the link has already been made,
+        -:  173:   positive if attempting the link failed with errno == LINK_ERRNO,
+        -:  174:   -1 if no attempt has been made to create the link.
+        -:  175:   Return true if successful.  */
+        -:  176:
+        -:  177:static bool
+function do_link called 48 returned 100% blocks executed 33%
+       48:  178:do_link (char const *source, int destdir_fd, char const *dest_base,
+        -:  179:         char const *dest, int link_errno)
+        -:  180:{
+        -:  181:  struct stat source_stats;
+       48:  182:  int source_status = 1;
+       48:  183:  char *backup_base = nullptr;
+       48:  184:  char *rel_source = nullptr;
+      48*:  185:  int nofollow_flag = logical ? 0 : AT_SYMLINK_NOFOLLOW;
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+       48:  186:  if (link_errno < 0)
+branch  0 taken 58% (fallthrough)
+branch  1 taken 42%
+       28:  187:    link_errno = atomic_link (source, destdir_fd, dest_base);
+call    0 returned 100%
+        -:  188:
+        -:  189:  /* Get SOURCE_STATS if later code will need it, if only for sharper
+        -:  190:     diagnostics.  */
+      48*:  191:  if ((link_errno || dest_set) && !symbolic_link)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+        -:  192:    {
+       48:  193:      source_status = fstatat (AT_FDCWD, source, &source_stats, nofollow_flag);
+call    0 returned 100%
+       48:  194:      if (source_status != 0)
+branch  0 taken 81% (fallthrough)
+branch  1 taken 19%
+        -:  195:        {
+       39:  196:          error (0, errno, _("failed to access %s"), quoteaf (source));
+call    0 returned 100%
+       39:  197:          return false;
+        -:  198:        }
+        -:  199:    }
+        -:  200:
+        9:  201:  if (link_errno)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  202:    {
+        9:  203:      if (!symbolic_link && !hard_dir_link && S_ISDIR (source_stats.st_mode))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 89% (fallthrough)
+branch  5 taken 11%
+        -:  204:        {
+        8:  205:          error (0, 0, _("%s: hard link not allowed for directory"),
+call    0 returned 100%
+        -:  206:                 quotef (source));
+        8:  207:          return false;
+        -:  208:        }
+        -:  209:
+        1:  210:      if (relative)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  211:        source = rel_source = convert_abs_rel (source, dest);
+call    0 never executed
+        -:  212:
+        1:  213:      bool force = (remove_existing_files || interactive
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       2*:  214:                    || backup_type != no_backups);
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+        1:  215:      if (force)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  216:        {
+        -:  217:          struct stat dest_stats;
+    #####:  218:          if (fstatat (destdir_fd, dest_base, &dest_stats, AT_SYMLINK_NOFOLLOW)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  219:              != 0)
+        -:  220:            {
+    #####:  221:              if (errno != ENOENT)
+branch  0 never executed
+branch  1 never executed
+        -:  222:                {
+    #####:  223:                  error (0, errno, _("failed to access %s"), quoteaf (dest));
+call    0 never executed
+    #####:  224:                  goto fail;
+        -:  225:                }
+    #####:  226:              force = false;
+        -:  227:            }
+    #####:  228:          else if (S_ISDIR (dest_stats.st_mode))
+branch  0 never executed
+branch  1 never executed
+        -:  229:            {
+    #####:  230:              error (0, 0, _("%s: cannot overwrite directory"), quotef (dest));
+call    0 never executed
+    #####:  231:              goto fail;
+        -:  232:            }
+    #####:  233:          else if (seen_file (dest_set, dest, &dest_stats))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  234:            {
+        -:  235:              /* The current target was created as a hard link to another
+        -:  236:                 source file.  */
+    #####:  237:              error (0, 0,
+call    0 never executed
+call    1 never executed
+        -:  238:                     _("will not overwrite just-created %s with %s"),
+        -:  239:                     quoteaf_n (0, dest), quoteaf_n (1, source));
+    #####:  240:              goto fail;
+        -:  241:            }
+        -:  242:          else
+        -:  243:            {
+        -:  244:              /* Beware removing DEST if it is the same directory entry as
+        -:  245:                 SOURCE, because in that case removing DEST can cause the
+        -:  246:                 subsequent link creation either to fail (for hard links), or
+        -:  247:                 to replace a non-symlink DEST with a self-loop (for symbolic
+        -:  248:                 links) which loses the contents of DEST.  So, when backing
+        -:  249:                 up, worry about creating hard links (since the backups cover
+        -:  250:                 the symlink case); otherwise, worry about about -f.  */
+    #####:  251:              if (backup_type != no_backups
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  252:                  ? !symbolic_link
+        -:  253:                  : remove_existing_files)
+        -:  254:                {
+        -:  255:                  /* Detect whether removing DEST would also remove SOURCE.
+        -:  256:                     If the file has only one link then both are surely the
+        -:  257:                     same directory entry.  Otherwise check whether they point
+        -:  258:                     to the same name in the same directory.  */
+    #####:  259:                  if (source_status != 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  260:                    source_status = stat (source, &source_stats);
+call    0 never executed
+    #####:  261:                  if (source_status == 0
+branch  0 never executed
+branch  1 never executed
+    #####:  262:                      && SAME_INODE (source_stats, dest_stats)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  263:                      && (source_stats.st_nlink == 1
+branch  0 never executed
+branch  1 never executed
+    #####:  264:                          || same_nameat (AT_FDCWD, source,
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  265:                                          destdir_fd, dest_base)))
+        -:  266:                    {
+    #####:  267:                      error (0, 0, _("%s and %s are the same file"),
+call    0 never executed
+call    1 never executed
+        -:  268:                             quoteaf_n (0, source), quoteaf_n (1, dest));
+    #####:  269:                      goto fail;
+        -:  270:                    }
+        -:  271:                }
+        -:  272:
+    #####:  273:              if (link_errno < 0 || link_errno == EEXIST)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  274:                {
+    #####:  275:                  if (interactive)
+branch  0 never executed
+branch  1 never executed
+        -:  276:                    {
+    #####:  277:                      fprintf (stderr, _("%s: replace %s? "),
+call    0 never executed
+call    1 never executed
+        -:  278:                               program_name, quoteaf (dest));
+    #####:  279:                      if (!yesno ())
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  280:                        {
+    #####:  281:                          free (rel_source);
+    #####:  282:                          return false;
+        -:  283:                        }
+        -:  284:                    }
+        -:  285:
+    #####:  286:                  if (backup_type != no_backups)
+branch  0 never executed
+branch  1 never executed
+        -:  287:                    {
+    #####:  288:                      backup_base = find_backup_file_name (destdir_fd,
+call    0 never executed
+        -:  289:                                                           dest_base,
+        -:  290:                                                           backup_type);
+    #####:  291:                      if (renameat (destdir_fd, dest_base,
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  292:                                    destdir_fd, backup_base)
+        -:  293:                          != 0)
+        -:  294:                        {
+    #####:  295:                          int rename_errno = errno;
+    #####:  296:                          free (backup_base);
+    #####:  297:                          backup_base = nullptr;
+    #####:  298:                          if (rename_errno != ENOENT)
+branch  0 never executed
+branch  1 never executed
+        -:  299:                            {
+    #####:  300:                              error (0, rename_errno, _("cannot backup %s"),
+call    0 never executed
+        -:  301:                                     quoteaf (dest));
+    #####:  302:                              goto fail;
+        -:  303:                            }
+    #####:  304:                          force = false;
+        -:  305:                        }
+        -:  306:                    }
+        -:  307:                }
+        -:  308:            }
+        -:  309:        }
+        -:  310:
+        -:  311:      /* If the attempt to create a link fails and we are removing or
+        -:  312:         backing up destinations, unlink the destination and try again.
+        -:  313:
+        -:  314:         On the surface, POSIX states that 'ln -f A B' unlinks B before trying
+        -:  315:         to link A to B.  But strictly following this has the counterintuitive
+        -:  316:         effect of losing the contents of B if A does not exist.  Fortunately,
+        -:  317:         POSIX 2008 clarified that an application is free to fail early if it
+        -:  318:         can prove that continuing onward cannot succeed, so we can try to
+        -:  319:         link A to B before blindly unlinking B, thus sometimes attempting to
+        -:  320:         link a second time during a successful 'ln -f A B'.
+        -:  321:
+        -:  322:         Try to unlink DEST even if we may have backed it up successfully.
+        -:  323:         In some unusual cases (when DEST and the backup are hard-links
+        -:  324:         that refer to the same file), rename succeeds and DEST remains.
+        -:  325:         If we didn't remove DEST in that case, the subsequent symlink or
+        -:  326:         link call would fail.  */
+        -:  327:      link_errno
+        1:  328:        = (symbolic_link
+    #####:  329:           ? force_symlinkat (source, destdir_fd, dest_base,
+call    0 never executed
+        -:  330:                              force, link_errno)
+       2*:  331:           : force_linkat (AT_FDCWD, source, destdir_fd, dest_base,
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 returned 100%
+        1:  332:                           logical ? AT_SYMLINK_FOLLOW : 0,
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  333:                           force, link_errno));
+        -:  334:      /* Until now, link_errno < 0 meant the link has not been tried.
+        -:  335:         From here on, link_errno < 0 means the link worked but
+        -:  336:         required removing the destination first.  */
+        -:  337:    }
+        -:  338:
+        1:  339:  if (link_errno <= 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  340:    {
+        -:  341:      /* Right after creating a hard link, do this: (note dest name and
+        -:  342:         source_stats, which are also the just-linked-destinations stats) */
+    #####:  343:      if (! symbolic_link)
+branch  0 never executed
+branch  1 never executed
+    #####:  344:        record_file (dest_set, dest, &source_stats);
+call    0 never executed
+        -:  345:
+    #####:  346:      if (verbose)
+branch  0 never executed
+branch  1 never executed
+        -:  347:        {
+    #####:  348:          char const *quoted_backup = "";
+    #####:  349:          char const *backup_sep = "";
+    #####:  350:          if (backup_base)
+branch  0 never executed
+branch  1 never executed
+        -:  351:            {
+    #####:  352:              char *backup = backup_base;
+    #####:  353:              void *alloc = nullptr;
+    #####:  354:              ptrdiff_t destdirlen = dest_base - dest;
+    #####:  355:              if (0 < destdirlen)
+branch  0 never executed
+branch  1 never executed
+        -:  356:                {
+    #####:  357:                  alloc = xmalloc (destdirlen + strlen (backup_base) + 1);
+call    0 never executed
+    #####:  358:                  backup = memcpy (alloc, dest, destdirlen);
+    #####:  359:                  strcpy (backup + destdirlen, backup_base);
+        -:  360:                }
+    #####:  361:              quoted_backup = quoteaf_n (2, backup);
+call    0 never executed
+    #####:  362:              backup_sep = " ~ ";
+    #####:  363:              free (alloc);
+        -:  364:            }
+    #####:  365:          printf ("%s%s%s %c> %s\n", quoted_backup, backup_sep,
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####:  366:                  quoteaf_n (0, dest), symbolic_link ? '-' : '=',
+branch  0 never executed
+branch  1 never executed
+        -:  367:                  quoteaf_n (1, source));
+        -:  368:        }
+        -:  369:    }
+        -:  370:  else
+        -:  371:    {
+       1*:  372:      error (0, link_errno,
+call    0 returned 100%
+call    1 returned 100%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+branch  8 taken 100% (fallthrough)
+branch  9 taken 0%
+branch 10 taken 100% (fallthrough)
+branch 11 taken 0%
+branch 12 taken 0% (fallthrough)
+branch 13 taken 100%
+branch 14 never executed
+branch 15 never executed
+branch 16 never executed
+branch 17 never executed
+        -:  373:             (symbolic_link
+        -:  374:              ? (link_errno != ENAMETOOLONG && *source
+        -:  375:                 ? _("failed to create symbolic link %s")
+        -:  376:                 : _("failed to create symbolic link %s -> %s"))
+        -:  377:              : (link_errno == EMLINK
+        -:  378:                 ? _("failed to create hard link to %.0s%s")
+        -:  379:                 : (link_errno == EDQUOT || link_errno == EEXIST
+        -:  380:                    || link_errno == ENOSPC || link_errno == EROFS)
+        -:  381:                 ? _("failed to create hard link %s")
+        -:  382:                 : _("failed to create hard link %s => %s"))),
+        -:  383:             quoteaf_n (0, dest), quoteaf_n (1, source));
+        -:  384:
+        1:  385:      if (backup_base)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  386:        {
+    #####:  387:          if (renameat (destdir_fd, backup_base, destdir_fd, dest_base) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  388:            error (0, errno, _("cannot un-backup %s"), quoteaf (dest));
+call    0 never executed
+        -:  389:        }
+        -:  390:    }
+        -:  391:
+        1:  392:  free (backup_base);
+        1:  393:  free (rel_source);
+        1:  394:  return link_errno <= 0;
+        -:  395:
+    #####:  396:fail:
+    #####:  397:  free (rel_source);
+    #####:  398:  return false;
+        -:  399:}
+        -:  400:
+        -:  401:void
+function usage called 2 returned 0% blocks executed 21%
+        2:  402:usage (int status)
+        -:  403:{
+        2:  404:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        2:  405:    emit_try_help ();
+call    0 returned 100%
+        -:  406:  else
+        -:  407:    {
+    #####:  408:      printf (_("\
+call    0 never executed
+        -:  409:Usage: %s [OPTION]... [-T] TARGET LINK_NAME\n\
+        -:  410:  or:  %s [OPTION]... TARGET\n\
+        -:  411:  or:  %s [OPTION]... TARGET... DIRECTORY\n\
+        -:  412:  or:  %s [OPTION]... -t DIRECTORY TARGET...\n\
+        -:  413:"),
+        -:  414:              program_name, program_name, program_name, program_name);
+    #####:  415:      fputs (_("\
+call    0 never executed
+        -:  416:In the 1st form, create a link to TARGET with the name LINK_NAME.\n\
+        -:  417:In the 2nd form, create a link to TARGET in the current directory.\n\
+        -:  418:In the 3rd and 4th forms, create links to each TARGET in DIRECTORY.\n\
+        -:  419:Create hard links by default, symbolic links with --symbolic.\n\
+        -:  420:By default, each destination (name of new link) should not already exist.\n\
+        -:  421:When creating hard links, each TARGET must exist.  Symbolic links\n\
+        -:  422:can hold arbitrary text; if later resolved, a relative link is\n\
+        -:  423:interpreted in relation to its parent directory.\n\
+        -:  424:"), stdout);
+        -:  425:
+    #####:  426:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  427:
+    #####:  428:      fputs (_("\
+call    0 never executed
+        -:  429:      --backup[=CONTROL]      make a backup of each existing destination file\n\
+        -:  430:  -b                          like --backup but does not accept an argument\n\
+        -:  431:  -d, -F, --directory         allow the superuser to attempt to hard link\n\
+        -:  432:                                directories (note: will probably fail due to\n\
+        -:  433:                                system restrictions, even for the superuser)\n\
+        -:  434:  -f, --force                 remove existing destination files\n\
+        -:  435:"), stdout);
+    #####:  436:      fputs (_("\
+call    0 never executed
+        -:  437:  -i, --interactive           prompt whether to remove destinations\n\
+        -:  438:  -L, --logical               dereference TARGETs that are symbolic links\n\
+        -:  439:  -n, --no-dereference        treat LINK_NAME as a normal file if\n\
+        -:  440:                                it is a symbolic link to a directory\n\
+        -:  441:  -P, --physical              make hard links directly to symbolic links\n\
+        -:  442:  -r, --relative              with -s, create links relative to link location\n\
+        -:  443:  -s, --symbolic              make symbolic links instead of hard links\n\
+        -:  444:"), stdout);
+    #####:  445:      fputs (_("\
+call    0 never executed
+        -:  446:  -S, --suffix=SUFFIX         override the usual backup suffix\n\
+        -:  447:  -t, --target-directory=DIRECTORY  specify the DIRECTORY in which to create\n\
+        -:  448:                                the links\n\
+        -:  449:  -T, --no-target-directory   treat LINK_NAME as a normal file always\n\
+        -:  450:  -v, --verbose               print name of each linked file\n\
+        -:  451:"), stdout);
+    #####:  452:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  453:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  454:      emit_backup_suffix_note ();
+call    0 never executed
+    #####:  455:      printf (_("\
+call    0 never executed
+        -:  456:\n\
+        -:  457:Using -s ignores -L and -P.  Otherwise, the last option specified controls\n\
+        -:  458:behavior when a TARGET is a symbolic link, defaulting to %s.\n\
+        -:  459:"), LINK_FOLLOWS_SYMLINKS ? "-L" : "-P");
+    #####:  460:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  461:    }
+        2:  462:  exit (status);
+        -:  463:}
+        -:  464:
+        -:  465:int
+function main called 48 returned 92% blocks executed 43%
+       48:  466:main (int argc, char **argv)
+        -:  467:{
+        -:  468:  int c;
+        -:  469:  bool ok;
+       48:  470:  bool make_backups = false;
+       48:  471:  char const *backup_suffix = nullptr;
+       48:  472:  char *version_control_string = nullptr;
+       48:  473:  char const *target_directory = nullptr;
+        -:  474:  int destdir_fd;
+       48:  475:  bool no_target_directory = false;
+        -:  476:  int n_files;
+        -:  477:  char **file;
+       48:  478:  int link_errno = -1;
+        -:  479:
+        -:  480:  initialize_main (&argc, &argv);
+       48:  481:  set_program_name (argv[0]);
+call    0 returned 100%
+       48:  482:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  483:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  484:  textdomain (PACKAGE);
+        -:  485:
+       48:  486:  atexit (close_stdin);
+call    0 returned 100%
+        -:  487:
+       48:  488:  symbolic_link = remove_existing_files = interactive = verbose
+       48:  489:    = hard_dir_link = false;
+        -:  490:
+       48:  491:  while ((c = getopt_long (argc, argv, "bdfinrst:vFLPS:T",
+call    0 returned 100%
+        -:  492:                           long_options, nullptr))
+       48:  493:         != -1)
+branch  0 taken 2%
+branch  1 taken 98% (fallthrough)
+        -:  494:    {
+        1:  495:      switch (c)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 0%
+branch 13 taken 0%
+branch 14 taken 0%
+branch 15 taken 100%
+        -:  496:        {
+    #####:  497:        case 'b':
+    #####:  498:          make_backups = true;
+    #####:  499:          if (optarg)
+branch  0 never executed
+branch  1 never executed
+    #####:  500:            version_control_string = optarg;
+    #####:  501:          break;
+    #####:  502:        case 'd':
+        -:  503:        case 'F':
+    #####:  504:          hard_dir_link = true;
+    #####:  505:          break;
+    #####:  506:        case 'f':
+    #####:  507:          remove_existing_files = true;
+    #####:  508:          interactive = false;
+    #####:  509:          break;
+    #####:  510:        case 'i':
+    #####:  511:          remove_existing_files = false;
+    #####:  512:          interactive = true;
+    #####:  513:          break;
+    #####:  514:        case 'L':
+    #####:  515:          logical = true;
+    #####:  516:          break;
+    #####:  517:        case 'n':
+    #####:  518:          dereference_dest_dir_symlinks = false;
+    #####:  519:          break;
+    #####:  520:        case 'P':
+    #####:  521:          logical = false;
+    #####:  522:          break;
+    #####:  523:        case 'r':
+    #####:  524:          relative = true;
+    #####:  525:          break;
+    #####:  526:        case 's':
+    #####:  527:          symbolic_link = true;
+    #####:  528:          break;
+    #####:  529:        case 't':
+    #####:  530:          if (target_directory)
+branch  0 never executed
+branch  1 never executed
+    #####:  531:            error (EXIT_FAILURE, 0, _("multiple target directories specified"));
+call    0 never executed
+        -:  532:          else
+        -:  533:            {
+        -:  534:              struct stat st;
+    #####:  535:              if (stat (optarg, &st) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  536:                error (EXIT_FAILURE, errno, _("failed to access %s"),
+call    0 never executed
+call    1 never executed
+        -:  537:                       quoteaf (optarg));
+    #####:  538:              if (! S_ISDIR (st.st_mode))
+branch  0 never executed
+branch  1 never executed
+    #####:  539:                error (EXIT_FAILURE, 0, _("target %s is not a directory"),
+call    0 never executed
+call    1 never executed
+        -:  540:                       quoteaf (optarg));
+        -:  541:            }
+    #####:  542:          target_directory = optarg;
+    #####:  543:          break;
+    #####:  544:        case 'T':
+    #####:  545:          no_target_directory = true;
+    #####:  546:          break;
+    #####:  547:        case 'v':
+    #####:  548:          verbose = true;
+    #####:  549:          break;
+    #####:  550:        case 'S':
+    #####:  551:          make_backups = true;
+    #####:  552:          backup_suffix = optarg;
+    #####:  553:          break;
+    #####:  554:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  555:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+        1:  556:        default:
+        1:  557:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  558:          break;
+        -:  559:        }
+        -:  560:    }
+        -:  561:
+       47:  562:  n_files = argc - optind;
+       47:  563:  file = argv + optind;
+        -:  564:
+       47:  565:  if (n_files <= 0)
+branch  0 taken 2% (fallthrough)
+branch  1 taken 98%
+        -:  566:    {
+        -:  567:      error (0, 0, _("missing file operand"));
+        1:  568:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  569:    }
+        -:  570:
+      46*:  571:  if (relative && !symbolic_link)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  572:    error (EXIT_FAILURE, 0, _("cannot do --relative without --symbolic"));
+call    0 never executed
+        -:  573:
+       46:  574:  if (!hard_dir_link)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  575:    {
+       46:  576:      priv_set_remove_linkdir ();
+call    0 returned 100%
+       46:  577:      beware_hard_dir_link = !cannot_unlink_dir ();
+        -:  578:    }
+        -:  579:
+       46:  580:  if (no_target_directory)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  581:    {
+    #####:  582:      if (target_directory)
+branch  0 never executed
+branch  1 never executed
+    #####:  583:        error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  584:               _("cannot combine --target-directory "
+        -:  585:                 "and --no-target-directory"));
+    #####:  586:      if (n_files != 2)
+branch  0 never executed
+branch  1 never executed
+        -:  587:        {
+    #####:  588:          if (n_files < 2)
+branch  0 never executed
+branch  1 never executed
+    #####:  589:            error (0, 0,
+call    0 never executed
+        -:  590:                   _("missing destination file operand after %s"),
+        -:  591:                   quoteaf (file[0]));
+        -:  592:          else
+    #####:  593:            error (0, 0, _("extra operand %s"), quoteaf (file[2]));
+call    0 never executed
+    #####:  594:          usage (EXIT_FAILURE);
+call    0 never executed
+        -:  595:        }
+        -:  596:    }
+       46:  597:  else if (n_files < 2 && !target_directory)
+branch  0 taken 43% (fallthrough)
+branch  1 taken 57%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        -:  598:    {
+       20:  599:      target_directory = ".";
+       20:  600:      destdir_fd = AT_FDCWD;
+        -:  601:    }
+        -:  602:  else
+        -:  603:    {
+       26:  604:      if (n_files == 2 && !target_directory)
+branch  0 taken 77% (fallthrough)
+branch  1 taken 23%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+       20:  605:        link_errno = atomic_link (file[0], AT_FDCWD, file[1]);
+call    0 returned 100%
+       26:  606:      if (link_errno < 0 || link_errno == EEXIST || link_errno == ENOTDIR
+branch  0 taken 77% (fallthrough)
+branch  1 taken 23%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+       20:  607:          || link_errno == EINVAL)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  608:        {
+        6:  609:          char const *d
+       6*:  610:            = target_directory ? target_directory : file[n_files - 1];
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        6:  611:          int flags = (O_PATHSEARCH | O_DIRECTORY
+       6*:  612:                       | (dereference_dest_dir_symlinks ? 0 : O_NOFOLLOW));
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        6:  613:          destdir_fd = openat_safer (AT_FDCWD, d, flags);
+call    0 returned 100%
+        6:  614:          int err = errno;
+        -:  615:          if (!O_DIRECTORY && 0 <= destdir_fd)
+        -:  616:            {
+        -:  617:              struct stat st;
+        -:  618:              err = (fstat (destdir_fd, &st) != 0 ? errno
+        -:  619:                     : S_ISDIR (st.st_mode) ? 0 : ENOTDIR);
+        -:  620:              if (err != 0)
+        -:  621:                {
+        -:  622:                  close (destdir_fd);
+        -:  623:                  destdir_fd = -1;
+        -:  624:                }
+        -:  625:            }
+        6:  626:          if (0 <= destdir_fd)
+branch  0 taken 67% (fallthrough)
+branch  1 taken 33%
+        -:  627:            {
+        4:  628:              n_files -= !target_directory;
+        4:  629:              target_directory = d;
+        -:  630:            }
+       2*:  631:          else if (! (n_files == 2 && !target_directory))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+       2*:  632:            error (EXIT_FAILURE, err, _("target %s"), quoteaf (d));
+call    0 returned 100%
+call    1 never executed
+        -:  633:        }
+        -:  634:    }
+        -:  635:
+       44:  636:  backup_type = (make_backups
+    #####:  637:                 ? xget_version (_("backup type"), version_control_string)
+call    0 never executed
+       44:  638:                 : no_backups);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+       44:  639:  set_simple_backup_suffix (backup_suffix);
+call    0 returned 100%
+        -:  640:
+        -:  641:
+       44:  642:  if (target_directory)
+branch  0 taken 55% (fallthrough)
+branch  1 taken 45%
+        -:  643:    {
+        -:  644:      /* Create the data structure we'll use to record which hard links we
+        -:  645:         create.  Used to ensure that ln detects an obscure corner case that
+        -:  646:         might result in user data loss.  Create it only if needed.  */
+       24:  647:      if (2 <= n_files
+branch  0 taken 17% (fallthrough)
+branch  1 taken 83%
+        4:  648:          && remove_existing_files
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  649:          /* Don't bother trying to protect symlinks, since ln clobbering
+        -:  650:             a just-created symlink won't ever lead to real data loss.  */
+    #####:  651:          && ! symbolic_link
+branch  0 never executed
+branch  1 never executed
+        -:  652:          /* No destination hard link can be clobbered when making
+        -:  653:             numbered backups.  */
+    #####:  654:          && backup_type != numbered_backups)
+branch  0 never executed
+branch  1 never executed
+        -:  655:        {
+    #####:  656:          dest_set = hash_initialize (DEST_INFO_INITIAL_CAPACITY,
+call    0 never executed
+        -:  657:                                      nullptr,
+        -:  658:                                      triple_hash,
+        -:  659:                                      triple_compare,
+        -:  660:                                      triple_free);
+    #####:  661:          if (dest_set == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  662:            xalloc_die ();
+call    0 never executed
+        -:  663:        }
+        -:  664:
+       24:  665:      ok = true;
+       52:  666:      for (int i = 0; i < n_files; ++i)
+branch  0 taken 54%
+branch  1 taken 46%
+        -:  667:        {
+        -:  668:          char *dest_base;
+       28:  669:          char *dest = file_name_concat (target_directory,
+       28:  670:                                         last_component (file[i]),
+call    0 returned 100%
+        -:  671:                                         &dest_base);
+       28:  672:          strip_trailing_slashes (dest_base);
+call    0 returned 100%
+       28:  673:          ok &= do_link (file[i], destdir_fd, dest_base, dest, -1);
+call    0 returned 100%
+       28:  674:          free (dest);
+        -:  675:        }
+        -:  676:    }
+        -:  677:  else
+       20:  678:    ok = do_link (file[0], AT_FDCWD, file[1], file[1], link_errno);
+call    0 returned 100%
+        -:  679:
+       44:  680:  main_exit (ok ? EXIT_SUCCESS : EXIT_FAILURE);
+        -:  681:}

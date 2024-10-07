@@ -1,0 +1,867 @@
+        -:    0:Source:src/cut.c
+        -:    0:Graph:cut.gcno
+        -:    0:Data:cut.gcda
+        -:    0:Runs:6
+        -:    1:/* cut - remove parts of lines of files
+        -:    2:   Copyright (C) 1997-2023 Free Software Foundation, Inc.
+        -:    3:   Copyright (C) 1984 David M. Ihnat
+        -:    4:
+        -:    5:   This program is free software: you can redistribute it and/or modify
+        -:    6:   it under the terms of the GNU General Public License as published by
+        -:    7:   the Free Software Foundation, either version 3 of the License, or
+        -:    8:   (at your option) any later version.
+        -:    9:
+        -:   10:   This program is distributed in the hope that it will be useful,
+        -:   11:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   12:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   13:   GNU General Public License for more details.
+        -:   14:
+        -:   15:   You should have received a copy of the GNU General Public License
+        -:   16:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   17:
+        -:   18:/* Written by David Ihnat.  */
+        -:   19:
+        -:   20:/* POSIX changes, bug fixes, long-named options, and cleanup
+        -:   21:   by David MacKenzie <djm@gnu.ai.mit.edu>.
+        -:   22:
+        -:   23:   Rewrite cut_fields and cut_bytes -- Jim Meyering.  */
+        -:   24:
+        -:   25:#include <config.h>
+        -:   26:
+        -:   27:#include <stdio.h>
+        -:   28:#include <getopt.h>
+        -:   29:#include <sys/types.h>
+        -:   30:#include "system.h"
+        -:   31:
+        -:   32:#include "assure.h"
+        -:   33:#include "fadvise.h"
+        -:   34:#include "getndelim2.h"
+        -:   35:
+        -:   36:#include "set-fields.h"
+        -:   37:
+        -:   38:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   39:#define PROGRAM_NAME "cut"
+        -:   40:
+        -:   41:#define AUTHORS \
+        -:   42:  proper_name ("David M. Ihnat"), \
+        -:   43:  proper_name ("David MacKenzie"), \
+        -:   44:  proper_name ("Jim Meyering")
+        -:   45:
+        -:   46:#define FATAL_ERROR(Message)						\
+        -:   47:  do									\
+        -:   48:    {									\
+        -:   49:      error (0, 0, (Message));						\
+        -:   50:      usage (EXIT_FAILURE);						\
+        -:   51:    }									\
+        -:   52:  while (0)
+        -:   53:
+        -:   54:
+        -:   55:/* Pointer inside RP.  When checking if a byte or field is selected
+        -:   56:   by a finite range, we check if it is between CURRENT_RP.LO
+        -:   57:   and CURRENT_RP.HI.  If the byte or field index is greater than
+        -:   58:   CURRENT_RP.HI then we make CURRENT_RP to point to the next range pair.  */
+        -:   59:static struct field_range_pair *current_rp;
+        -:   60:
+        -:   61:/* This buffer is used to support the semantics of the -s option
+        -:   62:   (or lack of same) when the specified field list includes (does
+        -:   63:   not include) the first field.  In both of those cases, the entire
+        -:   64:   first field must be read into this buffer to determine whether it
+        -:   65:   is followed by a delimiter or a newline before any of it may be
+        -:   66:   output.  Otherwise, cut_fields can do the job without using this
+        -:   67:   buffer.  */
+        -:   68:static char *field_1_buffer;
+        -:   69:
+        -:   70:/* The number of bytes allocated for FIELD_1_BUFFER.  */
+        -:   71:static size_t field_1_bufsize;
+        -:   72:
+        -:   73:/* If true, do not output lines containing no delimiter characters.
+        -:   74:   Otherwise, all such lines are printed.  This option is valid only
+        -:   75:   with field mode.  */
+        -:   76:static bool suppress_non_delimited;
+        -:   77:
+        -:   78:/* If true, print all bytes, characters, or fields _except_
+        -:   79:   those that were specified.  */
+        -:   80:static bool complement;
+        -:   81:
+        -:   82:/* The delimiter character for field mode.  */
+        -:   83:static unsigned char delim;
+        -:   84:
+        -:   85:/* The delimiter for each line/record.  */
+        -:   86:static unsigned char line_delim = '\n';
+        -:   87:
+        -:   88:/* The length of output_delimiter_string.  */
+        -:   89:static size_t output_delimiter_length;
+        -:   90:
+        -:   91:/* The output field separator string.  Defaults to the 1-character
+        -:   92:   string consisting of the input delimiter.  */
+        -:   93:static char *output_delimiter_string;
+        -:   94:
+        -:   95:/* The output delimiter string contents, if the default.  */
+        -:   96:static char output_delimiter_default[1];
+        -:   97:
+        -:   98:/* True if we have ever read standard input.  */
+        -:   99:static bool have_read_stdin;
+        -:  100:
+        -:  101:/* For long options that have no equivalent short option, use a
+        -:  102:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:  103:enum
+        -:  104:{
+        -:  105:  OUTPUT_DELIMITER_OPTION = CHAR_MAX + 1,
+        -:  106:  COMPLEMENT_OPTION
+        -:  107:};
+        -:  108:
+        -:  109:static struct option const longopts[] =
+        -:  110:{
+        -:  111:  {"bytes", required_argument, nullptr, 'b'},
+        -:  112:  {"characters", required_argument, nullptr, 'c'},
+        -:  113:  {"fields", required_argument, nullptr, 'f'},
+        -:  114:  {"delimiter", required_argument, nullptr, 'd'},
+        -:  115:  {"only-delimited", no_argument, nullptr, 's'},
+        -:  116:  {"output-delimiter", required_argument, nullptr, OUTPUT_DELIMITER_OPTION},
+        -:  117:  {"complement", no_argument, nullptr, COMPLEMENT_OPTION},
+        -:  118:  {"zero-terminated", no_argument, nullptr, 'z'},
+        -:  119:  {GETOPT_HELP_OPTION_DECL},
+        -:  120:  {GETOPT_VERSION_OPTION_DECL},
+        -:  121:  {nullptr, 0, nullptr, 0}
+        -:  122:};
+        -:  123:
+        -:  124:void
+function usage called 6 returned 0% blocks executed 18%
+        6:  125:usage (int status)
+        -:  126:{
+        6:  127:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        6:  128:    emit_try_help ();
+call    0 returned 100%
+        -:  129:  else
+        -:  130:    {
+    #####:  131:      printf (_("\
+call    0 never executed
+        -:  132:Usage: %s OPTION... [FILE]...\n\
+        -:  133:"),
+        -:  134:              program_name);
+    #####:  135:      fputs (_("\
+call    0 never executed
+        -:  136:Print selected parts of lines from each FILE to standard output.\n\
+        -:  137:"), stdout);
+        -:  138:
+    #####:  139:      emit_stdin_note ();
+call    0 never executed
+    #####:  140:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  141:
+    #####:  142:      fputs (_("\
+call    0 never executed
+        -:  143:  -b, --bytes=LIST        select only these bytes\n\
+        -:  144:  -c, --characters=LIST   select only these characters\n\
+        -:  145:  -d, --delimiter=DELIM   use DELIM instead of TAB for field delimiter\n\
+        -:  146:"), stdout);
+    #####:  147:      fputs (_("\
+call    0 never executed
+        -:  148:  -f, --fields=LIST       select only these fields;  also print any line\n\
+        -:  149:                            that contains no delimiter character, unless\n\
+        -:  150:                            the -s option is specified\n\
+        -:  151:  -n                      (ignored)\n\
+        -:  152:"), stdout);
+    #####:  153:      fputs (_("\
+call    0 never executed
+        -:  154:      --complement        complement the set of selected bytes, characters\n\
+        -:  155:                            or fields\n\
+        -:  156:"), stdout);
+    #####:  157:      fputs (_("\
+call    0 never executed
+        -:  158:  -s, --only-delimited    do not print lines not containing delimiters\n\
+        -:  159:      --output-delimiter=STRING  use STRING as the output delimiter\n\
+        -:  160:                            the default is to use the input delimiter\n\
+        -:  161:"), stdout);
+    #####:  162:      fputs (_("\
+call    0 never executed
+        -:  163:  -z, --zero-terminated   line delimiter is NUL, not newline\n\
+        -:  164:"), stdout);
+    #####:  165:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  166:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  167:      fputs (_("\
+call    0 never executed
+        -:  168:\n\
+        -:  169:Use one, and only one of -b, -c or -f.  Each LIST is made up of one\n\
+        -:  170:range, or many ranges separated by commas.  Selected input is written\n\
+        -:  171:in the same order that it is read, and is written exactly once.\n\
+        -:  172:"), stdout);
+    #####:  173:      fputs (_("\
+call    0 never executed
+        -:  174:Each range is one of:\n\
+        -:  175:\n\
+        -:  176:  N     N'th byte, character or field, counted from 1\n\
+        -:  177:  N-    from N'th byte, character or field, to end of line\n\
+        -:  178:  N-M   from N'th to M'th (included) byte, character or field\n\
+        -:  179:  -M    from first to M'th (included) byte, character or field\n\
+        -:  180:"), stdout);
+    #####:  181:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  182:    }
+        6:  183:  exit (status);
+        -:  184:}
+        -:  185:
+        -:  186:
+        -:  187:/* Increment *ITEM_IDX (i.e., a field or byte index),
+        -:  188:   and if required CURRENT_RP.  */
+        -:  189:
+        -:  190:static inline void
+function next_item called 0 returned 0% blocks executed 0%
+    #####:  191:next_item (uintmax_t *item_idx)
+        -:  192:{
+    #####:  193:  (*item_idx)++;
+    #####:  194:  if ((*item_idx) > current_rp->hi)
+branch  0 never executed
+branch  1 never executed
+    #####:  195:    current_rp++;
+    #####:  196:}
+        -:  197:
+        -:  198:/* Return nonzero if the K'th field or byte is printable.  */
+        -:  199:
+        -:  200:static inline bool
+function print_kth called 0 returned 0% blocks executed 0%
+    #####:  201:print_kth (uintmax_t k)
+        -:  202:{
+    #####:  203:  return current_rp->lo <= k;
+        -:  204:}
+        -:  205:
+        -:  206:/* Return nonzero if K'th byte is the beginning of a range.  */
+        -:  207:
+        -:  208:static inline bool
+function is_range_start_index called 0 returned 0% blocks executed 0%
+    #####:  209:is_range_start_index (uintmax_t k)
+        -:  210:{
+    #####:  211:  return k == current_rp->lo;
+        -:  212:}
+        -:  213:
+        -:  214:/* Read from stream STREAM, printing to standard output any selected bytes.  */
+        -:  215:
+        -:  216:static void
+function cut_bytes called 0 returned 0% blocks executed 0%
+    #####:  217:cut_bytes (FILE *stream)
+        -:  218:{
+        -:  219:  uintmax_t byte_idx;	/* Number of bytes in the line so far.  */
+        -:  220:  /* Whether to begin printing delimiters between ranges for the current line.
+        -:  221:     Set after we've begun printing data corresponding to the first range.  */
+        -:  222:  bool print_delimiter;
+        -:  223:
+    #####:  224:  byte_idx = 0;
+    #####:  225:  print_delimiter = false;
+    #####:  226:  current_rp = frp;
+        -:  227:  while (true)
+    #####:  228:    {
+        -:  229:      int c;		/* Each character from the file.  */
+        -:  230:
+    #####:  231:      c = getc (stream);
+call    0 never executed
+        -:  232:
+    #####:  233:      if (c == line_delim)
+branch  0 never executed
+branch  1 never executed
+        -:  234:        {
+    #####:  235:          if (putchar (c) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  236:            write_error ();
+call    0 never executed
+    #####:  237:          byte_idx = 0;
+    #####:  238:          print_delimiter = false;
+    #####:  239:          current_rp = frp;
+        -:  240:        }
+    #####:  241:      else if (c == EOF)
+branch  0 never executed
+branch  1 never executed
+        -:  242:        {
+    #####:  243:          if (byte_idx > 0)
+branch  0 never executed
+branch  1 never executed
+        -:  244:          {
+    #####:  245:            if (putchar (line_delim) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  246:              write_error ();
+call    0 never executed
+        -:  247:          }
+    #####:  248:          break;
+        -:  249:        }
+        -:  250:      else
+        -:  251:        {
+    #####:  252:          next_item (&byte_idx);
+call    0 never executed
+    #####:  253:          if (print_kth (byte_idx))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  254:            {
+    #####:  255:              if (output_delimiter_string != output_delimiter_default)
+branch  0 never executed
+branch  1 never executed
+        -:  256:                {
+    #####:  257:                  if (print_delimiter && is_range_start_index (byte_idx))
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  258:                    {
+    #####:  259:                      if (fwrite (output_delimiter_string, sizeof (char),
+call    0 never executed
+        -:  260:                                  output_delimiter_length, stdout)
+    #####:  261:                          != output_delimiter_length)
+branch  0 never executed
+branch  1 never executed
+    #####:  262:                        write_error ();
+call    0 never executed
+        -:  263:                    }
+    #####:  264:                  print_delimiter = true;
+        -:  265:                }
+        -:  266:
+    #####:  267:              if (putchar (c) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  268:                write_error ();
+call    0 never executed
+        -:  269:            }
+        -:  270:        }
+        -:  271:    }
+    #####:  272:}
+        -:  273:
+        -:  274:/* Read from stream STREAM, printing to standard output any selected fields.  */
+        -:  275:
+        -:  276:static void
+function cut_fields called 0 returned 0% blocks executed 0%
+    #####:  277:cut_fields (FILE *stream)
+        -:  278:{
+        -:  279:  int c;	/* Each character from the file.  */
+    #####:  280:  uintmax_t field_idx = 1;
+    #####:  281:  bool found_any_selected_field = false;
+        -:  282:  bool buffer_first_field;
+        -:  283:
+    #####:  284:  current_rp = frp;
+        -:  285:
+    #####:  286:  c = getc (stream);
+call    0 never executed
+    #####:  287:  if (c == EOF)
+branch  0 never executed
+branch  1 never executed
+    #####:  288:    return;
+        -:  289:
+    #####:  290:  ungetc (c, stream);
+call    0 never executed
+    #####:  291:  c = 0;
+        -:  292:
+        -:  293:  /* To support the semantics of the -s flag, we may have to buffer
+        -:  294:     all of the first field to determine whether it is 'delimited.'
+        -:  295:     But that is unnecessary if all non-delimited lines must be printed
+        -:  296:     and the first field has been selected, or if non-delimited lines
+        -:  297:     must be suppressed and the first field has *not* been selected.
+        -:  298:     That is because a non-delimited line has exactly one field.  */
+    #####:  299:  buffer_first_field = (suppress_non_delimited ^ !print_kth (1));
+call    0 never executed
+        -:  300:
+        -:  301:  while (true)
+    #####:  302:    {
+    #####:  303:      if (field_idx == 1 && buffer_first_field)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  304:        {
+        -:  305:          ssize_t len;
+        -:  306:          size_t n_bytes;
+        -:  307:
+    #####:  308:          len = getndelim2 (&field_1_buffer, &field_1_bufsize, 0,
+call    0 never executed
+        -:  309:                            GETNLINE_NO_LIMIT, delim, line_delim, stream);
+    #####:  310:          if (len < 0)
+branch  0 never executed
+branch  1 never executed
+        -:  311:            {
+    #####:  312:              free (field_1_buffer);
+    #####:  313:              field_1_buffer = nullptr;
+    #####:  314:              if (ferror (stream) || feof (stream))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+call    3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  315:                break;
+    #####:  316:              xalloc_die ();
+call    0 never executed
+        -:  317:            }
+        -:  318:
+    #####:  319:          n_bytes = len;
+    #####:  320:          affirm (n_bytes != 0);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  321:
+    #####:  322:          c = 0;
+        -:  323:
+        -:  324:          /* If the first field extends to the end of line (it is not
+        -:  325:             delimited) and we are printing all non-delimited lines,
+        -:  326:             print this one.  */
+    #####:  327:          if (to_uchar (field_1_buffer[n_bytes - 1]) != delim)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  328:            {
+    #####:  329:              if (suppress_non_delimited)
+branch  0 never executed
+branch  1 never executed
+        -:  330:                {
+        -:  331:                  /* Empty.  */
+        -:  332:                }
+        -:  333:              else
+        -:  334:                {
+    #####:  335:                  if (fwrite (field_1_buffer, sizeof (char), n_bytes, stdout)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  336:                      != n_bytes)
+    #####:  337:                    write_error ();
+call    0 never executed
+        -:  338:                  /* Make sure the output line is newline terminated.  */
+    #####:  339:                  if (field_1_buffer[n_bytes - 1] != line_delim)
+branch  0 never executed
+branch  1 never executed
+        -:  340:                    {
+    #####:  341:                      if (putchar (line_delim) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  342:                        write_error ();
+call    0 never executed
+        -:  343:                    }
+    #####:  344:                  c = line_delim;
+        -:  345:                }
+    #####:  346:              continue;
+        -:  347:            }
+        -:  348:
+    #####:  349:          if (print_kth (1))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  350:            {
+        -:  351:              /* Print the field, but not the trailing delimiter.  */
+    #####:  352:              if (fwrite (field_1_buffer, sizeof (char), n_bytes - 1, stdout)
+call    0 never executed
+    #####:  353:                  != n_bytes - 1)
+branch  0 never executed
+branch  1 never executed
+    #####:  354:                write_error ();
+call    0 never executed
+        -:  355:
+        -:  356:              /* With -d$'\n' don't treat the last '\n' as a delimiter.  */
+    #####:  357:              if (delim == line_delim)
+branch  0 never executed
+branch  1 never executed
+        -:  358:                {
+    #####:  359:                  int last_c = getc (stream);
+call    0 never executed
+    #####:  360:                  if (last_c != EOF)
+branch  0 never executed
+branch  1 never executed
+        -:  361:                    {
+    #####:  362:                      ungetc (last_c, stream);
+call    0 never executed
+    #####:  363:                      found_any_selected_field = true;
+        -:  364:                    }
+        -:  365:                }
+        -:  366:              else
+        -:  367:                {
+    #####:  368:                  found_any_selected_field = true;
+        -:  369:                }
+        -:  370:            }
+    #####:  371:          next_item (&field_idx);
+call    0 never executed
+        -:  372:        }
+        -:  373:
+    #####:  374:      int prev_c = c;
+        -:  375:
+    #####:  376:      if (print_kth (field_idx))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  377:        {
+    #####:  378:          if (found_any_selected_field)
+branch  0 never executed
+branch  1 never executed
+        -:  379:            {
+    #####:  380:              if (fwrite (output_delimiter_string, sizeof (char),
+call    0 never executed
+        -:  381:                          output_delimiter_length, stdout)
+    #####:  382:                  != output_delimiter_length)
+branch  0 never executed
+branch  1 never executed
+    #####:  383:                write_error ();
+call    0 never executed
+        -:  384:            }
+    #####:  385:          found_any_selected_field = true;
+        -:  386:
+    #####:  387:          while ((c = getc (stream)) != delim && c != line_delim && c != EOF)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+        -:  388:            {
+    #####:  389:              if (putchar (c) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  390:                write_error ();
+call    0 never executed
+    #####:  391:              prev_c = c;
+        -:  392:            }
+        -:  393:        }
+        -:  394:      else
+        -:  395:        {
+    #####:  396:          while ((c = getc (stream)) != delim && c != line_delim && c != EOF)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+    #####:  397:            prev_c = c;
+        -:  398:        }
+        -:  399:
+        -:  400:      /* With -d$'\n' don't treat the last '\n' as a delimiter.  */
+    #####:  401:      if (delim == line_delim && c == delim)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  402:        {
+    #####:  403:          int last_c = getc (stream);
+call    0 never executed
+    #####:  404:          if (last_c != EOF)
+branch  0 never executed
+branch  1 never executed
+    #####:  405:            ungetc (last_c, stream);
+call    0 never executed
+        -:  406:          else
+    #####:  407:            c = last_c;
+        -:  408:        }
+        -:  409:
+    #####:  410:      if (c == delim)
+branch  0 never executed
+branch  1 never executed
+    #####:  411:        next_item (&field_idx);
+call    0 never executed
+    #####:  412:      else if (c == line_delim || c == EOF)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  413:        {
+    #####:  414:          if (found_any_selected_field
+branch  0 never executed
+branch  1 never executed
+    #####:  415:              || !(suppress_non_delimited && field_idx == 1))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  416:            {
+        -:  417:              /* Make sure the output line is newline terminated.  */
+    #####:  418:              if (c == line_delim || prev_c != line_delim
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  419:                  || delim == line_delim)
+branch  0 never executed
+branch  1 never executed
+        -:  420:                {
+    #####:  421:                  if (putchar (line_delim) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  422:                    write_error ();
+call    0 never executed
+        -:  423:                }
+        -:  424:            }
+    #####:  425:          if (c == EOF)
+branch  0 never executed
+branch  1 never executed
+    #####:  426:            break;
+        -:  427:
+        -:  428:          /* Start processing the next input line.  */
+    #####:  429:          field_idx = 1;
+    #####:  430:          current_rp = frp;
+    #####:  431:          found_any_selected_field = false;
+        -:  432:        }
+        -:  433:    }
+        -:  434:}
+        -:  435:
+        -:  436:/* Process file FILE to standard output, using CUT_STREAM.
+        -:  437:   Return true if successful.  */
+        -:  438:
+        -:  439:static bool
+function cut_file called 0 returned 0% blocks executed 0%
+    #####:  440:cut_file (char const *file, void (*cut_stream) (FILE *))
+        -:  441:{
+        -:  442:  FILE *stream;
+        -:  443:
+    #####:  444:  if (STREQ (file, "-"))
+branch  0 never executed
+branch  1 never executed
+        -:  445:    {
+    #####:  446:      have_read_stdin = true;
+    #####:  447:      stream = stdin;
+    #####:  448:      assume (stream);  /* Pacify GCC bug#109613.  */
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  449:    }
+        -:  450:  else
+        -:  451:    {
+    #####:  452:      stream = fopen (file, "r");
+call    0 never executed
+    #####:  453:      if (stream == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  454:        {
+    #####:  455:          error (0, errno, "%s", quotef (file));
+call    0 never executed
+    #####:  456:          return false;
+        -:  457:        }
+        -:  458:    }
+        -:  459:
+    #####:  460:  fadvise (stream, FADVISE_SEQUENTIAL);
+call    0 never executed
+        -:  461:
+    #####:  462:  cut_stream (stream);
+call    0 never executed
+        -:  463:
+    #####:  464:  int err = errno;
+    #####:  465:  if (!ferror (stream))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  466:    err = 0;
+    #####:  467:  if (STREQ (file, "-"))
+branch  0 never executed
+branch  1 never executed
+    #####:  468:    clearerr (stream);		/* Also clear EOF.  */
+call    0 never executed
+    #####:  469:  else if (fclose (stream) == EOF)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  470:    err = errno;
+    #####:  471:  if (err)
+branch  0 never executed
+branch  1 never executed
+        -:  472:    {
+    #####:  473:      error (0, err, "%s", quotef (file));
+call    0 never executed
+    #####:  474:      return false;
+        -:  475:    }
+    #####:  476:  return true;
+        -:  477:}
+        -:  478:
+        -:  479:int
+function main called 6 returned 0% blocks executed 17%
+        6:  480:main (int argc, char **argv)
+        -:  481:{
+        -:  482:  int optc;
+        -:  483:  bool ok;
+        6:  484:  bool delim_specified = false;
+        6:  485:  bool byte_mode = false;
+        6:  486:  char *spec_list_string = nullptr;
+        -:  487:
+        -:  488:  initialize_main (&argc, &argv);
+        6:  489:  set_program_name (argv[0]);
+call    0 returned 100%
+        6:  490:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  491:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  492:  textdomain (PACKAGE);
+        -:  493:
+        6:  494:  atexit (close_stdout);
+call    0 returned 100%
+        -:  495:
+        -:  496:  /* By default, all non-delimited lines are printed.  */
+        6:  497:  suppress_non_delimited = false;
+        -:  498:
+        6:  499:  delim = '\0';
+        6:  500:  have_read_stdin = false;
+        -:  501:
+        6:  502:  while ((optc = getopt_long (argc, argv, "b:c:d:f:nsz", longopts, nullptr))
+call    0 returned 100%
+        6:  503:         != -1)
+branch  0 taken 17%
+branch  1 taken 83% (fallthrough)
+        -:  504:    {
+        1:  505:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 100%
+        -:  506:        {
+    #####:  507:        case 'b':
+        -:  508:        case 'c':
+        -:  509:          /* Build the byte list.  */
+    #####:  510:          byte_mode = true;
+        -:  511:          FALLTHROUGH;
+    #####:  512:        case 'f':
+        -:  513:          /* Build the field list.  */
+    #####:  514:          if (spec_list_string)
+branch  0 never executed
+branch  1 never executed
+    #####:  515:            FATAL_ERROR (_("only one list may be specified"));
+call    0 never executed
+    #####:  516:          spec_list_string = optarg;
+    #####:  517:          break;
+        -:  518:
+    #####:  519:        case 'd':
+        -:  520:          /* New delimiter.  */
+        -:  521:          /* Interpret -d '' to mean 'use the NUL byte as the delimiter.'  */
+    #####:  522:          if (optarg[0] != '\0' && optarg[1] != '\0')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  523:            FATAL_ERROR (_("the delimiter must be a single character"));
+call    0 never executed
+    #####:  524:          delim = optarg[0];
+    #####:  525:          delim_specified = true;
+    #####:  526:          break;
+        -:  527:
+    #####:  528:        case OUTPUT_DELIMITER_OPTION:
+        -:  529:          /* Interpret --output-delimiter='' to mean
+        -:  530:             'use the NUL byte as the delimiter.'  */
+    #####:  531:          output_delimiter_length = (optarg[0] == '\0'
+    #####:  532:                                     ? 1 : strlen (optarg));
+branch  0 never executed
+branch  1 never executed
+    #####:  533:          output_delimiter_string = optarg;
+    #####:  534:          break;
+        -:  535:
+    #####:  536:        case 'n':
+    #####:  537:          break;
+        -:  538:
+    #####:  539:        case 's':
+    #####:  540:          suppress_non_delimited = true;
+    #####:  541:          break;
+        -:  542:
+    #####:  543:        case 'z':
+    #####:  544:          line_delim = '\0';
+    #####:  545:          break;
+        -:  546:
+    #####:  547:        case COMPLEMENT_OPTION:
+    #####:  548:          complement = true;
+    #####:  549:          break;
+        -:  550:
+    #####:  551:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  552:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+call    4 never executed
+        1:  553:        default:
+        1:  554:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  555:        }
+        -:  556:    }
+        -:  557:
+        5:  558:  if (!spec_list_string)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        5:  559:    FATAL_ERROR (_("you must specify a list of bytes, characters, or fields"));
+call    0 returned 0%
+        -:  560:
+    #####:  561:  if (byte_mode)
+branch  0 never executed
+branch  1 never executed
+        -:  562:    {
+    #####:  563:      if (delim_specified)
+branch  0 never executed
+branch  1 never executed
+    #####:  564:        FATAL_ERROR (_("an input delimiter may be specified only\
+call    0 never executed
+        -:  565: when operating on fields"));
+        -:  566:
+    #####:  567:      if (suppress_non_delimited)
+branch  0 never executed
+branch  1 never executed
+    #####:  568:        FATAL_ERROR (_("suppressing non-delimited lines makes sense\n\
+call    0 never executed
+        -:  569:\tonly when operating on fields"));
+        -:  570:    }
+        -:  571:
+    #####:  572:  set_fields (spec_list_string,
+    #####:  573:              ((byte_mode ? SETFLD_ERRMSG_USE_POS : 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  574:               | (complement ? SETFLD_COMPLEMENT : 0)));
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  575:
+    #####:  576:  if (!delim_specified)
+branch  0 never executed
+branch  1 never executed
+    #####:  577:    delim = '\t';
+        -:  578:
+    #####:  579:  if (output_delimiter_string == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  580:    {
+    #####:  581:      output_delimiter_default[0] = delim;
+    #####:  582:      output_delimiter_string = output_delimiter_default;
+    #####:  583:      output_delimiter_length = 1;
+        -:  584:    }
+        -:  585:
+    #####:  586:  void (*cut_stream) (FILE *) = byte_mode ? cut_bytes : cut_fields;
+branch  0 never executed
+branch  1 never executed
+    #####:  587:  if (optind == argc)
+branch  0 never executed
+branch  1 never executed
+    #####:  588:    ok = cut_file ("-", cut_stream);
+call    0 never executed
+        -:  589:  else
+    #####:  590:    for (ok = true; optind < argc; optind++)
+branch  0 never executed
+branch  1 never executed
+    #####:  591:      ok &= cut_file (argv[optind], cut_stream);
+call    0 never executed
+        -:  592:
+        -:  593:
+    #####:  594:  if (have_read_stdin && fclose (stdin) == EOF)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  595:    {
+    #####:  596:      error (0, errno, "-");
+    #####:  597:      ok = false;
+        -:  598:    }
+        -:  599:
+    #####:  600:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -:  601:}

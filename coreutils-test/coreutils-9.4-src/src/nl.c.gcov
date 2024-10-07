@@ -1,0 +1,824 @@
+        -:    0:Source:src/nl.c
+        -:    0:Graph:nl.gcno
+        -:    0:Data:nl.gcda
+        -:    0:Runs:6
+        -:    1:/* nl -- number lines of files
+        -:    2:   Copyright (C) 1989-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Scott Bartram (nancy!scott@uunet.uu.net)
+        -:   18:   Revised by David MacKenzie (djm@gnu.ai.mit.edu) */
+        -:   19:
+        -:   20:#include <config.h>
+        -:   21:
+        -:   22:#include <stdckdint.h>
+        -:   23:#include <stdio.h>
+        -:   24:#include <sys/types.h>
+        -:   25:#include <getopt.h>
+        -:   26:
+        -:   27:#include "system.h"
+        -:   28:
+        -:   29:#include <regex.h>
+        -:   30:
+        -:   31:#include "fadvise.h"
+        -:   32:#include "linebuffer.h"
+        -:   33:#include "quote.h"
+        -:   34:#include "xdectoint.h"
+        -:   35:
+        -:   36:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   37:#define PROGRAM_NAME "nl"
+        -:   38:
+        -:   39:#define AUTHORS \
+        -:   40:  proper_name ("Scott Bartram"), \
+        -:   41:  proper_name ("David MacKenzie")
+        -:   42:
+        -:   43:/* Line-number formats.  They are given an int width, an intmax_t
+        -:   44:   value, and a string separator.  */
+        -:   45:
+        -:   46:/* Right justified, no leading zeroes.  */
+        -:   47:static char const FORMAT_RIGHT_NOLZ[] = "%*" PRIdMAX "%s";
+        -:   48:
+        -:   49:/* Right justified, leading zeroes.  */
+        -:   50:static char const FORMAT_RIGHT_LZ[] = "%0*" PRIdMAX "%s";
+        -:   51:
+        -:   52:/* Left justified, no leading zeroes.  */
+        -:   53:static char const FORMAT_LEFT[] = "%-*" PRIdMAX "%s";
+        -:   54:
+        -:   55:/* Default section delimiter characters.  */
+        -:   56:static char DEFAULT_SECTION_DELIMITERS[] = "\\:";
+        -:   57:
+        -:   58:/* Types of input lines: either one of the section delimiters,
+        -:   59:   or text to output. */
+        -:   60:enum section
+        -:   61:{
+        -:   62:  Header, Body, Footer, Text
+        -:   63:};
+        -:   64:
+        -:   65:/* Format of body lines (-b).  */
+        -:   66:static char const *body_type = "t";
+        -:   67:
+        -:   68:/* Format of header lines (-h).  */
+        -:   69:static char const *header_type = "n";
+        -:   70:
+        -:   71:/* Format of footer lines (-f).  */
+        -:   72:static char const *footer_type = "n";
+        -:   73:
+        -:   74:/* Format currently being used (body, header, or footer).  */
+        -:   75:static char const *current_type;
+        -:   76:
+        -:   77:/* Regex for body lines to number (-bp).  */
+        -:   78:static struct re_pattern_buffer body_regex;
+        -:   79:
+        -:   80:/* Regex for header lines to number (-hp).  */
+        -:   81:static struct re_pattern_buffer header_regex;
+        -:   82:
+        -:   83:/* Regex for footer lines to number (-fp).  */
+        -:   84:static struct re_pattern_buffer footer_regex;
+        -:   85:
+        -:   86:/* Fastmaps for the above.  */
+        -:   87:static char body_fastmap[UCHAR_MAX + 1];
+        -:   88:static char header_fastmap[UCHAR_MAX + 1];
+        -:   89:static char footer_fastmap[UCHAR_MAX + 1];
+        -:   90:
+        -:   91:/* Pointer to current regex, if any.  */
+        -:   92:static struct re_pattern_buffer *current_regex = nullptr;
+        -:   93:
+        -:   94:/* Separator string to print after line number (-s).  */
+        -:   95:static char const *separator_str = "\t";
+        -:   96:
+        -:   97:/* Input section delimiter string (-d).  */
+        -:   98:static char *section_del = DEFAULT_SECTION_DELIMITERS;
+        -:   99:
+        -:  100:/* Header delimiter string.  */
+        -:  101:static char *header_del = nullptr;
+        -:  102:
+        -:  103:/* Header section delimiter length.  */
+        -:  104:static size_t header_del_len;
+        -:  105:
+        -:  106:/* Body delimiter string.  */
+        -:  107:static char *body_del = nullptr;
+        -:  108:
+        -:  109:/* Body section delimiter length.  */
+        -:  110:static size_t body_del_len;
+        -:  111:
+        -:  112:/* Footer delimiter string.  */
+        -:  113:static char *footer_del = nullptr;
+        -:  114:
+        -:  115:/* Footer section delimiter length.  */
+        -:  116:static size_t footer_del_len;
+        -:  117:
+        -:  118:/* Input buffer.  */
+        -:  119:static struct linebuffer line_buf;
+        -:  120:
+        -:  121:/* printf format string for unnumbered lines.  */
+        -:  122:static char *print_no_line_fmt = nullptr;
+        -:  123:
+        -:  124:/* Starting line number on each page (-v).  */
+        -:  125:static intmax_t starting_line_number = 1;
+        -:  126:
+        -:  127:/* Line number increment (-i).  */
+        -:  128:static intmax_t page_incr = 1;
+        -:  129:
+        -:  130:/* If true, reset line number at start of each page (-p).  */
+        -:  131:static bool reset_numbers = true;
+        -:  132:
+        -:  133:/* Number of blank lines to consider to be one line for numbering (-l).  */
+        -:  134:static intmax_t blank_join = 1;
+        -:  135:
+        -:  136:/* Width of line numbers (-w).  */
+        -:  137:static int lineno_width = 6;
+        -:  138:
+        -:  139:/* Line number format (-n).  */
+        -:  140:static char const *lineno_format = FORMAT_RIGHT_NOLZ;
+        -:  141:
+        -:  142:/* Current print line number.  */
+        -:  143:static intmax_t line_no;
+        -:  144:
+        -:  145:/* Whether the current line number has incremented past limits.  */
+        -:  146:static bool line_no_overflow;
+        -:  147:
+        -:  148:/* True if we have ever read standard input.  */
+        -:  149:static bool have_read_stdin;
+        -:  150:
+        -:  151:static struct option const longopts[] =
+        -:  152:{
+        -:  153:  {"header-numbering", required_argument, nullptr, 'h'},
+        -:  154:  {"body-numbering", required_argument, nullptr, 'b'},
+        -:  155:  {"footer-numbering", required_argument, nullptr, 'f'},
+        -:  156:  {"starting-line-number", required_argument, nullptr, 'v'},
+        -:  157:  {"line-increment", required_argument, nullptr, 'i'},
+        -:  158:  {"no-renumber", no_argument, nullptr, 'p'},
+        -:  159:  {"join-blank-lines", required_argument, nullptr, 'l'},
+        -:  160:  {"number-separator", required_argument, nullptr, 's'},
+        -:  161:  {"number-width", required_argument, nullptr, 'w'},
+        -:  162:  {"number-format", required_argument, nullptr, 'n'},
+        -:  163:  {"section-delimiter", required_argument, nullptr, 'd'},
+        -:  164:  {GETOPT_HELP_OPTION_DECL},
+        -:  165:  {GETOPT_VERSION_OPTION_DECL},
+        -:  166:  {nullptr, 0, nullptr, 0}
+        -:  167:};
+        -:  168:
+        -:  169:/* Print a usage message and quit. */
+        -:  170:
+        -:  171:void
+function usage called 1 returned 0% blocks executed 19%
+        1:  172:usage (int status)
+        -:  173:{
+        1:  174:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  175:    emit_try_help ();
+call    0 returned 100%
+        -:  176:  else
+        -:  177:    {
+    #####:  178:      printf (_("\
+call    0 never executed
+        -:  179:Usage: %s [OPTION]... [FILE]...\n\
+        -:  180:"),
+        -:  181:              program_name);
+    #####:  182:      fputs (_("\
+call    0 never executed
+        -:  183:Write each FILE to standard output, with line numbers added.\n\
+        -:  184:"), stdout);
+        -:  185:
+    #####:  186:      emit_stdin_note ();
+call    0 never executed
+    #####:  187:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  188:
+    #####:  189:      fputs (_("\
+call    0 never executed
+        -:  190:  -b, --body-numbering=STYLE      use STYLE for numbering body lines\n\
+        -:  191:  -d, --section-delimiter=CC      use CC for logical page delimiters\n\
+        -:  192:  -f, --footer-numbering=STYLE    use STYLE for numbering footer lines\n\
+        -:  193:"), stdout);
+    #####:  194:      fputs (_("\
+call    0 never executed
+        -:  195:  -h, --header-numbering=STYLE    use STYLE for numbering header lines\n\
+        -:  196:  -i, --line-increment=NUMBER     line number increment at each line\n\
+        -:  197:  -l, --join-blank-lines=NUMBER   group of NUMBER empty lines counted as one\n\
+        -:  198:  -n, --number-format=FORMAT      insert line numbers according to FORMAT\n\
+        -:  199:  -p, --no-renumber               do not reset line numbers for each section\n\
+        -:  200:  -s, --number-separator=STRING   add STRING after (possible) line number\n\
+        -:  201:"), stdout);
+    #####:  202:      fputs (_("\
+call    0 never executed
+        -:  203:  -v, --starting-line-number=NUMBER  first line number for each section\n\
+        -:  204:  -w, --number-width=NUMBER       use NUMBER columns for line numbers\n\
+        -:  205:"), stdout);
+    #####:  206:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  207:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  208:      fputs (_("\
+call    0 never executed
+        -:  209:\n\
+        -:  210:Default options are: -bt -d'\\:' -fn -hn -i1 -l1 -n'rn' -s<TAB> -v1 -w6\n\
+        -:  211:\n\
+        -:  212:CC are two delimiter characters used to construct logical page delimiters;\n\
+        -:  213:a missing second character implies ':'.  As a GNU extension one can specify\n\
+        -:  214:more than two characters, and also specifying the empty string (-d '')\n\
+        -:  215:disables section matching.\n\
+        -:  216:"), stdout);
+    #####:  217:      fputs (_("\
+call    0 never executed
+        -:  218:\n\
+        -:  219:STYLE is one of:\n\
+        -:  220:\n\
+        -:  221:  a      number all lines\n\
+        -:  222:  t      number only nonempty lines\n\
+        -:  223:  n      number no lines\n\
+        -:  224:  pBRE   number only lines that contain a match for the basic regular\n\
+        -:  225:         expression, BRE\n\
+        -:  226:"), stdout);
+    #####:  227:      fputs (_("\
+call    0 never executed
+        -:  228:\n\
+        -:  229:FORMAT is one of:\n\
+        -:  230:\n\
+        -:  231:  ln     left justified, no leading zeros\n\
+        -:  232:  rn     right justified, no leading zeros\n\
+        -:  233:  rz     right justified, leading zeros\n\
+        -:  234:\n\
+        -:  235:"), stdout);
+    #####:  236:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  237:    }
+        1:  238:  exit (status);
+        -:  239:}
+        -:  240:
+        -:  241:/* Set the command line flag TYPEP and possibly the regex pointer REGEXP,
+        -:  242:   according to 'optarg'.  */
+        -:  243:
+        -:  244:static bool
+function build_type_arg called 0 returned 0% blocks executed 0%
+    #####:  245:build_type_arg (char const **typep,
+        -:  246:                struct re_pattern_buffer *regexp, char *fastmap)
+        -:  247:{
+        -:  248:  char const *errmsg;
+    #####:  249:  bool rval = true;
+        -:  250:
+    #####:  251:  switch (*optarg)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  252:    {
+    #####:  253:    case 'a':
+        -:  254:    case 't':
+        -:  255:    case 'n':
+    #####:  256:      *typep = optarg;
+    #####:  257:      break;
+    #####:  258:    case 'p':
+    #####:  259:      *typep = optarg++;
+    #####:  260:      regexp->buffer = nullptr;
+    #####:  261:      regexp->allocated = 0;
+    #####:  262:      regexp->fastmap = fastmap;
+    #####:  263:      regexp->translate = nullptr;
+    #####:  264:      re_syntax_options =
+        -:  265:        RE_SYNTAX_POSIX_BASIC & ~RE_CONTEXT_INVALID_DUP & ~RE_NO_EMPTY_RANGES;
+    #####:  266:      errmsg = re_compile_pattern (optarg, strlen (optarg), regexp);
+call    0 never executed
+    #####:  267:      if (errmsg)
+branch  0 never executed
+branch  1 never executed
+    #####:  268:        error (EXIT_FAILURE, 0, "%s", (errmsg));
+call    0 never executed
+    #####:  269:      break;
+    #####:  270:    default:
+    #####:  271:      rval = false;
+    #####:  272:      break;
+        -:  273:    }
+    #####:  274:  return rval;
+        -:  275:}
+        -:  276:
+        -:  277:/* Print the line number and separator; increment the line number. */
+        -:  278:
+        -:  279:static void
+function print_lineno called 1 returned 100% blocks executed 44%
+        1:  280:print_lineno (void)
+        -:  281:{
+        1:  282:  if (line_no_overflow)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  283:    error (EXIT_FAILURE, 0, _("line number overflow"));
+call    0 never executed
+        -:  284:
+        1:  285:  printf (lineno_format, lineno_width, line_no, separator_str);
+call    0 returned 100%
+        -:  286:
+        1:  287:  if (ckd_add (&line_no, line_no, page_incr))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  288:    line_no_overflow = true;
+        1:  289:}
+        -:  290:
+        -:  291:static void
+function reset_lineno called 0 returned 0% blocks executed 0%
+    #####:  292:reset_lineno (void)
+        -:  293:{
+    #####:  294:  if (reset_numbers)
+branch  0 never executed
+branch  1 never executed
+        -:  295:    {
+    #####:  296:      line_no = starting_line_number;
+    #####:  297:      line_no_overflow = false;
+        -:  298:    }
+    #####:  299:}
+        -:  300:
+        -:  301:/* Switch to a header section. */
+        -:  302:
+        -:  303:static void
+function proc_header called 0 returned 0% blocks executed 0%
+    #####:  304:proc_header (void)
+        -:  305:{
+    #####:  306:  current_type = header_type;
+    #####:  307:  current_regex = &header_regex;
+    #####:  308:  reset_lineno ();
+call    0 never executed
+    #####:  309:  putchar ('\n');
+call    0 never executed
+    #####:  310:}
+        -:  311:
+        -:  312:/* Switch to a body section. */
+        -:  313:
+        -:  314:static void
+function proc_body called 0 returned 0% blocks executed 0%
+    #####:  315:proc_body (void)
+        -:  316:{
+    #####:  317:  current_type = body_type;
+    #####:  318:  current_regex = &body_regex;
+    #####:  319:  reset_lineno ();
+call    0 never executed
+    #####:  320:  putchar ('\n');
+call    0 never executed
+    #####:  321:}
+        -:  322:
+        -:  323:/* Switch to a footer section. */
+        -:  324:
+        -:  325:static void
+function proc_footer called 0 returned 0% blocks executed 0%
+    #####:  326:proc_footer (void)
+        -:  327:{
+    #####:  328:  current_type = footer_type;
+    #####:  329:  current_regex = &footer_regex;
+    #####:  330:  reset_lineno ();
+call    0 never executed
+    #####:  331:  putchar ('\n');
+call    0 never executed
+    #####:  332:}
+        -:  333:
+        -:  334:/* Process a regular text line in 'line_buf'. */
+        -:  335:
+        -:  336:static void
+function proc_text called 1 returned 100% blocks executed 21%
+        1:  337:proc_text (void)
+        -:  338:{
+        -:  339:  static intmax_t blank_lines = 0;	/* Consecutive blank lines so far. */
+        -:  340:
+        1:  341:  switch (*current_type)
+branch  0 taken 0%
+branch  1 taken 100%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+        -:  342:    {
+    #####:  343:    case 'a':
+    #####:  344:      if (blank_join > 1)
+branch  0 never executed
+branch  1 never executed
+        -:  345:        {
+    #####:  346:          if (1 < line_buf.length || ++blank_lines == blank_join)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  347:            {
+    #####:  348:              print_lineno ();
+call    0 never executed
+    #####:  349:              blank_lines = 0;
+        -:  350:            }
+        -:  351:          else
+    #####:  352:            fputs (print_no_line_fmt, stdout);
+call    0 never executed
+        -:  353:        }
+        -:  354:      else
+    #####:  355:        print_lineno ();
+call    0 never executed
+    #####:  356:      break;
+        1:  357:    case 't':
+        1:  358:      if (1 < line_buf.length)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  359:        print_lineno ();
+call    0 returned 100%
+        -:  360:      else
+    #####:  361:        fputs (print_no_line_fmt, stdout);
+call    0 never executed
+        1:  362:      break;
+    #####:  363:    case 'n':
+    #####:  364:      fputs (print_no_line_fmt, stdout);
+call    0 never executed
+    #####:  365:      break;
+    #####:  366:    case 'p':
+    #####:  367:      switch (re_search (current_regex, line_buf.buffer, line_buf.length - 1,
+    #####:  368:                         0, line_buf.length - 1, nullptr))
+call    0 never executed
+        -:  369:        {
+    #####:  370:        case -2:
+    #####:  371:          error (EXIT_FAILURE, errno, _("error in regular expression search"));
+call    0 never executed
+        -:  372:
+    #####:  373:        case -1:
+    #####:  374:          fputs (print_no_line_fmt, stdout);
+call    0 never executed
+    #####:  375:          break;
+        -:  376:
+    #####:  377:        default:
+    #####:  378:          print_lineno ();
+call    0 never executed
+    #####:  379:          break;
+        -:  380:        }
+        -:  381:    }
+        1:  382:  fwrite (line_buf.buffer, sizeof (char), line_buf.length, stdout);
+call    0 returned 100%
+        1:  383:}
+        -:  384:
+        -:  385:/* Return the type of line in 'line_buf'. */
+        -:  386:
+        -:  387:static enum section
+function check_section called 1 returned 100% blocks executed 33%
+        1:  388:check_section (void)
+        -:  389:{
+        1:  390:  size_t len = line_buf.length - 1;
+        -:  391:
+        1:  392:  if (len < 2 || footer_del_len < 2
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        1:  393:      || memcmp (line_buf.buffer, section_del, 2))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  394:    return Text;
+    #####:  395:  if (len == header_del_len
+branch  0 never executed
+branch  1 never executed
+    #####:  396:      && !memcmp (line_buf.buffer, header_del, header_del_len))
+branch  0 never executed
+branch  1 never executed
+    #####:  397:    return Header;
+    #####:  398:  if (len == body_del_len
+branch  0 never executed
+branch  1 never executed
+    #####:  399:      && !memcmp (line_buf.buffer, body_del, body_del_len))
+branch  0 never executed
+branch  1 never executed
+    #####:  400:    return Body;
+    #####:  401:  if (len == footer_del_len
+branch  0 never executed
+branch  1 never executed
+    #####:  402:      && !memcmp (line_buf.buffer, footer_del, footer_del_len))
+branch  0 never executed
+branch  1 never executed
+    #####:  403:    return Footer;
+    #####:  404:  return Text;
+        -:  405:}
+        -:  406:
+        -:  407:/* Read and process the file pointed to by FP. */
+        -:  408:
+        -:  409:static void
+function process_file called 1 returned 100% blocks executed 57%
+        1:  410:process_file (FILE *fp)
+        -:  411:{
+        2:  412:  while (readlinebuffer (&line_buf, fp))
+call    0 returned 100%
+branch  1 taken 50%
+branch  2 taken 50% (fallthrough)
+        -:  413:    {
+        1:  414:      switch (check_section ())
+call    0 returned 100%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 100%
+branch  5 taken 0%
+        -:  415:        {
+    #####:  416:        case Header:
+    #####:  417:          proc_header ();
+call    0 never executed
+    #####:  418:          break;
+    #####:  419:        case Body:
+    #####:  420:          proc_body ();
+call    0 never executed
+    #####:  421:          break;
+    #####:  422:        case Footer:
+    #####:  423:          proc_footer ();
+call    0 never executed
+    #####:  424:          break;
+        1:  425:        case Text:
+        1:  426:          proc_text ();
+call    0 returned 100%
+        1:  427:          break;
+        -:  428:        }
+        -:  429:    }
+        1:  430:}
+        -:  431:
+        -:  432:/* Process file FILE to standard output.
+        -:  433:   Return true if successful.  */
+        -:  434:
+        -:  435:static bool
+function nl_file called 9 returned 100% blocks executed 66%
+        9:  436:nl_file (char const *file)
+        -:  437:{
+        -:  438:  FILE *stream;
+        -:  439:
+        9:  440:  if (STREQ (file, "-"))
+branch  0 taken 11% (fallthrough)
+branch  1 taken 89%
+        -:  441:    {
+        1:  442:      have_read_stdin = true;
+        1:  443:      stream = stdin;
+       1*:  444:      assume (stream);  /* Pacify GCC bug#109613.  */
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+        -:  445:    }
+        -:  446:  else
+        -:  447:    {
+        8:  448:      stream = fopen (file, "r");
+call    0 returned 100%
+        8:  449:      if (stream == nullptr)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  450:        {
+        8:  451:          error (0, errno, "%s", quotef (file));
+call    0 returned 100%
+        8:  452:          return false;
+        -:  453:        }
+        -:  454:    }
+        -:  455:
+        1:  456:  fadvise (stream, FADVISE_SEQUENTIAL);
+call    0 returned 100%
+        -:  457:
+        1:  458:  process_file (stream);
+call    0 returned 100%
+        -:  459:
+        1:  460:  int err = errno;
+        1:  461:  if (!ferror (stream))
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+        1:  462:    err = 0;
+        1:  463:  if (STREQ (file, "-"))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  464:    clearerr (stream);		/* Also clear EOF. */
+call    0 returned 100%
+    #####:  465:  else if (fclose (stream) != 0 && !err)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  466:    err = errno;
+        1:  467:  if (err)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  468:    {
+    #####:  469:      error (0, err, "%s", quotef (file));
+call    0 never executed
+    #####:  470:      return false;
+        -:  471:    }
+        1:  472:  return true;
+        -:  473:}
+        -:  474:
+        -:  475:int
+function main called 6 returned 83% blocks executed 28%
+        6:  476:main (int argc, char **argv)
+        -:  477:{
+        -:  478:  int c;
+        -:  479:  size_t len;
+        6:  480:  bool ok = true;
+        -:  481:
+        -:  482:  initialize_main (&argc, &argv);
+        6:  483:  set_program_name (argv[0]);
+call    0 returned 100%
+        6:  484:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  485:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  486:  textdomain (PACKAGE);
+        -:  487:
+        6:  488:  atexit (close_stdout);
+call    0 returned 100%
+        -:  489:
+        6:  490:  have_read_stdin = false;
+        -:  491:
+       15:  492:  while ((c = getopt_long (argc, argv, "h:b:f:v:i:pl:s:w:n:d:", longopts,
+call    0 returned 100%
+        -:  493:                           nullptr))
+       15:  494:         != -1)
+branch  0 taken 60%
+branch  1 taken 40% (fallthrough)
+        -:  495:    {
+        9:  496:      switch (c)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 0%
+branch 13 taken 100%
+        -:  497:        {
+    #####:  498:        case 'h':
+    #####:  499:          if (! build_type_arg (&header_type, &header_regex, header_fastmap))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  500:            {
+    #####:  501:              error (0, 0, _("invalid header numbering style: %s"),
+call    0 never executed
+        -:  502:                     quote (optarg));
+    #####:  503:              ok = false;
+        -:  504:            }
+    #####:  505:          break;
+    #####:  506:        case 'b':
+    #####:  507:          if (! build_type_arg (&body_type, &body_regex, body_fastmap))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  508:            {
+    #####:  509:              error (0, 0, _("invalid body numbering style: %s"),
+call    0 never executed
+        -:  510:                     quote (optarg));
+    #####:  511:              ok = false;
+        -:  512:            }
+    #####:  513:          break;
+    #####:  514:        case 'f':
+    #####:  515:          if (! build_type_arg (&footer_type, &footer_regex, footer_fastmap))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  516:            {
+    #####:  517:              error (0, 0, _("invalid footer numbering style: %s"),
+call    0 never executed
+        -:  518:                     quote (optarg));
+    #####:  519:              ok = false;
+        -:  520:            }
+    #####:  521:          break;
+    #####:  522:        case 'v':
+    #####:  523:          starting_line_number = xdectoimax (optarg, INTMAX_MIN, INTMAX_MAX, "",
+call    0 never executed
+        -:  524:                                             _("invalid starting line number"),
+        -:  525:                                             0);
+    #####:  526:          break;
+    #####:  527:        case 'i':
+    #####:  528:          page_incr = xdectoimax (optarg, INTMAX_MIN, INTMAX_MAX, "",
+call    0 never executed
+        -:  529:                                  _("invalid line number increment"), 0);
+    #####:  530:          break;
+    #####:  531:        case 'p':
+    #####:  532:          reset_numbers = false;
+    #####:  533:          break;
+    #####:  534:        case 'l':
+    #####:  535:          blank_join = xdectoimax (optarg, 1, INTMAX_MAX, "",
+call    0 never executed
+        -:  536:                                   _("invalid line number of blank lines"), 0);
+    #####:  537:          break;
+    #####:  538:        case 's':
+    #####:  539:          separator_str = optarg;
+    #####:  540:          break;
+    #####:  541:        case 'w':
+    #####:  542:          lineno_width = xdectoimax (optarg, 1, INT_MAX, "",
+call    0 never executed
+        -:  543:                                     _("invalid line number field width"), 0);
+    #####:  544:          break;
+    #####:  545:        case 'n':
+    #####:  546:          if (STREQ (optarg, "ln"))
+branch  0 never executed
+branch  1 never executed
+    #####:  547:            lineno_format = FORMAT_LEFT;
+    #####:  548:          else if (STREQ (optarg, "rn"))
+branch  0 never executed
+branch  1 never executed
+    #####:  549:            lineno_format = FORMAT_RIGHT_NOLZ;
+    #####:  550:          else if (STREQ (optarg, "rz"))
+branch  0 never executed
+branch  1 never executed
+    #####:  551:            lineno_format = FORMAT_RIGHT_LZ;
+        -:  552:          else
+        -:  553:            {
+    #####:  554:              error (0, 0, _("invalid line numbering format: %s"),
+call    0 never executed
+        -:  555:                     quote (optarg));
+    #####:  556:              ok = false;
+        -:  557:            }
+    #####:  558:          break;
+    #####:  559:        case 'd':
+    #####:  560:          len = strlen (optarg);
+    #####:  561:          if (len == 1 || len == 2)  /* POSIX.  */
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  562:            {
+    #####:  563:              char *p = section_del;
+    #####:  564:              while (*optarg)
+branch  0 never executed
+branch  1 never executed
+    #####:  565:                *p++ = *optarg++;
+        -:  566:            }
+        -:  567:          else
+    #####:  568:            section_del = optarg;  /* GNU extension.  */
+    #####:  569:          break;
+    #####:  570:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  571:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+        9:  572:        default:
+        9:  573:          ok = false;
+        9:  574:          break;
+        -:  575:        }
+        -:  576:    }
+        -:  577:
+        6:  578:  if (!ok)
+branch  0 taken 17% (fallthrough)
+branch  1 taken 83%
+        1:  579:    usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  580:
+        -:  581:  /* Initialize the section delimiters.  */
+        5:  582:  len = strlen (section_del);
+        -:  583:
+        5:  584:  header_del_len = len * 3;
+        5:  585:  header_del = xmalloc (header_del_len + 1);
+call    0 returned 100%
+        5:  586:  stpcpy (stpcpy (stpcpy (header_del, section_del), section_del), section_del);
+        -:  587:
+        5:  588:  body_del_len = len * 2;
+        5:  589:  body_del = header_del + len;
+        -:  590:
+        5:  591:  footer_del_len = len;
+        5:  592:  footer_del = body_del + len;
+        -:  593:
+        -:  594:  /* Initialize the input buffer.  */
+        5:  595:  initbuffer (&line_buf);
+call    0 returned 100%
+        -:  596:
+        -:  597:  /* Initialize the printf format for unnumbered lines. */
+        5:  598:  len = strlen (separator_str);
+        5:  599:  print_no_line_fmt = xmalloc (lineno_width + len + 1);
+call    0 returned 100%
+        5:  600:  memset (print_no_line_fmt, ' ', lineno_width + len);
+        5:  601:  print_no_line_fmt[lineno_width + len] = '\0';
+        -:  602:
+        5:  603:  line_no = starting_line_number;
+        5:  604:  current_type = body_type;
+        5:  605:  current_regex = &body_regex;
+        -:  606:
+        -:  607:  /* Main processing. */
+        -:  608:
+        5:  609:  if (optind == argc)
+branch  0 taken 20% (fallthrough)
+branch  1 taken 80%
+        1:  610:    ok = nl_file ("-");
+call    0 returned 100%
+        -:  611:  else
+       12:  612:    for (; optind < argc; optind++)
+branch  0 taken 67%
+branch  1 taken 33% (fallthrough)
+        8:  613:      ok &= nl_file (argv[optind]);
+call    0 returned 100%
+        -:  614:
+        5:  615:  if (have_read_stdin && fclose (stdin) == EOF)
+branch  0 taken 20% (fallthrough)
+branch  1 taken 80%
+call    2 returned 100%
+branch  3 taken 0% (fallthrough)
+branch  4 taken 100%
+    #####:  616:    error (EXIT_FAILURE, errno, "-");
+call    0 never executed
+        -:  617:
+        5:  618:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -:  619:}

@@ -1,0 +1,117 @@
+        -:    0:Source:src/unlink.c
+        -:    0:Graph:unlink.gcno
+        -:    0:Data:unlink.gcda
+        -:    0:Runs:40
+        -:    1:/* unlink utility for GNU.
+        -:    2:   Copyright (C) 2001-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Michael Stone */
+        -:   18:
+        -:   19:/* Implementation overview:
+        -:   20:
+        -:   21:   Simply call the system 'unlink' function */
+        -:   22:
+        -:   23:#include <config.h>
+        -:   24:#include <stdio.h>
+        -:   25:#include <sys/types.h>
+        -:   26:
+        -:   27:#include "system.h"
+        -:   28:#include "long-options.h"
+        -:   29:#include "quote.h"
+        -:   30:
+        -:   31:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   32:#define PROGRAM_NAME "unlink"
+        -:   33:
+        -:   34:#define AUTHORS proper_name ("Michael Stone")
+        -:   35:
+        -:   36:void
+function usage called 12 returned 0% blocks executed 38%
+       12:   37:usage (int status)
+        -:   38:{
+       12:   39:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       12:   40:    emit_try_help ();
+call    0 returned 100%
+        -:   41:  else
+        -:   42:    {
+    #####:   43:      printf (_("\
+call    0 never executed
+        -:   44:Usage: %s FILE\n\
+        -:   45:  or:  %s OPTION\n"), program_name, program_name);
+    #####:   46:      fputs (_("Call the unlink function to remove the specified FILE.\n\n"),
+call    0 never executed
+        -:   47:             stdout);
+    #####:   48:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   49:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   50:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   51:    }
+       12:   52:  exit (status);
+        -:   53:}
+        -:   54:
+        -:   55:int
+function main called 40 returned 5% blocks executed 92%
+       40:   56:main (int argc, char **argv)
+        -:   57:{
+        -:   58:  initialize_main (&argc, &argv);
+       40:   59:  set_program_name (argv[0]);
+call    0 returned 100%
+       40:   60:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:   61:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:   62:  textdomain (PACKAGE);
+        -:   63:
+       40:   64:  atexit (close_stdout);
+call    0 returned 100%
+        -:   65:
+       40:   66:  parse_gnu_standard_options_only (argc, argv, PROGRAM_NAME, PACKAGE_NAME,
+call    0 returned 100%
+call    1 returned 98%
+        -:   67:                                   Version, true, usage, AUTHORS,
+        -:   68:                                   (char const *) nullptr);
+        -:   69:
+       39:   70:  if (argc < optind + 1)
+branch  0 taken 3% (fallthrough)
+branch  1 taken 97%
+        -:   71:    {
+        -:   72:      error (0, 0, _("missing operand"));
+        1:   73:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:   74:    }
+        -:   75:
+       38:   76:  if (optind + 1 < argc)
+branch  0 taken 26% (fallthrough)
+branch  1 taken 74%
+        -:   77:    {
+       10:   78:      error (0, 0, _("extra operand %s"), quote (argv[optind + 1]));
+call    0 returned 100%
+       10:   79:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:   80:    }
+        -:   81:
+       28:   82:  if (unlink (argv[optind]) != 0)
+call    0 returned 100%
+branch  1 taken 93% (fallthrough)
+branch  2 taken 7%
+      26*:   83:    error (EXIT_FAILURE, errno, _("cannot unlink %s"), quoteaf (argv[optind]));
+call    0 returned 100%
+call    1 never executed
+        -:   84:
+        2:   85:  return EXIT_SUCCESS;
+        -:   86:}

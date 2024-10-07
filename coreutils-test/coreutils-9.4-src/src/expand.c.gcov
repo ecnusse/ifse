@@ -1,0 +1,324 @@
+        -:    0:Source:src/expand.c
+        -:    0:Graph:expand.gcno
+        -:    0:Data:expand.gcda
+        -:    0:Runs:36
+        -:    1:/* expand - convert tabs to spaces
+        -:    2:   Copyright (C) 1989-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* By default, convert all tabs to spaces.
+        -:   18:   Preserves backspace characters in the output; they decrement the
+        -:   19:   column count for tab calculations.
+        -:   20:   The default action is equivalent to -8.
+        -:   21:
+        -:   22:   Options:
+        -:   23:   --tabs=tab1[,tab2[,...]]
+        -:   24:   -t tab1[,tab2[,...]]
+        -:   25:   -tab1[,tab2[,...]]	If only one tab stop is given, set the tabs tab1
+        -:   26:                        columns apart instead of the default 8.  Otherwise,
+        -:   27:                        set the tabs at columns tab1, tab2, etc. (numbered from
+        -:   28:                        0); replace any tabs beyond the tab stops given with
+        -:   29:                        single spaces.
+        -:   30:   --initial
+        -:   31:   -i			Only convert initial tabs on each line to spaces.
+        -:   32:
+        -:   33:   David MacKenzie <djm@gnu.ai.mit.edu> */
+        -:   34:
+        -:   35:#include <config.h>
+        -:   36:
+        -:   37:#include <stdio.h>
+        -:   38:#include <getopt.h>
+        -:   39:#include <sys/types.h>
+        -:   40:#include "system.h"
+        -:   41:#include "expand-common.h"
+        -:   42:
+        -:   43:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   44:#define PROGRAM_NAME "expand"
+        -:   45:
+        -:   46:#define AUTHORS proper_name ("David MacKenzie")
+        -:   47:
+        -:   48:static char const shortopts[] = "it:0::1::2::3::4::5::6::7::8::9::";
+        -:   49:
+        -:   50:static struct option const longopts[] =
+        -:   51:{
+        -:   52:  {"tabs", required_argument, nullptr, 't'},
+        -:   53:  {"initial", no_argument, nullptr, 'i'},
+        -:   54:  {GETOPT_HELP_OPTION_DECL},
+        -:   55:  {GETOPT_VERSION_OPTION_DECL},
+        -:   56:  {nullptr, 0, nullptr, 0}
+        -:   57:};
+        -:   58:
+        -:   59:void
+function usage called 1 returned 0% blocks executed 25%
+        1:   60:usage (int status)
+        -:   61:{
+        1:   62:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:   63:    emit_try_help ();
+call    0 returned 100%
+        -:   64:  else
+        -:   65:    {
+    #####:   66:      printf (_("\
+call    0 never executed
+        -:   67:Usage: %s [OPTION]... [FILE]...\n\
+        -:   68:"),
+        -:   69:              program_name);
+    #####:   70:      fputs (_("\
+call    0 never executed
+        -:   71:Convert tabs in each FILE to spaces, writing to standard output.\n\
+        -:   72:"), stdout);
+        -:   73:
+    #####:   74:      emit_stdin_note ();
+call    0 never executed
+    #####:   75:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:   76:
+    #####:   77:      fputs (_("\
+call    0 never executed
+        -:   78:  -i, --initial    do not convert tabs after non blanks\n\
+        -:   79:  -t, --tabs=N     have tabs N characters apart, not 8\n\
+        -:   80:"), stdout);
+    #####:   81:      emit_tab_list_info ();
+call    0 never executed
+    #####:   82:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   83:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   84:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   85:    }
+        1:   86:  exit (status);
+        -:   87:}
+        -:   88:
+        -:   89:
+        -:   90:/* Change tabs to spaces, writing to stdout.
+        -:   91:   Read each file in 'file_list', in order.  */
+        -:   92:
+        -:   93:static void
+function expand called 35 returned 100% blocks executed 50%
+       35:   94:expand (void)
+        -:   95:{
+        -:   96:  /* Input stream.  */
+       35:   97:  FILE *fp = next_file (nullptr);
+call    0 returned 100%
+        -:   98:
+       35:   99:  if (!fp)
+branch  0 taken 71% (fallthrough)
+branch  1 taken 29%
+       25:  100:    return;
+        -:  101:
+        -:  102:  while (true)
+    #####:  103:    {
+        -:  104:      /* Input character, or EOF.  */
+        -:  105:      int c;
+        -:  106:
+        -:  107:      /* If true, perform translations.  */
+       10:  108:      bool convert = true;
+        -:  109:
+        -:  110:
+        -:  111:      /* The following variables have valid values only when CONVERT
+        -:  112:         is true:  */
+        -:  113:
+        -:  114:      /* Column of next input character.  */
+       10:  115:      uintmax_t column = 0;
+        -:  116:
+        -:  117:      /* Index in TAB_LIST of next tab stop to examine.  */
+       10:  118:      size_t tab_index = 0;
+        -:  119:
+        -:  120:
+        -:  121:      /* Convert a line of text.  */
+        -:  122:
+        -:  123:      do
+        -:  124:        {
+       36:  125:          while ((c = getc (fp)) < 0 && (fp = next_file (fp)))
+call    0 returned 100%
+branch  1 taken 33% (fallthrough)
+branch  2 taken 67%
+call    3 returned 100%
+branch  4 taken 17%
+branch  5 taken 83% (fallthrough)
+        2:  126:            continue;
+        -:  127:
+       34:  128:          if (convert)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  129:            {
+       34:  130:              if (c == '\t')
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  131:                {
+        -:  132:                  /* Column the next input tab stop is on.  */
+        -:  133:                  uintmax_t next_tab_column;
+        -:  134:                  bool last_tab;
+        -:  135:
+    #####:  136:                  next_tab_column = get_next_tab_column (column, &tab_index,
+call    0 never executed
+        -:  137:                                                         &last_tab);
+        -:  138:
+    #####:  139:                  if (last_tab)
+branch  0 never executed
+branch  1 never executed
+    #####:  140:                    next_tab_column = column + 1;
+        -:  141:
+    #####:  142:                  if (next_tab_column < column)
+branch  0 never executed
+branch  1 never executed
+    #####:  143:                    error (EXIT_FAILURE, 0, _("input line is too long"));
+call    0 never executed
+        -:  144:
+    #####:  145:                  while (++column < next_tab_column)
+branch  0 never executed
+branch  1 never executed
+    #####:  146:                    if (putchar (' ') < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  147:                      write_error ();
+call    0 never executed
+        -:  148:
+    #####:  149:                  c = ' ';
+        -:  150:                }
+       34:  151:              else if (c == '\b')
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  152:                {
+        -:  153:                  /* Go back one column, and force recalculation of the
+        -:  154:                     next tab stop.  */
+    #####:  155:                  column -= !!column;
+    #####:  156:                  tab_index -= !!tab_index;
+        -:  157:                }
+        -:  158:              else
+        -:  159:                {
+       34:  160:                  column++;
+       34:  161:                  if (!column)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  162:                    error (EXIT_FAILURE, 0, _("input line is too long"));
+call    0 never executed
+        -:  163:                }
+        -:  164:
+      34*:  165:              convert &= convert_entire_line || !! isblank (c);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  166:            }
+        -:  167:
+       34:  168:          if (c < 0)
+branch  0 taken 29% (fallthrough)
+branch  1 taken 71%
+       10:  169:            return;
+        -:  170:
+       24:  171:          if (putchar (c) < 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  172:            write_error ();
+call    0 never executed
+        -:  173:        }
+       24:  174:      while (c != '\n');
+branch  0 taken 100%
+branch  1 taken 0% (fallthrough)
+        -:  175:    }
+        -:  176:}
+        -:  177:
+        -:  178:int
+function main called 36 returned 97% blocks executed 59%
+       36:  179:main (int argc, char **argv)
+        -:  180:{
+        -:  181:  int c;
+        -:  182:
+        -:  183:  initialize_main (&argc, &argv);
+       36:  184:  set_program_name (argv[0]);
+call    0 returned 100%
+       36:  185:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  186:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  187:  textdomain (PACKAGE);
+        -:  188:
+       36:  189:  atexit (close_stdout);
+call    0 returned 100%
+       36:  190:  convert_entire_line = true;
+        -:  191:
+       36:  192:  while ((c = getopt_long (argc, argv, shortopts, longopts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 3%
+branch  2 taken 97% (fallthrough)
+        -:  193:    {
+        1:  194:      switch (c)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 100%
+        -:  195:        {
+    #####:  196:        case 'i':
+    #####:  197:          convert_entire_line = false;
+    #####:  198:          break;
+        -:  199:
+    #####:  200:        case 't':
+    #####:  201:          parse_tab_stops (optarg);
+call    0 never executed
+    #####:  202:          break;
+        -:  203:
+    #####:  204:        case '0': case '1': case '2': case '3': case '4':
+        -:  205:        case '5': case '6': case '7': case '8': case '9':
+    #####:  206:          if (optarg)
+branch  0 never executed
+branch  1 never executed
+    #####:  207:            parse_tab_stops (optarg - 1);
+call    0 never executed
+        -:  208:          else
+        -:  209:            {
+        -:  210:              char tab_stop[2];
+    #####:  211:              tab_stop[0] = c;
+    #####:  212:              tab_stop[1] = '\0';
+    #####:  213:              parse_tab_stops (tab_stop);
+call    0 never executed
+        -:  214:            }
+    #####:  215:          break;
+        -:  216:
+    #####:  217:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  218:
+    #####:  219:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  220:
+        1:  221:        default:
+        1:  222:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  223:        }
+        -:  224:    }
+        -:  225:
+       35:  226:  finalize_tab_stops ();
+call    0 returned 100%
+        -:  227:
+       35:  228:  set_file_list (optind < argc ? &argv[optind] : nullptr);
+branch  0 taken 97% (fallthrough)
+branch  1 taken 3%
+call    2 returned 100%
+        -:  229:
+       35:  230:  expand ();
+call    0 returned 100%
+        -:  231:
+       35:  232:  cleanup_file_list_stdin ();
+call    0 returned 100%
+        -:  233:
+       35:  234:  return exit_status;
+        -:  235:}

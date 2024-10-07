@@ -1,0 +1,553 @@
+        -:    0:Source:src/pathchk.c
+        -:    0:Graph:pathchk.gcno
+        -:    0:Data:pathchk.gcda
+        -:    0:Runs:3
+        -:    1:/* pathchk -- check whether file names are valid or portable
+        -:    2:   Copyright (C) 1991-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:#include <config.h>
+        -:   18:#include <stdio.h>
+        -:   19:#include <getopt.h>
+        -:   20:#include <sys/types.h>
+        -:   21:#include <wchar.h>
+        -:   22:
+        -:   23:#include "system.h"
+        -:   24:#include "quote.h"
+        -:   25:
+        -:   26:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   27:#define PROGRAM_NAME "pathchk"
+        -:   28:
+        -:   29:#define AUTHORS \
+        -:   30:  proper_name ("Paul Eggert"), \
+        -:   31:  proper_name ("David MacKenzie"), \
+        -:   32:  proper_name ("Jim Meyering")
+        -:   33:
+        -:   34:#ifndef _POSIX_PATH_MAX
+        -:   35:# define _POSIX_PATH_MAX 256
+        -:   36:#endif
+        -:   37:#ifndef _POSIX_NAME_MAX
+        -:   38:# define _POSIX_NAME_MAX 14
+        -:   39:#endif
+        -:   40:
+        -:   41:#ifdef _XOPEN_NAME_MAX
+        -:   42:# define NAME_MAX_MINIMUM _XOPEN_NAME_MAX
+        -:   43:#else
+        -:   44:# define NAME_MAX_MINIMUM _POSIX_NAME_MAX
+        -:   45:#endif
+        -:   46:#ifdef _XOPEN_PATH_MAX
+        -:   47:# define PATH_MAX_MINIMUM _XOPEN_PATH_MAX
+        -:   48:#else
+        -:   49:# define PATH_MAX_MINIMUM _POSIX_PATH_MAX
+        -:   50:#endif
+        -:   51:
+        -:   52:#if ! (HAVE_PATHCONF && defined _PC_NAME_MAX && defined _PC_PATH_MAX)
+        -:   53:# ifndef _PC_NAME_MAX
+        -:   54:#  define _PC_NAME_MAX 0
+        -:   55:#  define _PC_PATH_MAX 1
+        -:   56:# endif
+        -:   57:# ifndef pathconf
+        -:   58:#  define pathconf(file, flag) \
+        -:   59:     (flag == _PC_NAME_MAX ? NAME_MAX_MINIMUM : PATH_MAX_MINIMUM)
+        -:   60:# endif
+        -:   61:#endif
+        -:   62:
+        -:   63:static bool validate_file_name (char *, bool, bool);
+        -:   64:
+        -:   65:/* For long options that have no equivalent short option, use a
+        -:   66:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:   67:enum
+        -:   68:{
+        -:   69:  PORTABILITY_OPTION = CHAR_MAX + 1
+        -:   70:};
+        -:   71:
+        -:   72:static struct option const longopts[] =
+        -:   73:{
+        -:   74:  {"portability", no_argument, nullptr, PORTABILITY_OPTION},
+        -:   75:  {GETOPT_HELP_OPTION_DECL},
+        -:   76:  {GETOPT_VERSION_OPTION_DECL},
+        -:   77:  {nullptr, 0, nullptr, 0}
+        -:   78:};
+        -:   79:
+        -:   80:void
+function usage called 1 returned 0% blocks executed 38%
+        1:   81:usage (int status)
+        -:   82:{
+        1:   83:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:   84:    emit_try_help ();
+call    0 returned 100%
+        -:   85:  else
+        -:   86:    {
+    #####:   87:      printf (_("Usage: %s [OPTION]... NAME...\n"), program_name);
+call    0 never executed
+    #####:   88:      fputs (_("\
+call    0 never executed
+        -:   89:Diagnose invalid or non-portable file names.\n\
+        -:   90:\n\
+        -:   91:  -p                  check for most POSIX systems\n\
+        -:   92:  -P                  check for empty names and leading \"-\"\n\
+        -:   93:      --portability   check for all POSIX systems (equivalent to -p -P)\n\
+        -:   94:"), stdout);
+    #####:   95:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   96:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   97:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   98:    }
+        1:   99:  exit (status);
+        -:  100:}
+        -:  101:
+        -:  102:int
+function main called 3 returned 67% blocks executed 61%
+        3:  103:main (int argc, char **argv)
+        -:  104:{
+        3:  105:  bool ok = true;
+        3:  106:  bool check_basic_portability = false;
+        3:  107:  bool check_extra_portability = false;
+        -:  108:  int optc;
+        -:  109:
+        -:  110:  initialize_main (&argc, &argv);
+        3:  111:  set_program_name (argv[0]);
+call    0 returned 100%
+        3:  112:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  113:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  114:  textdomain (PACKAGE);
+        -:  115:
+        3:  116:  atexit (close_stdout);
+call    0 returned 100%
+        -:  117:
+        3:  118:  while ((optc = getopt_long (argc, argv, "+pP", longopts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+        -:  119:    {
+    #####:  120:      switch (optc)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  121:        {
+    #####:  122:        case PORTABILITY_OPTION:
+    #####:  123:          check_basic_portability = true;
+    #####:  124:          check_extra_portability = true;
+    #####:  125:          break;
+        -:  126:
+    #####:  127:        case 'p':
+    #####:  128:          check_basic_portability = true;
+    #####:  129:          break;
+        -:  130:
+    #####:  131:        case 'P':
+    #####:  132:          check_extra_portability = true;
+    #####:  133:          break;
+        -:  134:
+    #####:  135:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  136:
+    #####:  137:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+call    4 never executed
+        -:  138:
+    #####:  139:        default:
+    #####:  140:          usage (EXIT_FAILURE);
+call    0 never executed
+        -:  141:        }
+        -:  142:    }
+        -:  143:
+        3:  144:  if (optind == argc)
+branch  0 taken 33% (fallthrough)
+branch  1 taken 67%
+        -:  145:    {
+        -:  146:      error (0, 0, _("missing operand"));
+        1:  147:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  148:    }
+        -:  149:
+        5:  150:  for (; optind < argc; ++optind)
+branch  0 taken 60%
+branch  1 taken 40% (fallthrough)
+        3:  151:    ok &= validate_file_name (argv[optind],
+call    0 returned 100%
+        -:  152:                              check_basic_portability, check_extra_portability);
+        -:  153:
+        2:  154:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -:  155:}
+        -:  156:
+        -:  157:/* If FILE contains a component with a leading "-", report an error
+        -:  158:   and return false; otherwise, return true.  */
+        -:  159:
+        -:  160:static bool
+function no_leading_hyphen called 0 returned 0% blocks executed 0%
+    #####:  161:no_leading_hyphen (char const *file)
+        -:  162:{
+        -:  163:  char const *p;
+        -:  164:
+    #####:  165:  for (p = file;  (p = strchr (p, '-'));  p++)
+branch  0 never executed
+branch  1 never executed
+    #####:  166:    if (p == file || p[-1] == '/')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  167:      {
+    #####:  168:        error (0, 0, _("leading '-' in a component of file name %s"),
+call    0 never executed
+        -:  169:               quoteaf (file));
+    #####:  170:        return false;
+        -:  171:      }
+        -:  172:
+    #####:  173:  return true;
+        -:  174:}
+        -:  175:
+        -:  176:/* If FILE (of length FILELEN) contains only portable characters,
+        -:  177:   return true, else report an error and return false.  */
+        -:  178:
+        -:  179:static bool
+function portable_chars_only called 0 returned 0% blocks executed 0%
+    #####:  180:portable_chars_only (char const *file, size_t filelen)
+        -:  181:{
+    #####:  182:  size_t validlen = strspn (file,
+        -:  183:                            ("/"
+        -:  184:                             "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        -:  185:                             "abcdefghijklmnopqrstuvwxyz"
+        -:  186:                             "0123456789._-"));
+    #####:  187:  char const *invalid = file + validlen;
+        -:  188:
+    #####:  189:  if (*invalid)
+branch  0 never executed
+branch  1 never executed
+        -:  190:    {
+    #####:  191:      mbstate_t mbstate = { 0, };
+    #####:  192:      size_t charlen = mbrlen (invalid, filelen - validlen, &mbstate);
+call    0 never executed
+    #####:  193:      error (0, 0,
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+call    3 never executed
+        -:  194:             _("non-portable character %s in file name %s"),
+        -:  195:             quotearg_n_style_mem (1, locale_quoting_style, invalid,
+        -:  196:                                   (charlen <= MB_LEN_MAX ? charlen : 1)),
+        -:  197:             quoteaf_n (0, file));
+    #####:  198:      return false;
+        -:  199:    }
+        -:  200:
+    #####:  201:  return true;
+        -:  202:}
+        -:  203:
+        -:  204:/* Return the address of the start of the next file name component in F.  */
+        -:  205:
+        -:  206:ATTRIBUTE_PURE
+        -:  207:static char *
+function component_start called 0 returned 0% blocks executed 0%
+    #####:  208:component_start (char *f)
+        -:  209:{
+    #####:  210:  while (*f == '/')
+branch  0 never executed
+branch  1 never executed
+    #####:  211:    f++;
+    #####:  212:  return f;
+        -:  213:}
+        -:  214:
+        -:  215:/* Return the size of the file name component F.  F must be nonempty.  */
+        -:  216:
+        -:  217:ATTRIBUTE_PURE
+        -:  218:static size_t
+function component_len called 0 returned 0% blocks executed 0%
+    #####:  219:component_len (char const *f)
+    #####:  220:{
+        -:  221:  size_t len;
+    #####:  222:  for (len = 1; f[len] != '/' && f[len]; len++)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  223:    continue;
+    #####:  224:  return len;
+        -:  225:}
+        -:  226:
+        -:  227:/* Make sure that
+        -:  228:   strlen (FILE) <= PATH_MAX
+        -:  229:   && strlen (each-existing-directory-in-FILE) <= NAME_MAX
+        -:  230:
+        -:  231:   If CHECK_BASIC_PORTABILITY is true, compare against _POSIX_PATH_MAX and
+        -:  232:   _POSIX_NAME_MAX instead, and make sure that FILE contains no
+        -:  233:   characters not in the POSIX portable filename character set, which
+        -:  234:   consists of A-Z, a-z, 0-9, ., _, - (plus / for separators).
+        -:  235:
+        -:  236:   If CHECK_BASIC_PORTABILITY is false, make sure that all leading directories
+        -:  237:   along FILE that exist are searchable.
+        -:  238:
+        -:  239:   If CHECK_EXTRA_PORTABILITY is true, check that file name components do not
+        -:  240:   begin with "-".
+        -:  241:
+        -:  242:   If either CHECK_BASIC_PORTABILITY or CHECK_EXTRA_PORTABILITY is true,
+        -:  243:   check that the file name is not empty.
+        -:  244:
+        -:  245:   Return true if all of these tests are successful, false if any fail.  */
+        -:  246:
+        -:  247:static bool
+function validate_file_name called 3 returned 100% blocks executed 16%
+        3:  248:validate_file_name (char *file, bool check_basic_portability,
+        -:  249:                    bool check_extra_portability)
+        -:  250:{
+        3:  251:  idx_t filelen = strlen (file);
+        -:  252:
+        -:  253:  /* Start of file name component being checked.  */
+        -:  254:  char *start;
+        -:  255:
+        -:  256:  /* True if component lengths need to be checked.  */
+        -:  257:  bool check_component_lengths;
+        -:  258:
+        -:  259:  /* True if the file is known to exist.  */
+        3:  260:  bool file_exists = false;
+        -:  261:
+       3*:  262:  if (check_extra_portability && ! no_leading_hyphen (file))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  263:    return false;
+        -:  264:
+        3:  265:  if ((check_basic_portability || check_extra_portability)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+    #####:  266:      && filelen == 0)
+branch  0 never executed
+branch  1 never executed
+        -:  267:    {
+        -:  268:      /* Fail, since empty names are not portable.  As of
+        -:  269:         2005-01-06 POSIX does not address whether "pathchk -p ''"
+        -:  270:         should (or is allowed to) fail, so this is not a
+        -:  271:         conformance violation.  */
+        -:  272:      error (0, 0, _("empty file name"));
+    #####:  273:      return false;
+        -:  274:    }
+        -:  275:
+        3:  276:  if (check_basic_portability)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  277:    {
+    #####:  278:      if (! portable_chars_only (file, filelen))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  279:        return false;
+        -:  280:    }
+        -:  281:  else
+        -:  282:    {
+        -:  283:      /* Check whether a file name component is in a directory that
+        -:  284:         is not searchable, or has some other serious problem.
+        -:  285:         POSIX does not allow "" as a file name, but some non-POSIX
+        -:  286:         hosts do (as an alias for "."), so allow "" if lstat does.  */
+        -:  287:
+        -:  288:      struct stat st;
+        3:  289:      if (lstat (file, &st) == 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  290:        file_exists = true;
+        3:  291:      else if (errno != ENOENT || filelen == 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        -:  292:        {
+        3:  293:          error (0, errno, "%s", quotef (file));
+call    0 returned 100%
+        3:  294:          return false;
+        -:  295:        }
+        -:  296:    }
+        -:  297:
+    #####:  298:  if (check_basic_portability
+branch  0 never executed
+branch  1 never executed
+    #####:  299:      || (! file_exists && PATH_MAX_MINIMUM <= filelen))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  300:    {
+        -:  301:      idx_t maxsize;
+        -:  302:
+    #####:  303:      if (check_basic_portability)
+branch  0 never executed
+branch  1 never executed
+    #####:  304:        maxsize = _POSIX_PATH_MAX;
+        -:  305:      else
+        -:  306:        {
+        -:  307:          long int size;
+    #####:  308:          char const *dir = (*file == '/' ? "/" : ".");
+branch  0 never executed
+branch  1 never executed
+    #####:  309:          errno = 0;
+    #####:  310:          size = pathconf (dir, _PC_PATH_MAX);
+call    0 never executed
+    #####:  311:          if (size < 0 && errno != 0)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  312:            {
+    #####:  313:              error (0, errno,
+        -:  314:                     _("%s: unable to determine maximum file name length"),
+        -:  315:                     dir);
+    #####:  316:              return false;
+        -:  317:            }
+    #####:  318:          maxsize = MIN (size, MIN (SSIZE_MAX, IDX_MAX));
+        -:  319:        }
+        -:  320:
+    #####:  321:      if (maxsize <= filelen)
+branch  0 never executed
+branch  1 never executed
+        -:  322:        {
+    #####:  323:          error (0, 0, _("limit %td exceeded by length %td of file name %s"),
+call    0 never executed
+        -:  324:                 maxsize - 1, filelen, quoteaf (file));
+    #####:  325:          return false;
+        -:  326:        }
+        -:  327:    }
+        -:  328:
+        -:  329:  /* Check whether pathconf (..., _PC_NAME_MAX) can be avoided, i.e.,
+        -:  330:     whether all file name components are so short that they are valid
+        -:  331:     in any file system on this platform.  If CHECK_BASIC_PORTABILITY, though,
+        -:  332:     it's more convenient to check component lengths below.  */
+        -:  333:
+    #####:  334:  check_component_lengths = check_basic_portability;
+    #####:  335:  if (! check_component_lengths && ! file_exists)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  336:    {
+    #####:  337:      for (start = file; *(start = component_start (start)); )
+branch  0 never executed
+branch  1 never executed
+        -:  338:        {
+    #####:  339:          size_t length = component_len (start);
+        -:  340:
+    #####:  341:          if (NAME_MAX_MINIMUM < length)
+branch  0 never executed
+branch  1 never executed
+        -:  342:            {
+    #####:  343:              check_component_lengths = true;
+    #####:  344:              break;
+        -:  345:            }
+        -:  346:
+    #####:  347:          start += length;
+        -:  348:        }
+        -:  349:    }
+        -:  350:
+    #####:  351:  if (check_component_lengths)
+branch  0 never executed
+branch  1 never executed
+        -:  352:    {
+        -:  353:      /* The limit on file name components for the current component.
+        -:  354:         This defaults to NAME_MAX_MINIMUM, for the sake of non-POSIX
+        -:  355:         systems (NFS, say?) where pathconf fails on "." or "/" with
+        -:  356:         errno == ENOENT.  */
+    #####:  357:      idx_t name_max = NAME_MAX_MINIMUM;
+        -:  358:
+        -:  359:      /* If nonzero, the known limit on file name components.  */
+    #####:  360:      idx_t known_name_max = check_basic_portability ? _POSIX_NAME_MAX : 0;
+branch  0 never executed
+branch  1 never executed
+        -:  361:
+    #####:  362:      for (start = file; *(start = component_start (start)); )
+branch  0 never executed
+branch  1 never executed
+        -:  363:        {
+        -:  364:          idx_t length;
+        -:  365:
+    #####:  366:          if (known_name_max)
+branch  0 never executed
+branch  1 never executed
+    #####:  367:            name_max = known_name_max;
+        -:  368:          else
+        -:  369:            {
+        -:  370:              long int len;
+    #####:  371:              char const *dir = (start == file ? "." : file);
+branch  0 never executed
+branch  1 never executed
+    #####:  372:              char c = *start;
+    #####:  373:              errno = 0;
+    #####:  374:              *start = '\0';
+    #####:  375:              len = pathconf (dir, _PC_NAME_MAX);
+call    0 never executed
+    #####:  376:              *start = c;
+    #####:  377:              if (0 <= len)
+branch  0 never executed
+branch  1 never executed
+    #####:  378:                name_max = MIN (len, MIN (SSIZE_MAX, IDX_MAX));
+        -:  379:              else
+    #####:  380:                switch (errno)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  381:                  {
+    #####:  382:                  case 0:
+        -:  383:                    /* There is no limit.  */
+    #####:  384:                    name_max = IDX_MAX;
+    #####:  385:                    break;
+        -:  386:
+    #####:  387:                  case ENOENT:
+        -:  388:                    /* DIR does not exist; use its parent's maximum.  */
+    #####:  389:                    known_name_max = name_max;
+    #####:  390:                    break;
+        -:  391:
+    #####:  392:                  default:
+    #####:  393:                    *start = '\0';
+    #####:  394:                    error (0, errno, "%s", quotef (dir));
+call    0 never executed
+    #####:  395:                    *start = c;
+    #####:  396:                    return false;
+        -:  397:                  }
+        -:  398:            }
+        -:  399:
+    #####:  400:          length = component_len (start);
+        -:  401:
+    #####:  402:          if (name_max < length)
+branch  0 never executed
+branch  1 never executed
+        -:  403:            {
+    #####:  404:              char c = start[length];
+    #####:  405:              start[length] = '\0';
+    #####:  406:              error (0, 0,
+call    0 never executed
+        -:  407:                     _("limit %td exceeded by length %td "
+        -:  408:                       "of file name component %s"),
+        -:  409:                     name_max, length, quote (start));
+    #####:  410:              start[length] = c;
+    #####:  411:              return false;
+        -:  412:            }
+        -:  413:
+    #####:  414:          start += length;
+        -:  415:        }
+        -:  416:    }
+        -:  417:
+    #####:  418:  return true;
+        -:  419:}

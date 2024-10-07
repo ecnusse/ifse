@@ -1,0 +1,732 @@
+        -:    0:Source:src/tsort.c
+        -:    0:Graph:tsort.gcno
+        -:    0:Data:tsort.gcda
+        -:    0:Runs:25
+        -:    1:/* tsort - topological sort.
+        -:    2:   Copyright (C) 1998-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Mark Kettenis <kettenis@phys.uva.nl>.  */
+        -:   18:
+        -:   19:/* The topological sort is done according to Algorithm T (Topological
+        -:   20:   sort) in Donald E. Knuth, The Art of Computer Programming, Volume
+        -:   21:   1/Fundamental Algorithms, page 262.  */
+        -:   22:
+        -:   23:#include <config.h>
+        -:   24:
+        -:   25:#include <sys/types.h>
+        -:   26:
+        -:   27:#include "system.h"
+        -:   28:#include "assure.h"
+        -:   29:#include "long-options.h"
+        -:   30:#include "fadvise.h"
+        -:   31:#include "readtokens.h"
+        -:   32:#include "stdio--.h"
+        -:   33:#include "quote.h"
+        -:   34:
+        -:   35:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   36:#define PROGRAM_NAME "tsort"
+        -:   37:
+        -:   38:#define AUTHORS proper_name ("Mark Kettenis")
+        -:   39:
+        -:   40:/* Token delimiters when reading from a file.  */
+        -:   41:#define DELIM " \t\n"
+        -:   42:
+        -:   43:/* Members of the list of successors.  */
+        -:   44:struct successor
+        -:   45:{
+        -:   46:  struct item *suc;
+        -:   47:  struct successor *next;
+        -:   48:};
+        -:   49:
+        -:   50:/* Each string is held in memory as the head of a list of successors.  */
+        -:   51:struct item
+        -:   52:{
+        -:   53:  char const *str;
+        -:   54:  struct item *left, *right;
+        -:   55:  signed char balance; /* -1, 0, or +1 */
+        -:   56:  bool printed;
+        -:   57:  size_t count;
+        -:   58:  struct item *qlink;
+        -:   59:  struct successor *top;
+        -:   60:};
+        -:   61:
+        -:   62:/* The head of the sorted list.  */
+        -:   63:static struct item *head = nullptr;
+        -:   64:
+        -:   65:/* The tail of the list of 'zeros', strings that have no predecessors.  */
+        -:   66:static struct item *zeros = nullptr;
+        -:   67:
+        -:   68:/* Used for loop detection.  */
+        -:   69:static struct item *loop = nullptr;
+        -:   70:
+        -:   71:/* The number of strings to sort.  */
+        -:   72:static size_t n_strings = 0;
+        -:   73:
+        -:   74:void
+function usage called 22 returned 0% blocks executed 33%
+       22:   75:usage (int status)
+        -:   76:{
+       22:   77:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       22:   78:    emit_try_help ();
+call    0 returned 100%
+        -:   79:  else
+        -:   80:    {
+    #####:   81:      printf (_("\
+call    0 never executed
+        -:   82:Usage: %s [OPTION] [FILE]\n\
+        -:   83:Write totally ordered list consistent with the partial ordering in FILE.\n\
+        -:   84:"), program_name);
+        -:   85:
+    #####:   86:      emit_stdin_note ();
+call    0 never executed
+        -:   87:
+    #####:   88:      fputs (_("\
+call    0 never executed
+        -:   89:\n\
+        -:   90:"), stdout);
+    #####:   91:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   92:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   93:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   94:    }
+        -:   95:
+       22:   96:  exit (status);
+        -:   97:}
+        -:   98:
+        -:   99:/* Create a new item/node for STR.  */
+        -:  100:static struct item *
+function new_item called 5 returned 100% blocks executed 100%
+        5:  101:new_item (char const *str)
+        -:  102:{
+        -:  103:  /* T1. Initialize (COUNT[k] <- 0 and TOP[k] <- ^).  */
+        5:  104:  struct item *k = xzalloc (sizeof *k);
+call    0 returned 100%
+        5:  105:  if (str)
+branch  0 taken 40% (fallthrough)
+branch  1 taken 60%
+        2:  106:    k->str = xstrdup (str);
+call    0 returned 100%
+        5:  107:  return k;
+        -:  108:}
+        -:  109:
+        -:  110:/* Search binary tree rooted at *ROOT for STR.  Allocate a new tree if
+        -:  111:   *ROOT is null.  Insert a node/item for STR if not found.  Return
+        -:  112:   the node/item found/created for STR.
+        -:  113:
+        -:  114:   This is done according to Algorithm A (Balanced tree search and
+        -:  115:   insertion) in Donald E. Knuth, The Art of Computer Programming,
+        -:  116:   Volume 3/Searching and Sorting, pages 455--457.  */
+        -:  117:
+        -:  118:static struct item *
+function search_item called 2 returned 100% blocks executed 8%
+        2:  119:search_item (struct item *root, char const *str)
+        -:  120:{
+        -:  121:  struct item *p, *q, *r, *s, *t;
+        -:  122:  int a;
+        -:  123:
+        -:  124:  /* Make sure the tree is not empty, since that is what the algorithm
+        -:  125:     below expects.  */
+        2:  126:  if (root->right == nullptr)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        2:  127:    return (root->right = new_item (str));
+call    0 returned 100%
+        -:  128:
+        -:  129:  /* A1. Initialize.  */
+    #####:  130:  t = root;
+    #####:  131:  s = p = root->right;
+        -:  132:
+        -:  133:  while (true)
+        -:  134:    {
+        -:  135:      /* A2. Compare.  */
+    #####:  136:      a = strcmp (str, p->str);
+    #####:  137:      if (a == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  138:        return p;
+        -:  139:
+        -:  140:      /* A3 & A4.  Move left & right.  */
+    #####:  141:      if (a < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  142:        q = p->left;
+        -:  143:      else
+    #####:  144:        q = p->right;
+        -:  145:
+    #####:  146:      if (q == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  147:        {
+        -:  148:          /* A5. Insert.  */
+    #####:  149:          q = new_item (str);
+call    0 never executed
+        -:  150:
+        -:  151:          /* A3 & A4.  (continued).  */
+    #####:  152:          if (a < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  153:            p->left = q;
+        -:  154:          else
+    #####:  155:            p->right = q;
+        -:  156:
+        -:  157:          /* A6. Adjust balance factors.  */
+    #####:  158:          a = strcmp (str, s->str);
+    #####:  159:          if (a < 0)
+branch  0 never executed
+branch  1 never executed
+        -:  160:            {
+    #####:  161:              r = p = s->left;
+    #####:  162:              a = -1;
+        -:  163:            }
+        -:  164:          else
+        -:  165:            {
+    #####:  166:              affirm (0 < a);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####:  167:              r = p = s->right;
+    #####:  168:              a = 1;
+        -:  169:            }
+        -:  170:
+    #####:  171:          while (p != q)
+branch  0 never executed
+branch  1 never executed
+        -:  172:            {
+    #####:  173:              int cmp = strcmp (str, p->str);
+    #####:  174:              if (cmp < 0)
+branch  0 never executed
+branch  1 never executed
+        -:  175:                {
+    #####:  176:                  p->balance = -1;
+    #####:  177:                  p = p->left;
+        -:  178:                }
+        -:  179:              else
+        -:  180:                {
+    #####:  181:                  affirm (0 < cmp);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####:  182:                  p->balance = 1;
+    #####:  183:                  p = p->right;
+        -:  184:                }
+        -:  185:            }
+        -:  186:
+        -:  187:          /* A7. Balancing act.  */
+    #####:  188:          if (s->balance == 0 || s->balance == -a)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  189:            {
+    #####:  190:              s->balance += a;
+    #####:  191:              return q;
+        -:  192:            }
+        -:  193:
+    #####:  194:          if (r->balance == a)
+branch  0 never executed
+branch  1 never executed
+        -:  195:            {
+        -:  196:              /* A8. Single Rotation.  */
+    #####:  197:              p = r;
+    #####:  198:              if (a < 0)
+branch  0 never executed
+branch  1 never executed
+        -:  199:                {
+    #####:  200:                  s->left = r->right;
+    #####:  201:                  r->right = s;
+        -:  202:                }
+        -:  203:              else
+        -:  204:                {
+    #####:  205:                  s->right = r->left;
+    #####:  206:                  r->left = s;
+        -:  207:                }
+    #####:  208:              s->balance = r->balance = 0;
+        -:  209:            }
+        -:  210:          else
+        -:  211:            {
+        -:  212:              /* A9. Double rotation.  */
+    #####:  213:              if (a < 0)
+branch  0 never executed
+branch  1 never executed
+        -:  214:                {
+    #####:  215:                  p = r->right;
+    #####:  216:                  r->right = p->left;
+    #####:  217:                  p->left = r;
+    #####:  218:                  s->left = p->right;
+    #####:  219:                  p->right = s;
+        -:  220:                }
+        -:  221:              else
+        -:  222:                {
+    #####:  223:                  p = r->left;
+    #####:  224:                  r->left = p->right;
+    #####:  225:                  p->right = r;
+    #####:  226:                  s->right = p->left;
+    #####:  227:                  p->left = s;
+        -:  228:                }
+        -:  229:
+    #####:  230:              s->balance = 0;
+    #####:  231:              r->balance = 0;
+    #####:  232:              if (p->balance == a)
+branch  0 never executed
+branch  1 never executed
+    #####:  233:                s->balance = -a;
+    #####:  234:              else if (p->balance == -a)
+branch  0 never executed
+branch  1 never executed
+    #####:  235:                r->balance = a;
+    #####:  236:              p->balance = 0;
+        -:  237:            }
+        -:  238:
+        -:  239:          /* A10. Finishing touch.  */
+    #####:  240:          if (s == t->right)
+branch  0 never executed
+branch  1 never executed
+    #####:  241:            t->right = p;
+        -:  242:          else
+    #####:  243:            t->left = p;
+        -:  244:
+    #####:  245:          return q;
+        -:  246:        }
+        -:  247:
+        -:  248:      /* A3 & A4.  (continued).  */
+    #####:  249:      if (q->balance)
+branch  0 never executed
+branch  1 never executed
+        -:  250:        {
+    #####:  251:          t = p;
+    #####:  252:          s = q;
+        -:  253:        }
+        -:  254:
+    #####:  255:      p = q;
+        -:  256:    }
+        -:  257:
+        -:  258:  /* NOTREACHED */
+        -:  259:}
+        -:  260:
+        -:  261:/* Record the fact that J precedes K.  */
+        -:  262:
+        -:  263:static void
+function record_relation called 0 returned 0% blocks executed 0%
+    #####:  264:record_relation (struct item *j, struct item *k)
+        -:  265:{
+        -:  266:  struct successor *p;
+        -:  267:
+    #####:  268:  if (!STREQ (j->str, k->str))
+branch  0 never executed
+branch  1 never executed
+        -:  269:    {
+    #####:  270:      k->count++;
+    #####:  271:      p = xmalloc (sizeof *p);
+call    0 never executed
+    #####:  272:      p->suc = k;
+    #####:  273:      p->next = j->top;
+    #####:  274:      j->top = p;
+        -:  275:    }
+    #####:  276:}
+        -:  277:
+        -:  278:static bool
+function count_items called 0 returned 0% blocks executed 0%
+    #####:  279:count_items (MAYBE_UNUSED struct item *unused)
+        -:  280:{
+    #####:  281:  n_strings++;
+    #####:  282:  return false;
+        -:  283:}
+        -:  284:
+        -:  285:static bool
+function scan_zeros called 0 returned 0% blocks executed 0%
+    #####:  286:scan_zeros (struct item *k)
+        -:  287:{
+        -:  288:  /* Ignore strings that have already been printed.  */
+    #####:  289:  if (k->count == 0 && !k->printed)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  290:    {
+    #####:  291:      if (head == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  292:        head = k;
+        -:  293:      else
+    #####:  294:        zeros->qlink = k;
+        -:  295:
+    #####:  296:      zeros = k;
+        -:  297:    }
+        -:  298:
+    #####:  299:  return false;
+        -:  300:}
+        -:  301:
+        -:  302:/* Try to detect the loop.  If we have detected that K is part of a
+        -:  303:   loop, print the loop on standard error, remove a relation to break
+        -:  304:   the loop, and return true.
+        -:  305:
+        -:  306:   The loop detection strategy is as follows: Realize that what we're
+        -:  307:   dealing with is essentially a directed graph.  If we find an item
+        -:  308:   that is part of a graph that contains a cycle we traverse the graph
+        -:  309:   in backwards direction.  In general there is no unique way to do
+        -:  310:   this, but that is no problem.  If we encounter an item that we have
+        -:  311:   encountered before, we know that we've found a cycle.  All we have
+        -:  312:   to do now is retrace our steps, printing out the items until we
+        -:  313:   encounter that item again.  (This is not necessarily the item that
+        -:  314:   we started from originally.)  Since the order in which the items
+        -:  315:   are stored in the tree is not related to the specified partial
+        -:  316:   ordering, we may need to walk the tree several times before the
+        -:  317:   loop has completely been constructed.  If the loop was found, the
+        -:  318:   global variable LOOP will be null.  */
+        -:  319:
+        -:  320:static bool
+function detect_loop called 0 returned 0% blocks executed 0%
+    #####:  321:detect_loop (struct item *k)
+        -:  322:{
+    #####:  323:  if (k->count > 0)
+branch  0 never executed
+branch  1 never executed
+        -:  324:    {
+        -:  325:      /* K does not have to be part of a cycle.  It is however part of
+        -:  326:         a graph that contains a cycle.  */
+        -:  327:
+    #####:  328:      if (loop == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  329:        /* Start traversing the graph at K.  */
+    #####:  330:        loop = k;
+        -:  331:      else
+        -:  332:        {
+    #####:  333:          struct successor **p = &k->top;
+        -:  334:
+    #####:  335:          while (*p)
+branch  0 never executed
+branch  1 never executed
+        -:  336:            {
+    #####:  337:              if ((*p)->suc == loop)
+branch  0 never executed
+branch  1 never executed
+        -:  338:                {
+    #####:  339:                  if (k->qlink)
+branch  0 never executed
+branch  1 never executed
+        -:  340:                    {
+        -:  341:                      /* We have found a loop.  Retrace our steps.  */
+    #####:  342:                      while (loop)
+branch  0 never executed
+branch  1 never executed
+        -:  343:                        {
+    #####:  344:                          struct item *tmp = loop->qlink;
+        -:  345:
+    #####:  346:                          error (0, 0, "%s", (loop->str));
+        -:  347:
+        -:  348:                          /* Until we encounter K again.  */
+    #####:  349:                          if (loop == k)
+branch  0 never executed
+branch  1 never executed
+        -:  350:                            {
+        -:  351:                              /* Remove relation.  */
+    #####:  352:                              struct successor *s = *p;
+    #####:  353:                              s->suc->count--;
+    #####:  354:                              *p = s->next;
+        -:  355:                              IF_LINT (free (s));
+    #####:  356:                              break;
+        -:  357:                            }
+        -:  358:
+        -:  359:                          /* Tidy things up since we might have to
+        -:  360:                             detect another loop.  */
+    #####:  361:                          loop->qlink = nullptr;
+    #####:  362:                          loop = tmp;
+        -:  363:                        }
+        -:  364:
+    #####:  365:                      while (loop)
+branch  0 never executed
+branch  1 never executed
+        -:  366:                        {
+    #####:  367:                          struct item *tmp = loop->qlink;
+        -:  368:
+    #####:  369:                          loop->qlink = nullptr;
+    #####:  370:                          loop = tmp;
+        -:  371:                        }
+        -:  372:
+        -:  373:                      /* Since we have found the loop, stop walking
+        -:  374:                         the tree.  */
+    #####:  375:                      return true;
+        -:  376:                    }
+        -:  377:                  else
+        -:  378:                    {
+    #####:  379:                      k->qlink = loop;
+    #####:  380:                      loop = k;
+    #####:  381:                      break;
+        -:  382:                    }
+        -:  383:                }
+        -:  384:
+    #####:  385:              p = &(*p)->next;
+        -:  386:            }
+        -:  387:        }
+        -:  388:    }
+        -:  389:
+    #####:  390:  return false;
+        -:  391:}
+        -:  392:
+        -:  393:/* Recurse (sub)tree rooted at ROOT, calling ACTION for each node.
+        -:  394:   Stop when ACTION returns true.  */
+        -:  395:
+        -:  396:static bool
+function recurse_tree called 0 returned 0% blocks executed 0%
+    #####:  397:recurse_tree (struct item *root, bool (*action) (struct item *))
+        -:  398:{
+    #####:  399:  if (root->left == nullptr && root->right == nullptr)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  400:    return (*action) (root);
+call    0 never executed
+        -:  401:  else
+        -:  402:    {
+    #####:  403:      if (root->left != nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  404:        if (recurse_tree (root->left, action))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  405:          return true;
+    #####:  406:      if ((*action) (root))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  407:        return true;
+    #####:  408:      if (root->right != nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  409:        if (recurse_tree (root->right, action))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  410:          return true;
+        -:  411:    }
+        -:  412:
+    #####:  413:  return false;
+        -:  414:}
+        -:  415:
+        -:  416:/* Walk the tree specified by the head ROOT, calling ACTION for
+        -:  417:   each node.  */
+        -:  418:
+        -:  419:static void
+function walk_tree called 0 returned 0% blocks executed 0%
+    #####:  420:walk_tree (struct item *root, bool (*action) (struct item *))
+        -:  421:{
+    #####:  422:  if (root->right)
+branch  0 never executed
+branch  1 never executed
+    #####:  423:    recurse_tree (root->right, action);
+call    0 never executed
+    #####:  424:}
+        -:  425:
+        -:  426:/* Do a topological sort on FILE.  Exit with appropriate exit status.  */
+        -:  427:
+        -:  428:static _Noreturn void
+function tsort called 3 returned 0% blocks executed 35%
+        3:  429:tsort (char const *file)
+        -:  430:{
+        3:  431:  bool ok = true;
+        3:  432:  struct item *j = nullptr;
+        3:  433:  struct item *k = nullptr;
+        -:  434:  token_buffer tokenbuffer;
+        3:  435:  bool is_stdin = STREQ (file, "-");
+        -:  436:
+        -:  437:  /* Initialize the head of the tree holding the strings we're sorting.  */
+        3:  438:  struct item *root = new_item (nullptr);
+call    0 returned 100%
+        -:  439:
+        3:  440:  if (!is_stdin && ! freopen (file, "r", stdin))
+branch  0 taken 33% (fallthrough)
+branch  1 taken 67%
+call    2 returned 100%
+branch  3 taken 100% (fallthrough)
+branch  4 taken 0%
+       1*:  441:    error (EXIT_FAILURE, errno, "%s", quotef (file));
+call    0 returned 100%
+call    1 never executed
+        -:  442:
+        2:  443:  fadvise (stdin, FADVISE_SEQUENTIAL);
+call    0 returned 100%
+        -:  444:
+        2:  445:  init_tokenbuffer (&tokenbuffer);
+call    0 returned 100%
+        -:  446:
+        -:  447:  while (true)
+        2:  448:    {
+        -:  449:      /* T2. Next Relation.  */
+        4:  450:      size_t len = readtoken (stdin, DELIM, sizeof (DELIM) - 1, &tokenbuffer);
+call    0 returned 100%
+        4:  451:      if (len == (size_t) -1)
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+        -:  452:        {
+        2:  453:          if (ferror (stdin))
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  454:            error (EXIT_FAILURE, errno, _("%s: read error"), quotef (file));
+call    0 never executed
+call    1 never executed
+        2:  455:          break;
+        -:  456:        }
+        -:  457:
+       2*:  458:      affirm (len != 0);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+        -:  459:
+        2:  460:      k = search_item (root, tokenbuffer.buffer);
+call    0 returned 100%
+        2:  461:      if (j)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  462:        {
+        -:  463:          /* T3. Record the relation.  */
+    #####:  464:          record_relation (j, k);
+call    0 never executed
+    #####:  465:          k = nullptr;
+        -:  466:        }
+        -:  467:
+        2:  468:      j = k;
+        -:  469:    }
+        -:  470:
+        2:  471:  if (k != nullptr)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       2*:  472:    error (EXIT_FAILURE, 0, _("%s: input contains an odd number of tokens"),
+call    0 returned 100%
+call    1 never executed
+        -:  473:           quotef (file));
+        -:  474:
+        -:  475:  /* T1. Initialize (N <- n).  */
+    #####:  476:  walk_tree (root, count_items);
+call    0 never executed
+        -:  477:
+    #####:  478:  while (n_strings > 0)
+branch  0 never executed
+branch  1 never executed
+        -:  479:    {
+        -:  480:      /* T4. Scan for zeros.  */
+    #####:  481:      walk_tree (root, scan_zeros);
+call    0 never executed
+        -:  482:
+    #####:  483:      while (head)
+branch  0 never executed
+branch  1 never executed
+        -:  484:        {
+    #####:  485:          struct successor *p = head->top;
+        -:  486:
+        -:  487:          /* T5. Output front of queue.  */
+    #####:  488:          puts (head->str);
+call    0 never executed
+    #####:  489:          head->printed = true;
+    #####:  490:          n_strings--;
+        -:  491:
+        -:  492:          /* T6. Erase relations.  */
+    #####:  493:          while (p)
+branch  0 never executed
+branch  1 never executed
+        -:  494:            {
+    #####:  495:              p->suc->count--;
+    #####:  496:              if (p->suc->count == 0)
+branch  0 never executed
+branch  1 never executed
+        -:  497:                {
+    #####:  498:                  zeros->qlink = p->suc;
+    #####:  499:                  zeros = p->suc;
+        -:  500:                }
+        -:  501:
+    #####:  502:              p = p->next;
+        -:  503:            }
+        -:  504:
+        -:  505:          /* T7. Remove from queue.  */
+    #####:  506:          head = head->qlink;
+        -:  507:        }
+        -:  508:
+        -:  509:      /* T8.  End of process.  */
+    #####:  510:      if (n_strings > 0)
+branch  0 never executed
+branch  1 never executed
+        -:  511:        {
+        -:  512:          /* The input contains a loop.  */
+    #####:  513:          error (0, 0, _("%s: input contains a loop:"), quotef (file));
+call    0 never executed
+    #####:  514:          ok = false;
+        -:  515:
+        -:  516:          /* Print the loop and remove a relation to break it.  */
+        -:  517:          do
+    #####:  518:            walk_tree (root, detect_loop);
+call    0 never executed
+    #####:  519:          while (loop);
+branch  0 never executed
+branch  1 never executed
+        -:  520:        }
+        -:  521:    }
+        -:  522:
+    #####:  523:  if (fclose (stdin) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  524:    error (EXIT_FAILURE, errno, "%s",
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+        -:  525:           is_stdin ? _("standard input") : quotef (file));
+        -:  526:
+    #####:  527:  exit (ok ? EXIT_SUCCESS : EXIT_FAILURE);
+        -:  528:}
+        -:  529:
+        -:  530:int
+function main called 25 returned 0% blocks executed 100%
+       25:  531:main (int argc, char **argv)
+        -:  532:{
+        -:  533:  initialize_main (&argc, &argv);
+       25:  534:  set_program_name (argv[0]);
+call    0 returned 100%
+       25:  535:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  536:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  537:  textdomain (PACKAGE);
+        -:  538:
+       25:  539:  atexit (close_stdout);
+call    0 returned 100%
+        -:  540:
+       25:  541:  parse_gnu_standard_options_only (argc, argv, PROGRAM_NAME, PACKAGE_NAME,
+call    0 returned 100%
+call    1 returned 96%
+        -:  542:                                   Version, true, usage, AUTHORS,
+        -:  543:                                   (char const *) nullptr);
+        -:  544:
+       24:  545:  if (1 < argc - optind)
+branch  0 taken 88% (fallthrough)
+branch  1 taken 12%
+        -:  546:    {
+       21:  547:      error (0, 0, _("extra operand %s"), quote (argv[optind + 1]));
+call    0 returned 100%
+       21:  548:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  549:    }
+        -:  550:
+        3:  551:  tsort (optind == argc ? "-" : argv[optind]);
+branch  0 taken 67% (fallthrough)
+branch  1 taken 33%
+        -:  552:}

@@ -1,0 +1,417 @@
+        -:    0:Source:src/rmdir.c
+        -:    0:Graph:rmdir.gcno
+        -:    0:Data:rmdir.gcda
+        -:    0:Runs:36
+        -:    1:/* rmdir -- remove directories
+        -:    2:
+        -:    3:   Copyright (C) 1990-2023 Free Software Foundation, Inc.
+        -:    4:
+        -:    5:   This program is free software: you can redistribute it and/or modify
+        -:    6:   it under the terms of the GNU General Public License as published by
+        -:    7:   the Free Software Foundation, either version 3 of the License, or
+        -:    8:   (at your option) any later version.
+        -:    9:
+        -:   10:   This program is distributed in the hope that it will be useful,
+        -:   11:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   12:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   13:   GNU General Public License for more details.
+        -:   14:
+        -:   15:   You should have received a copy of the GNU General Public License
+        -:   16:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   17:
+        -:   18:/* Options:
+        -:   19:   -p, --parent		Remove any parent dirs that are explicitly mentioned
+        -:   20:                        in an argument, if they become empty after the
+        -:   21:                        argument file is removed.
+        -:   22:
+        -:   23:   David MacKenzie <djm@ai.mit.edu>  */
+        -:   24:
+        -:   25:#include <config.h>
+        -:   26:#include <stdio.h>
+        -:   27:#include <getopt.h>
+        -:   28:#include <sys/types.h>
+        -:   29:
+        -:   30:#include "system.h"
+        -:   31:#include "prog-fprintf.h"
+        -:   32:
+        -:   33:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   34:#define PROGRAM_NAME "rmdir"
+        -:   35:
+        -:   36:#define AUTHORS proper_name ("David MacKenzie")
+        -:   37:
+        -:   38:/* If true, remove empty parent directories.  */
+        -:   39:static bool remove_empty_parents;
+        -:   40:
+        -:   41:/* If true, don't treat failure to remove a nonempty directory
+        -:   42:   as an error.  */
+        -:   43:static bool ignore_fail_on_non_empty;
+        -:   44:
+        -:   45:/* If true, output a diagnostic for every directory processed.  */
+        -:   46:static bool verbose;
+        -:   47:
+        -:   48:/* For long options that have no equivalent short option, use a
+        -:   49:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:   50:enum
+        -:   51:{
+        -:   52:  IGNORE_FAIL_ON_NON_EMPTY_OPTION = CHAR_MAX + 1
+        -:   53:};
+        -:   54:
+        -:   55:static struct option const longopts[] =
+        -:   56:{
+        -:   57:  /* Don't name this '--force' because it's not close enough in meaning
+        -:   58:     to e.g. rm's -f option.  */
+        -:   59:  {"ignore-fail-on-non-empty", no_argument, nullptr,
+        -:   60:   IGNORE_FAIL_ON_NON_EMPTY_OPTION},
+        -:   61:
+        -:   62:  {"path", no_argument, nullptr, 'p'},  /* Deprecated.  */
+        -:   63:  {"parents", no_argument, nullptr, 'p'},
+        -:   64:  {"verbose", no_argument, nullptr, 'v'},
+        -:   65:  {GETOPT_HELP_OPTION_DECL},
+        -:   66:  {GETOPT_VERSION_OPTION_DECL},
+        -:   67:  {nullptr, 0, nullptr, 0}
+        -:   68:};
+        -:   69:
+        -:   70:/* Return true if ERROR_NUMBER is one of the values associated
+        -:   71:   with a failed rmdir due to non-empty target directory.  */
+        -:   72:static bool
+function errno_rmdir_non_empty called 0 returned 0% blocks executed 0%
+    #####:   73:errno_rmdir_non_empty (int error_number)
+        -:   74:{
+    #####:   75:  return error_number == ENOTEMPTY || error_number == EEXIST;
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:   76:}
+        -:   77:
+        -:   78:/* Return true if when rmdir fails with errno == ERROR_NUMBER
+        -:   79:   the directory may be non empty.  */
+        -:   80:static bool
+function errno_may_be_non_empty called 0 returned 0% blocks executed 0%
+    #####:   81:errno_may_be_non_empty (int error_number)
+        -:   82:{
+    #####:   83:  switch (error_number)
+branch  0 never executed
+branch  1 never executed
+        -:   84:    {
+    #####:   85:    case EACCES:
+        -:   86:    case EPERM:
+        -:   87:    case EROFS:
+        -:   88:    case EBUSY:
+    #####:   89:      return true;
+    #####:   90:    default:
+    #####:   91:      return false;
+        -:   92:    }
+        -:   93:}
+        -:   94:
+        -:   95:/* Return true if an rmdir failure with errno == error_number
+        -:   96:   for DIR is ignorable.  */
+        -:   97:static bool
+function ignorable_failure called 38 returned 100% blocks executed 36%
+       38:   98:ignorable_failure (int error_number, char const *dir)
+        -:   99:{
+       38:  100:  return (ignore_fail_on_non_empty
+      38*:  101:          && (errno_rmdir_non_empty (error_number)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  102:              || (errno_may_be_non_empty (error_number)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  103:                  && directory_status (AT_FDCWD, dir) == DS_NONEMPTY)));
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  104:}
+        -:  105:
+        -:  106:/* Remove any empty parent directories of DIR.
+        -:  107:   If DIR contains slash characters, at least one of them
+        -:  108:   (beginning with the rightmost) is replaced with a NUL byte.
+        -:  109:   Return true if successful.  */
+        -:  110:
+        -:  111:static bool
+function remove_parents called 0 returned 0% blocks executed 0%
+    #####:  112:remove_parents (char *dir)
+        -:  113:{
+        -:  114:  char *slash;
+    #####:  115:  bool ok = true;
+        -:  116:
+    #####:  117:  strip_trailing_slashes (dir);
+call    0 never executed
+        -:  118:  while (true)
+    #####:  119:    {
+    #####:  120:      slash = strrchr (dir, '/');
+    #####:  121:      if (slash == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  122:        break;
+        -:  123:      /* Remove any characters after the slash, skipping any extra
+        -:  124:         slashes in a row. */
+    #####:  125:      while (slash > dir && *slash == '/')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  126:        --slash;
+    #####:  127:      slash[1] = 0;
+        -:  128:
+        -:  129:      /* Give a diagnostic for each attempted removal if --verbose.  */
+    #####:  130:      if (verbose)
+branch  0 never executed
+branch  1 never executed
+    #####:  131:        prog_fprintf (stdout, _("removing directory, %s"), quoteaf (dir));
+call    0 never executed
+call    1 never executed
+        -:  132:
+    #####:  133:      ok = (rmdir (dir) == 0);
+call    0 never executed
+    #####:  134:      int rmdir_errno = errno;
+        -:  135:
+    #####:  136:      if (! ok)
+branch  0 never executed
+branch  1 never executed
+        -:  137:        {
+        -:  138:          /* Stop quietly if --ignore-fail-on-non-empty. */
+    #####:  139:          if (ignorable_failure (rmdir_errno, dir))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  140:            {
+    #####:  141:              ok = true;
+        -:  142:            }
+        -:  143:          else
+        -:  144:            {
+        -:  145:              char const *error_msg;
+    #####:  146:              if (rmdir_errno != ENOTDIR)
+branch  0 never executed
+branch  1 never executed
+        -:  147:                {
+        -:  148:                  /* Barring race conditions,
+        -:  149:                     DIR is expected to be a directory.  */
+    #####:  150:                  error_msg = N_("failed to remove directory %s");
+        -:  151:                }
+        -:  152:              else
+        -:  153:                {
+        -:  154:                  /* A path component could be a symbolic link */
+    #####:  155:                  error_msg = N_("failed to remove %s");
+        -:  156:                }
+    #####:  157:              error (0, rmdir_errno, _(error_msg), quoteaf (dir));
+call    0 never executed
+        -:  158:            }
+    #####:  159:          break;
+        -:  160:        }
+        -:  161:    }
+    #####:  162:  return ok;
+        -:  163:}
+        -:  164:
+        -:  165:void
+function usage called 2 returned 0% blocks executed 27%
+        2:  166:usage (int status)
+        -:  167:{
+        2:  168:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        2:  169:    emit_try_help ();
+call    0 returned 100%
+        -:  170:  else
+        -:  171:    {
+    #####:  172:      printf (_("Usage: %s [OPTION]... DIRECTORY...\n"), program_name);
+call    0 never executed
+    #####:  173:      fputs (_("\
+call    0 never executed
+        -:  174:Remove the DIRECTORY(ies), if they are empty.\n\
+        -:  175:\n\
+        -:  176:"), stdout);
+    #####:  177:      fputs (_("\
+call    0 never executed
+        -:  178:      --ignore-fail-on-non-empty\n\
+        -:  179:                    ignore each failure to remove a non-empty directory\n\
+        -:  180:"), stdout);
+    #####:  181:      fputs (_("\
+call    0 never executed
+        -:  182:  -p, --parents     remove DIRECTORY and its ancestors;\n\
+        -:  183:                    e.g., 'rmdir -p a/b' is similar to 'rmdir a/b a'\n\
+        -:  184:\n\
+        -:  185:"), stdout);
+    #####:  186:      fputs (_("\
+call    0 never executed
+        -:  187:  -v, --verbose     output a diagnostic for every directory processed\n\
+        -:  188:"), stdout);
+    #####:  189:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  190:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  191:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  192:    }
+        2:  193:  exit (status);
+        -:  194:}
+        -:  195:
+        -:  196:int
+function main called 36 returned 94% blocks executed 52%
+       36:  197:main (int argc, char **argv)
+        -:  198:{
+       36:  199:  bool ok = true;
+        -:  200:  int optc;
+        -:  201:
+        -:  202:  initialize_main (&argc, &argv);
+       36:  203:  set_program_name (argv[0]);
+call    0 returned 100%
+       36:  204:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  205:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  206:  textdomain (PACKAGE);
+        -:  207:
+       36:  208:  atexit (close_stdout);
+call    0 returned 100%
+        -:  209:
+       36:  210:  remove_empty_parents = false;
+        -:  211:
+       36:  212:  while ((optc = getopt_long (argc, argv, "pv", longopts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 3%
+branch  2 taken 97% (fallthrough)
+        -:  213:    {
+        1:  214:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 100%
+        -:  215:        {
+    #####:  216:        case 'p':
+    #####:  217:          remove_empty_parents = true;
+    #####:  218:          break;
+    #####:  219:        case IGNORE_FAIL_ON_NON_EMPTY_OPTION:
+    #####:  220:          ignore_fail_on_non_empty = true;
+    #####:  221:          break;
+    #####:  222:        case 'v':
+    #####:  223:          verbose = true;
+    #####:  224:          break;
+    #####:  225:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  226:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        1:  227:        default:
+        1:  228:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  229:        }
+        -:  230:    }
+        -:  231:
+       35:  232:  if (optind == argc)
+branch  0 taken 3% (fallthrough)
+branch  1 taken 97%
+        -:  233:    {
+        -:  234:      error (0, 0, _("missing operand"));
+        1:  235:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  236:    }
+        -:  237:
+       74:  238:  for (; optind < argc; ++optind)
+branch  0 taken 54%
+branch  1 taken 46% (fallthrough)
+        -:  239:    {
+       40:  240:      char *dir = argv[optind];
+        -:  241:
+        -:  242:      /* Give a diagnostic for each attempted removal if --verbose.  */
+       40:  243:      if (verbose)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  244:        prog_fprintf (stdout, _("removing directory, %s"), quoteaf (dir));
+call    0 never executed
+call    1 never executed
+        -:  245:
+       40:  246:      if (rmdir (dir) != 0)
+call    0 returned 100%
+branch  1 taken 95% (fallthrough)
+branch  2 taken 5%
+        -:  247:        {
+       38:  248:          int rmdir_errno = errno;
+      38*:  249:          if (ignorable_failure (rmdir_errno, dir))
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  250:            continue;
+        -:  251:
+        -:  252:          /* Distinguish the case for a symlink with trailing slash.
+        -:  253:             On Linux, rmdir(2) confusingly does not follow the symlink,
+        -:  254:             thus giving the errno ENOTDIR, while on other systems the symlink
+        -:  255:             is followed.  We don't provide consistent behavior here,
+        -:  256:             but at least we provide a more accurate error message.  */
+       38:  257:          bool custom_error = false;
+       38:  258:          if (rmdir_errno == ENOTDIR)
+branch  0 taken 3% (fallthrough)
+branch  1 taken 97%
+        -:  259:            {
+        1:  260:              char const *last_unix_slash = strrchr (dir, '/');
+       1*:  261:              if (last_unix_slash && (*(last_unix_slash + 1) == '\0'))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  262:                {
+        -:  263:                  struct stat st;
+    #####:  264:                  int ret = stat (dir, &st);
+call    0 never executed
+        -:  265:                  /* Some other issue following, or is actually a directory. */
+    #####:  266:                  if ((ret != 0 && errno != ENOTDIR)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  267:                      || (ret == 0 && S_ISDIR (st.st_mode)))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  268:                    {
+        -:  269:                      /* Ensure the last component was a symlink.  */
+    #####:  270:                      char *dir_arg = xstrdup (dir);
+call    0 never executed
+    #####:  271:                      strip_trailing_slashes (dir);
+call    0 never executed
+    #####:  272:                      ret = lstat (dir, &st);
+call    0 never executed
+    #####:  273:                      if (ret == 0 && S_ISLNK (st.st_mode))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  274:                        {
+    #####:  275:                          error (0, 0,
+call    0 never executed
+        -:  276:                                 _("failed to remove %s:"
+        -:  277:                                   " Symbolic link not followed"),
+        -:  278:                                 quoteaf (dir_arg));
+    #####:  279:                          custom_error = true;
+        -:  280:                        }
+    #####:  281:                      free (dir_arg);
+        -:  282:                    }
+        -:  283:                }
+        -:  284:            }
+        -:  285:
+       38:  286:          if (! custom_error)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       38:  287:            error (0, rmdir_errno, _("failed to remove %s"), quoteaf (dir));
+call    0 returned 100%
+        -:  288:
+       38:  289:          ok = false;
+        -:  290:        }
+        2:  291:      else if (remove_empty_parents)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  292:        {
+    #####:  293:          ok &= remove_parents (dir);
+call    0 never executed
+        -:  294:        }
+        -:  295:    }
+        -:  296:
+       34:  297:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -:  298:}

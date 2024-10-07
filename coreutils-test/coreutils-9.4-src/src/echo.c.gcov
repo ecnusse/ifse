@@ -1,0 +1,403 @@
+        -:    0:Source:src/echo.c
+        -:    0:Graph:echo.gcno
+        -:    0:Data:echo.gcda
+        -:    0:Runs:16
+        -:    1:/* echo.c, derived from code echo.c in Bash.
+        -:    2:   Copyright (C) 1987-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:#include <config.h>
+        -:   18:#include <stdio.h>
+        -:   19:#include <sys/types.h>
+        -:   20:#include "system.h"
+        -:   21:#include "assure.h"
+        -:   22:
+        -:   23:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   24:#define PROGRAM_NAME "echo"
+        -:   25:
+        -:   26:#define AUTHORS \
+        -:   27:  proper_name ("Brian Fox"), \
+        -:   28:  proper_name ("Chet Ramey")
+        -:   29:
+        -:   30:/* If true, interpret backslash escapes by default.  */
+        -:   31:#ifndef DEFAULT_ECHO_TO_XPG
+        -:   32:enum { DEFAULT_ECHO_TO_XPG = false };
+        -:   33:#endif
+        -:   34:
+        -:   35:void
+function usage called 0 returned 0% blocks executed 0%
+    #####:   36:usage (int status)
+        -:   37:{
+        -:   38:  /* STATUS should always be EXIT_SUCCESS (unlike in most other
+        -:   39:     utilities which would call emit_try_help otherwise).  */
+    #####:   40:  affirm (status == EXIT_SUCCESS);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:   41:
+    #####:   42:  printf (_("\
+call    0 never executed
+        -:   43:Usage: %s [SHORT-OPTION]... [STRING]...\n\
+        -:   44:  or:  %s LONG-OPTION\n\
+        -:   45:"), program_name, program_name);
+    #####:   46:  fputs (_("\
+call    0 never executed
+        -:   47:Echo the STRING(s) to standard output.\n\
+        -:   48:\n\
+        -:   49:  -n             do not output the trailing newline\n\
+        -:   50:"), stdout);
+    #####:   51:  fputs (_(DEFAULT_ECHO_TO_XPG
+call    0 never executed
+        -:   52:           ? N_("\
+        -:   53:  -e             enable interpretation of backslash escapes (default)\n\
+        -:   54:  -E             disable interpretation of backslash escapes\n")
+        -:   55:           : N_("\
+        -:   56:  -e             enable interpretation of backslash escapes\n\
+        -:   57:  -E             disable interpretation of backslash escapes (default)\n")),
+        -:   58:         stdout);
+    #####:   59:  fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   60:  fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   61:  fputs (_("\
+call    0 never executed
+        -:   62:\n\
+        -:   63:If -e is in effect, the following sequences are recognized:\n\
+        -:   64:\n\
+        -:   65:"), stdout);
+    #####:   66:  fputs (_("\
+call    0 never executed
+        -:   67:  \\\\      backslash\n\
+        -:   68:  \\a      alert (BEL)\n\
+        -:   69:  \\b      backspace\n\
+        -:   70:  \\c      produce no further output\n\
+        -:   71:  \\e      escape\n\
+        -:   72:  \\f      form feed\n\
+        -:   73:  \\n      new line\n\
+        -:   74:  \\r      carriage return\n\
+        -:   75:  \\t      horizontal tab\n\
+        -:   76:  \\v      vertical tab\n\
+        -:   77:"), stdout);
+    #####:   78:  fputs (_("\
+call    0 never executed
+        -:   79:  \\0NNN   byte with octal value NNN (1 to 3 digits)\n\
+        -:   80:  \\xHH    byte with hexadecimal value HH (1 to 2 digits)\n\
+        -:   81:"), stdout);
+    #####:   82:  printf (USAGE_BUILTIN_WARNING, PROGRAM_NAME);
+call    0 never executed
+    #####:   83:  fputs (_("\n\
+call    0 never executed
+        -:   84:NOTE: printf(1) is a preferred alternative,\n\
+        -:   85:which does not have issues outputting option-like strings.\n\
+        -:   86:"), stdout);
+    #####:   87:  emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+    #####:   88:  exit (status);
+        -:   89:}
+        -:   90:
+        -:   91:/* Convert C from hexadecimal character to integer.  */
+        -:   92:static int
+function hextobin called 0 returned 0% blocks executed 0%
+    #####:   93:hextobin (unsigned char c)
+        -:   94:{
+    #####:   95:  switch (c)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+        -:   96:    {
+    #####:   97:    default: return c - '0';
+    #####:   98:    case 'a': case 'A': return 10;
+    #####:   99:    case 'b': case 'B': return 11;
+    #####:  100:    case 'c': case 'C': return 12;
+    #####:  101:    case 'd': case 'D': return 13;
+    #####:  102:    case 'e': case 'E': return 14;
+    #####:  103:    case 'f': case 'F': return 15;
+        -:  104:    }
+        -:  105:}
+        -:  106:
+        -:  107:/* Print the words in LIST to standard output.  If the first word is
+        -:  108:   '-n', then don't print a trailing newline.  We also support the
+        -:  109:   echo syntax from Version 9 unix systems. */
+        -:  110:
+        -:  111:int
+function main called 16 returned 100% blocks executed 60%
+       16:  112:main (int argc, char **argv)
+        -:  113:{
+       16:  114:  bool display_return = true;
+       16:  115:  bool posixly_correct = !!getenv ("POSIXLY_CORRECT");
+call    0 returned 100%
+       16:  116:  bool allow_options =
+       16:  117:    (! posixly_correct
+      16*:  118:     || (! DEFAULT_ECHO_TO_XPG && 1 < argc && STREQ (argv[1], "-n")));
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  119:
+        -:  120:  /* System V machines already have a /bin/sh with a v9 behavior.
+        -:  121:     Use the identical behavior for these machines so that the
+        -:  122:     existing system shell scripts won't barf.  */
+       16:  123:  bool do_v9 = DEFAULT_ECHO_TO_XPG;
+        -:  124:
+        -:  125:  initialize_main (&argc, &argv);
+       16:  126:  set_program_name (argv[0]);
+call    0 returned 100%
+       16:  127:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  128:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  129:  textdomain (PACKAGE);
+        -:  130:
+       16:  131:  atexit (close_stdout);
+call    0 returned 100%
+        -:  132:
+        -:  133:  /* We directly parse options, rather than use parse_long_options, in
+        -:  134:     order to avoid accepting abbreviations.  */
+       16:  135:  if (allow_options && argc == 2)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 44% (fallthrough)
+branch  3 taken 56%
+        -:  136:    {
+        7:  137:      if (STREQ (argv[1], "--help"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  138:        usage (EXIT_SUCCESS);
+call    0 never executed
+        -:  139:
+        7:  140:      if (STREQ (argv[1], "--version"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  141:        {
+    #####:  142:          version_etc (stdout, PROGRAM_NAME, PACKAGE_NAME, Version, AUTHORS,
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  143:                       (char *) nullptr);
+    #####:  144:          return EXIT_SUCCESS;
+        -:  145:        }
+        -:  146:    }
+        -:  147:
+       16:  148:  --argc;
+       16:  149:  ++argv;
+        -:  150:
+       16:  151:  if (allow_options)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+       25:  152:    while (argc > 0 && *argv[0] == '-')
+branch  0 taken 16% (fallthrough)
+branch  1 taken 84%
+branch  2 taken 76%
+branch  3 taken 24% (fallthrough)
+        -:  153:      {
+       16:  154:        char const *temp = argv[0] + 1;
+        -:  155:        size_t i;
+        -:  156:
+        -:  157:        /* If it appears that we are handling options, then make sure that
+        -:  158:           all of the options specified are actually valid.  Otherwise, the
+        -:  159:           string should just be echoed.  */
+        -:  160:
+       34:  161:        for (i = 0; temp[i]; i++)
+branch  0 taken 65%
+branch  1 taken 35% (fallthrough)
+       22:  162:          switch (temp[i])
+branch  0 taken 82%
+branch  1 taken 18%
+        -:  163:            {
+       18:  164:            case 'e': case 'E': case 'n':
+       18:  165:              break;
+        4:  166:            default:
+        4:  167:              goto just_echo;
+        -:  168:            }
+        -:  169:
+       12:  170:        if (i == 0)
+branch  0 taken 25% (fallthrough)
+branch  1 taken 75%
+        3:  171:          goto just_echo;
+        -:  172:
+        -:  173:        /* All of the options in TEMP are valid options to ECHO.
+        -:  174:           Handle them. */
+       18:  175:        while (*temp)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        9:  176:          switch (*temp++)
+branch  0 taken 78%
+branch  1 taken 11%
+branch  2 taken 11%
+branch  3 taken 0%
+        -:  177:            {
+        7:  178:            case 'e':
+        7:  179:              do_v9 = true;
+        7:  180:              break;
+        -:  181:
+        1:  182:            case 'E':
+        1:  183:              do_v9 = false;
+        1:  184:              break;
+        -:  185:
+        1:  186:            case 'n':
+        1:  187:              display_return = false;
+        1:  188:              break;
+        -:  189:            }
+        -:  190:
+        9:  191:        argc--;
+        9:  192:        argv++;
+        -:  193:      }
+        -:  194:
+       9*:  195:just_echo:
+        -:  196:
+       16:  197:  if (do_v9 || posixly_correct)
+branch  0 taken 56% (fallthrough)
+branch  1 taken 44%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+        -:  198:    {
+       15:  199:      while (argc > 0)
+branch  0 taken 53%
+branch  1 taken 47% (fallthrough)
+        -:  200:        {
+        8:  201:          char const *s = argv[0];
+        -:  202:          unsigned char c;
+        -:  203:
+       31:  204:          while ((c = *s++))
+branch  0 taken 74%
+branch  1 taken 26% (fallthrough)
+        -:  205:            {
+       23:  206:              if (c == '\\' && *s)
+branch  0 taken 48% (fallthrough)
+branch  1 taken 52%
+branch  2 taken 91% (fallthrough)
+branch  3 taken 9%
+        -:  207:                {
+       10:  208:                  switch (c = *s++)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 90%
+branch 13 taken 10%
+        -:  209:                    {
+    #####:  210:                    case 'a': c = '\a'; break;
+    #####:  211:                    case 'b': c = '\b'; break;
+    #####:  212:                    case 'c': return EXIT_SUCCESS;
+    #####:  213:                    case 'e': c = '\x1B'; break;
+    #####:  214:                    case 'f': c = '\f'; break;
+    #####:  215:                    case 'n': c = '\n'; break;
+    #####:  216:                    case 'r': c = '\r'; break;
+    #####:  217:                    case 't': c = '\t'; break;
+    #####:  218:                    case 'v': c = '\v'; break;
+    #####:  219:                    case 'x':
+        -:  220:                      {
+    #####:  221:                        unsigned char ch = *s;
+    #####:  222:                        if (! isxdigit (ch))
+branch  0 never executed
+branch  1 never executed
+    #####:  223:                          goto not_an_escape;
+    #####:  224:                        s++;
+    #####:  225:                        c = hextobin (ch);
+call    0 never executed
+    #####:  226:                        ch = *s;
+    #####:  227:                        if (isxdigit (ch))
+branch  0 never executed
+branch  1 never executed
+        -:  228:                          {
+    #####:  229:                            s++;
+    #####:  230:                            c = c * 16 + hextobin (ch);
+call    0 never executed
+        -:  231:                          }
+        -:  232:                      }
+    #####:  233:                      break;
+    #####:  234:                    case '0':
+    #####:  235:                      c = 0;
+    #####:  236:                      if (! ('0' <= *s && *s <= '7'))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  237:                        break;
+    #####:  238:                      c = *s++;
+        -:  239:                      FALLTHROUGH;
+    #####:  240:                    case '1': case '2': case '3':
+        -:  241:                    case '4': case '5': case '6': case '7':
+    #####:  242:                      c -= '0';
+    #####:  243:                      if ('0' <= *s && *s <= '7')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  244:                        c = c * 8 + (*s++ - '0');
+    #####:  245:                      if ('0' <= *s && *s <= '7')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  246:                        c = c * 8 + (*s++ - '0');
+    #####:  247:                      break;
+        9:  248:                    case '\\': break;
+        -:  249:
+    #####:  250:                    not_an_escape:
+        1:  251:                    default:  putchar ('\\'); break;
+call    0 returned 100%
+        -:  252:                    }
+        -:  253:                }
+       23:  254:              putchar (c);
+call    0 returned 100%
+        -:  255:            }
+        8:  256:          argc--;
+        8:  257:          argv++;
+        8:  258:          if (argc > 0)
+branch  0 taken 25% (fallthrough)
+branch  1 taken 75%
+        2:  259:            putchar (' ');
+call    0 returned 100%
+        -:  260:        }
+        -:  261:    }
+        -:  262:  else
+        -:  263:    {
+       19:  264:      while (argc > 0)
+branch  0 taken 53%
+branch  1 taken 47% (fallthrough)
+        -:  265:        {
+       10:  266:          fputs (argv[0], stdout);
+call    0 returned 100%
+       10:  267:          argc--;
+       10:  268:          argv++;
+       10:  269:          if (argc > 0)
+branch  0 taken 40% (fallthrough)
+branch  1 taken 60%
+        4:  270:            putchar (' ');
+call    0 returned 100%
+        -:  271:        }
+        -:  272:    }
+        -:  273:
+       16:  274:  if (display_return)
+branch  0 taken 94% (fallthrough)
+branch  1 taken 6%
+       15:  275:    putchar ('\n');
+call    0 returned 100%
+       16:  276:  return EXIT_SUCCESS;
+        -:  277:}

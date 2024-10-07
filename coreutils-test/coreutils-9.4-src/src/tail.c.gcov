@@ -1,0 +1,3578 @@
+        -:    0:Source:src/tail.c
+        -:    0:Graph:tail.gcno
+        -:    0:Data:tail.gcda
+        -:    0:Runs:30
+        -:    1:/* tail -- output the last part of file(s)
+        -:    2:   Copyright (C) 1989-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Can display any amount of data, unlike the Unix version, which uses
+        -:   18:   a fixed size buffer and therefore can only deliver a limited number
+        -:   19:   of lines.
+        -:   20:
+        -:   21:   Original version by Paul Rubin <phr@ocf.berkeley.edu>.
+        -:   22:   Extensions by David MacKenzie <djm@gnu.ai.mit.edu>.
+        -:   23:   tail -f for multiple files by Ian Lance Taylor <ian@airs.com>.
+        -:   24:   inotify back-end by Giuseppe Scrivano <gscrivano@gnu.org>.  */
+        -:   25:
+        -:   26:#include <config.h>
+        -:   27:
+        -:   28:#include <stdio.h>
+        -:   29:#include <getopt.h>
+        -:   30:#include <sys/types.h>
+        -:   31:#include <signal.h>
+        -:   32:
+        -:   33:#include "system.h"
+        -:   34:#include "argmatch.h"
+        -:   35:#include "assure.h"
+        -:   36:#include "cl-strtod.h"
+        -:   37:#include "fcntl--.h"
+        -:   38:#include "iopoll.h"
+        -:   39:#include "isapipe.h"
+        -:   40:#include "posixver.h"
+        -:   41:#include "quote.h"
+        -:   42:#include "safe-read.h"
+        -:   43:#include "stat-size.h"
+        -:   44:#include "stat-time.h"
+        -:   45:#include "xbinary-io.h"
+        -:   46:#include "xdectoint.h"
+        -:   47:#include "xnanosleep.h"
+        -:   48:#include "xstrtol.h"
+        -:   49:#include "xstrtod.h"
+        -:   50:
+        -:   51:#if HAVE_INOTIFY
+        -:   52:# include "hash.h"
+        -:   53:# include <poll.h>
+        -:   54:# include <sys/inotify.h>
+        -:   55:#endif
+        -:   56:
+        -:   57:/* Linux can optimize the handling of local files.  */
+        -:   58:#if defined __linux__ || defined __ANDROID__
+        -:   59:# include "fs.h"
+        -:   60:# include "fs-is-local.h"
+        -:   61:# if HAVE_SYS_STATFS_H
+        -:   62:#  include <sys/statfs.h>
+        -:   63:# elif HAVE_SYS_VFS_H
+        -:   64:#  include <sys/vfs.h>
+        -:   65:# endif
+        -:   66:#endif
+        -:   67:
+        -:   68:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   69:#define PROGRAM_NAME "tail"
+        -:   70:
+        -:   71:#define AUTHORS \
+        -:   72:  proper_name ("Paul Rubin"), \
+        -:   73:  proper_name ("David MacKenzie"), \
+        -:   74:  proper_name ("Ian Lance Taylor"), \
+        -:   75:  proper_name ("Jim Meyering")
+        -:   76:
+        -:   77:/* Number of items to tail.  */
+        -:   78:#define DEFAULT_N_LINES 10
+        -:   79:
+        -:   80:/* Special values for dump_remainder's N_BYTES parameter.  */
+        -:   81:#define COPY_TO_EOF UINTMAX_MAX
+        -:   82:#define COPY_A_BUFFER (UINTMAX_MAX - 1)
+        -:   83:
+        -:   84:/* FIXME: make Follow_name the default?  */
+        -:   85:#define DEFAULT_FOLLOW_MODE Follow_descriptor
+        -:   86:
+        -:   87:enum Follow_mode
+        -:   88:{
+        -:   89:  /* Follow the name of each file: if the file is renamed, try to reopen
+        -:   90:     that name and track the end of the new file if/when it's recreated.
+        -:   91:     This is useful for tracking logs that are occasionally rotated.  */
+        -:   92:  Follow_name = 1,
+        -:   93:
+        -:   94:  /* Follow each descriptor obtained upon opening a file.
+        -:   95:     That means we'll continue to follow the end of a file even after
+        -:   96:     it has been renamed or unlinked.  */
+        -:   97:  Follow_descriptor = 2
+        -:   98:};
+        -:   99:
+        -:  100:/* The types of files for which tail works.  */
+        -:  101:#define IS_TAILABLE_FILE_TYPE(Mode) \
+        -:  102:  (S_ISREG (Mode) || S_ISFIFO (Mode) || S_ISSOCK (Mode) || S_ISCHR (Mode))
+        -:  103:
+        -:  104:static char const *const follow_mode_string[] =
+        -:  105:{
+        -:  106:  "descriptor", "name", nullptr
+        -:  107:};
+        -:  108:
+        -:  109:static enum Follow_mode const follow_mode_map[] =
+        -:  110:{
+        -:  111:  Follow_descriptor, Follow_name,
+        -:  112:};
+        -:  113:
+        -:  114:struct File_spec
+        -:  115:{
+        -:  116:  /* The actual file name, or "-" for stdin.  */
+        -:  117:  char *name;
+        -:  118:
+        -:  119:  /* Attributes of the file the last time we checked.  */
+        -:  120:  off_t size;
+        -:  121:  struct timespec mtime;
+        -:  122:  dev_t dev;
+        -:  123:  ino_t ino;
+        -:  124:  mode_t mode;
+        -:  125:
+        -:  126:  /* The specified name initially referred to a directory or some other
+        -:  127:     type for which tail isn't meaningful.  Unlike for a permission problem
+        -:  128:     (tailable, below) once this is set, the name is not checked ever again.  */
+        -:  129:  bool ignore;
+        -:  130:
+        -:  131:  /* See the description of fremote.  */
+        -:  132:  bool remote;
+        -:  133:
+        -:  134:  /* A file is tailable if it exists, is readable, and is of type
+        -:  135:     IS_TAILABLE_FILE_TYPE.  */
+        -:  136:  bool tailable;
+        -:  137:
+        -:  138:  /* File descriptor on which the file is open; -1 if it's not open.  */
+        -:  139:  int fd;
+        -:  140:
+        -:  141:  /* The value of errno seen last time we checked this file.  */
+        -:  142:  int errnum;
+        -:  143:
+        -:  144:  /* 1 if O_NONBLOCK is clear, 0 if set, -1 if not known.  */
+        -:  145:  int blocking;
+        -:  146:
+        -:  147:#if HAVE_INOTIFY
+        -:  148:  /* The watch descriptor used by inotify.  */
+        -:  149:  int wd;
+        -:  150:
+        -:  151:  /* The parent directory watch descriptor.  It is used only
+        -:  152:   * when Follow_name is used.  */
+        -:  153:  int parent_wd;
+        -:  154:
+        -:  155:  /* Offset in NAME of the basename part.  */
+        -:  156:  size_t basename_start;
+        -:  157:#endif
+        -:  158:
+        -:  159:  /* See description of DEFAULT_MAX_N_... below.  */
+        -:  160:  uintmax_t n_unchanged_stats;
+        -:  161:};
+        -:  162:
+        -:  163:/* Keep trying to open a file even if it is inaccessible when tail starts
+        -:  164:   or if it becomes inaccessible later -- useful only with -f.  */
+        -:  165:static bool reopen_inaccessible_files;
+        -:  166:
+        -:  167:/* If true, interpret the numeric argument as the number of lines.
+        -:  168:   Otherwise, interpret it as the number of bytes.  */
+        -:  169:static bool count_lines;
+        -:  170:
+        -:  171:/* Whether we follow the name of each file or the file descriptor
+        -:  172:   that is initially associated with each name.  */
+        -:  173:static enum Follow_mode follow_mode = Follow_descriptor;
+        -:  174:
+        -:  175:/* If true, read from the ends of all specified files until killed.  */
+        -:  176:static bool forever;
+        -:  177:
+        -:  178:/* If true, monitor output so we exit if pipe reader terminates.  */
+        -:  179:static bool monitor_output;
+        -:  180:
+        -:  181:/* If true, count from start of file instead of end.  */
+        -:  182:static bool from_start;
+        -:  183:
+        -:  184:/* If true, print filename headers.  */
+        -:  185:static bool print_headers;
+        -:  186:
+        -:  187:/* Character to split lines by. */
+        -:  188:static char line_end;
+        -:  189:
+        -:  190:/* When to print the filename banners.  */
+        -:  191:enum header_mode
+        -:  192:{
+        -:  193:  multiple_files, always, never
+        -:  194:};
+        -:  195:
+        -:  196:/* When tailing a file by name, if there have been this many consecutive
+        -:  197:   iterations for which the file has not changed, then open/fstat
+        -:  198:   the file to determine if that file name is still associated with the
+        -:  199:   same device/inode-number pair as before.  This option is meaningful only
+        -:  200:   when following by name.  --max-unchanged-stats=N  */
+        -:  201:#define DEFAULT_MAX_N_UNCHANGED_STATS_BETWEEN_OPENS 5
+        -:  202:static uintmax_t max_n_unchanged_stats_between_opens =
+        -:  203:  DEFAULT_MAX_N_UNCHANGED_STATS_BETWEEN_OPENS;
+        -:  204:
+        -:  205:/* The process ID of the process (presumably on the current host)
+        -:  206:   that is writing to all followed files.  */
+        -:  207:static pid_t pid;
+        -:  208:
+        -:  209:/* True if we have ever read standard input.  */
+        -:  210:static bool have_read_stdin;
+        -:  211:
+        -:  212:/* If nonzero, skip the is-regular-file test used to determine whether
+        -:  213:   to use the lseek optimization.  Instead, use the more general (and
+        -:  214:   more expensive) code unconditionally. Intended solely for testing.  */
+        -:  215:static bool presume_input_pipe;
+        -:  216:
+        -:  217:/* If nonzero then don't use inotify even if available.  */
+        -:  218:static bool disable_inotify;
+        -:  219:
+        -:  220:/* For long options that have no equivalent short option, use a
+        -:  221:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:  222:enum
+        -:  223:{
+        -:  224:  RETRY_OPTION = CHAR_MAX + 1,
+        -:  225:  MAX_UNCHANGED_STATS_OPTION,
+        -:  226:  PID_OPTION,
+        -:  227:  PRESUME_INPUT_PIPE_OPTION,
+        -:  228:  LONG_FOLLOW_OPTION,
+        -:  229:  DISABLE_INOTIFY_OPTION
+        -:  230:};
+        -:  231:
+        -:  232:static struct option const long_options[] =
+        -:  233:{
+        -:  234:  {"bytes", required_argument, nullptr, 'c'},
+        -:  235:  {"follow", optional_argument, nullptr, LONG_FOLLOW_OPTION},
+        -:  236:  {"lines", required_argument, nullptr, 'n'},
+        -:  237:  {"max-unchanged-stats", required_argument, nullptr,
+        -:  238:   MAX_UNCHANGED_STATS_OPTION},
+        -:  239:  {"-disable-inotify", no_argument, nullptr,
+        -:  240:   DISABLE_INOTIFY_OPTION}, /* do not document */
+        -:  241:  {"pid", required_argument, nullptr, PID_OPTION},
+        -:  242:  {"-presume-input-pipe", no_argument, nullptr,
+        -:  243:   PRESUME_INPUT_PIPE_OPTION}, /* do not document */
+        -:  244:  {"quiet", no_argument, nullptr, 'q'},
+        -:  245:  {"retry", no_argument, nullptr, RETRY_OPTION},
+        -:  246:  {"silent", no_argument, nullptr, 'q'},
+        -:  247:  {"sleep-interval", required_argument, nullptr, 's'},
+        -:  248:  {"verbose", no_argument, nullptr, 'v'},
+        -:  249:  {"zero-terminated", no_argument, nullptr, 'z'},
+        -:  250:  {GETOPT_HELP_OPTION_DECL},
+        -:  251:  {GETOPT_VERSION_OPTION_DECL},
+        -:  252:  {nullptr, 0, nullptr, 0}
+        -:  253:};
+        -:  254:
+        -:  255:void
+function usage called 5 returned 0% blocks executed 16%
+        5:  256:usage (int status)
+        -:  257:{
+        5:  258:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        5:  259:    emit_try_help ();
+call    0 returned 100%
+        -:  260:  else
+        -:  261:    {
+    #####:  262:      printf (_("\
+call    0 never executed
+        -:  263:Usage: %s [OPTION]... [FILE]...\n\
+        -:  264:"),
+        -:  265:              program_name);
+    #####:  266:      printf (_("\
+call    0 never executed
+        -:  267:Print the last %d lines of each FILE to standard output.\n\
+        -:  268:With more than one FILE, precede each with a header giving the file name.\n\
+        -:  269:"), DEFAULT_N_LINES);
+        -:  270:
+    #####:  271:      emit_stdin_note ();
+call    0 never executed
+    #####:  272:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  273:
+    #####:  274:     fputs (_("\
+call    0 never executed
+        -:  275:  -c, --bytes=[+]NUM       output the last NUM bytes; or use -c +NUM to\n\
+        -:  276:                             output starting with byte NUM of each file\n\
+        -:  277:"), stdout);
+    #####:  278:     fputs (_("\
+call    0 never executed
+        -:  279:  -f, --follow[={name|descriptor}]\n\
+        -:  280:                           output appended data as the file grows;\n\
+        -:  281:                             an absent option argument means 'descriptor'\n\
+        -:  282:  -F                       same as --follow=name --retry\n\
+        -:  283:"), stdout);
+    #####:  284:     printf (_("\
+call    0 never executed
+        -:  285:  -n, --lines=[+]NUM       output the last NUM lines, instead of the last %d;\n\
+        -:  286:                             or use -n +NUM to skip NUM-1 lines at the start\n\
+        -:  287:"),
+        -:  288:             DEFAULT_N_LINES
+        -:  289:             );
+    #####:  290:     printf (_("\
+call    0 never executed
+        -:  291:      --max-unchanged-stats=N\n\
+        -:  292:                           with --follow=name, reopen a FILE which has not\n\
+        -:  293:                             changed size after N (default %d) iterations\n\
+        -:  294:                             to see if it has been unlinked or renamed\n\
+        -:  295:                             (this is the usual case of rotated log files);\n\
+        -:  296:                             with inotify, this option is rarely useful\n\
+        -:  297:"),
+        -:  298:             DEFAULT_MAX_N_UNCHANGED_STATS_BETWEEN_OPENS
+        -:  299:             );
+    #####:  300:     fputs (_("\
+call    0 never executed
+        -:  301:      --pid=PID            with -f, terminate after process ID, PID dies\n\
+        -:  302:  -q, --quiet, --silent    never output headers giving file names\n\
+        -:  303:      --retry              keep trying to open a file if it is inaccessible\n\
+        -:  304:"), stdout);
+    #####:  305:     fputs (_("\
+call    0 never executed
+        -:  306:  -s, --sleep-interval=N   with -f, sleep for approximately N seconds\n\
+        -:  307:                             (default 1.0) between iterations;\n\
+        -:  308:                             with inotify and --pid=P, check process P at\n\
+        -:  309:                             least once every N seconds\n\
+        -:  310:  -v, --verbose            always output headers giving file names\n\
+        -:  311:"), stdout);
+    #####:  312:     fputs (_("\
+call    0 never executed
+        -:  313:  -z, --zero-terminated    line delimiter is NUL, not newline\n\
+        -:  314:"), stdout);
+    #####:  315:     fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  316:     fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  317:     fputs (_("\
+call    0 never executed
+        -:  318:\n\
+        -:  319:NUM may have a multiplier suffix:\n\
+        -:  320:b 512, kB 1000, K 1024, MB 1000*1000, M 1024*1024,\n\
+        -:  321:GB 1000*1000*1000, G 1024*1024*1024, and so on for T, P, E, Z, Y, R, Q.\n\
+        -:  322:Binary prefixes can be used, too: KiB=K, MiB=M, and so on.\n\
+        -:  323:\n\
+        -:  324:"), stdout);
+    #####:  325:     fputs (_("\
+call    0 never executed
+        -:  326:With --follow (-f), tail defaults to following the file descriptor, which\n\
+        -:  327:means that even if a tail'ed file is renamed, tail will continue to track\n\
+        -:  328:its end.  This default behavior is not desirable when you really want to\n\
+        -:  329:track the actual name of the file, not the file descriptor (e.g., log\n\
+        -:  330:rotation).  Use --follow=name in that case.  That causes tail to track the\n\
+        -:  331:named file in a way that accommodates renaming, removal and creation.\n\
+        -:  332:"), stdout);
+    #####:  333:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  334:    }
+        5:  335:  exit (status);
+        -:  336:}
+        -:  337:
+        -:  338:/* Ensure exit, either with SIGPIPE or EXIT_FAILURE status.  */
+        -:  339:static void
+function die_pipe called 0 returned 0% blocks executed 0%
+    #####:  340:die_pipe (void)
+        -:  341:{
+    #####:  342:  raise (SIGPIPE);
+call    0 never executed
+    #####:  343:  exit (EXIT_FAILURE);
+        -:  344:}
+        -:  345:
+        -:  346:/* If the output has gone away, then terminate
+        -:  347:   as we would if we had written to this output.  */
+        -:  348:static void
+function check_output_alive called 0 returned 0% blocks executed 0%
+    #####:  349:check_output_alive (void)
+        -:  350:{
+    #####:  351:  if (! monitor_output)
+branch  0 never executed
+branch  1 never executed
+    #####:  352:    return;
+        -:  353:
+    #####:  354:  if (iopoll (-1, STDOUT_FILENO, false) == IOPOLL_BROKEN_OUTPUT)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  355:    die_pipe ();
+call    0 never executed
+        -:  356:}
+        -:  357:
+        -:  358:MAYBE_UNUSED static bool
+function valid_file_spec called 0 returned 0% blocks executed 0%
+    #####:  359:valid_file_spec (struct File_spec const *f)
+        -:  360:{
+        -:  361:  /* Exactly one of the following subexpressions must be true. */
+    #####:  362:  return ((f->fd == -1) ^ (f->errnum == 0));
+        -:  363:}
+        -:  364:
+        -:  365:static char const *
+function pretty_name called 1 returned 100% blocks executed 80%
+        1:  366:pretty_name (struct File_spec const *f)
+        -:  367:{
+       1*:  368:  return (STREQ (f->name, "-") ? _("standard input") : f->name);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  369:}
+        -:  370:
+        -:  371:/* Record a file F with descriptor FD, size SIZE, status ST, and
+        -:  372:   blocking status BLOCKING.  */
+        -:  373:
+        -:  374:static void
+function record_open_fd called 0 returned 0% blocks executed 0%
+    #####:  375:record_open_fd (struct File_spec *f, int fd,
+        -:  376:                off_t size, struct stat const *st,
+        -:  377:                int blocking)
+        -:  378:{
+    #####:  379:  f->fd = fd;
+    #####:  380:  f->size = size;
+    #####:  381:  f->mtime = get_stat_mtime (st);
+    #####:  382:  f->dev = st->st_dev;
+    #####:  383:  f->ino = st->st_ino;
+    #####:  384:  f->mode = st->st_mode;
+    #####:  385:  f->blocking = blocking;
+    #####:  386:  f->n_unchanged_stats = 0;
+    #####:  387:  f->ignore = false;
+    #####:  388:}
+        -:  389:
+        -:  390:/* Close the file with descriptor FD and name FILENAME.  */
+        -:  391:
+        -:  392:static void
+function close_fd called 0 returned 0% blocks executed 0%
+    #####:  393:close_fd (int fd, char const *filename)
+        -:  394:{
+    #####:  395:  if (fd != -1 && fd != STDIN_FILENO && close (fd))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+branch  5 never executed
+branch  6 never executed
+        -:  396:    {
+    #####:  397:      error (0, errno, _("closing %s (fd=%d)"), quoteaf (filename), fd);
+call    0 never executed
+        -:  398:    }
+    #####:  399:}
+        -:  400:
+        -:  401:static void
+function write_header called 0 returned 0% blocks executed 0%
+    #####:  402:write_header (char const *pretty_filename)
+        -:  403:{
+        -:  404:  static bool first_file = true;
+        -:  405:
+    #####:  406:  printf ("%s==> %s <==\n", (first_file ? "" : "\n"), pretty_filename);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####:  407:  first_file = false;
+    #####:  408:}
+        -:  409:
+        -:  410:/* Write N_BYTES from BUFFER to stdout.
+        -:  411:   Exit immediately on error with a single diagnostic.  */
+        -:  412:
+        -:  413:static void
+function xwrite_stdout called 1 returned 100% blocks executed 40%
+        1:  414:xwrite_stdout (char const *buffer, size_t n_bytes)
+        -:  415:{
+        1:  416:  if (n_bytes > 0 && fwrite (buffer, 1, n_bytes, stdout) < n_bytes)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+call    2 returned 100%
+branch  3 taken 0% (fallthrough)
+branch  4 taken 100%
+        -:  417:    {
+    #####:  418:      clearerr (stdout); /* To avoid redundant close_stdout diagnostic.  */
+call    0 never executed
+    #####:  419:      error (EXIT_FAILURE, errno, _("error writing %s"),
+call    0 never executed
+call    1 never executed
+        -:  420:             quoteaf ("standard output"));
+        -:  421:    }
+        1:  422:}
+        -:  423:
+        -:  424:/* Read and output N_BYTES of file PRETTY_FILENAME starting at the current
+        -:  425:   position in FD.  If N_BYTES is COPY_TO_EOF, then copy until end of file.
+        -:  426:   If N_BYTES is COPY_A_BUFFER, then copy at most one buffer's worth.
+        -:  427:   Return the number of bytes read from the file.  */
+        -:  428:
+        -:  429:static uintmax_t
+function dump_remainder called 1 returned 100% blocks executed 45%
+        1:  430:dump_remainder (bool want_header, char const *pretty_filename, int fd,
+        -:  431:                uintmax_t n_bytes)
+        -:  432:{
+        -:  433:  uintmax_t n_written;
+        1:  434:  uintmax_t n_remaining = n_bytes;
+        -:  435:
+        1:  436:  n_written = 0;
+        -:  437:  while (true)
+    #####:  438:    {
+        -:  439:      char buffer[BUFSIZ];
+        1:  440:      size_t n = MIN (n_remaining, BUFSIZ);
+        1:  441:      size_t bytes_read = safe_read (fd, buffer, n);
+call    0 returned 100%
+        1:  442:      if (bytes_read == SAFE_READ_ERROR)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  443:        {
+    #####:  444:          if (errno != EAGAIN)
+branch  0 never executed
+branch  1 never executed
+    #####:  445:            error (EXIT_FAILURE, errno, _("error reading %s"),
+call    0 never executed
+call    1 never executed
+        -:  446:                   quoteaf (pretty_filename));
+    #####:  447:          break;
+        -:  448:        }
+        1:  449:      if (bytes_read == 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  450:        break;
+        1:  451:      if (want_header)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  452:        {
+    #####:  453:          write_header (pretty_filename);
+call    0 never executed
+    #####:  454:          want_header = false;
+        -:  455:        }
+        1:  456:      xwrite_stdout (buffer, bytes_read);
+call    0 returned 100%
+        1:  457:      n_written += bytes_read;
+        1:  458:      if (n_bytes != COPY_TO_EOF)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  459:        {
+        1:  460:          n_remaining -= bytes_read;
+       1*:  461:          if (n_remaining == 0 || n_bytes == COPY_A_BUFFER)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  462:            break;
+        -:  463:        }
+        -:  464:    }
+        -:  465:
+        1:  466:  return n_written;
+        -:  467:}
+        -:  468:
+        -:  469:/* Call lseek with the specified arguments, where file descriptor FD
+        -:  470:   corresponds to the file, FILENAME.
+        -:  471:   Give a diagnostic and exit nonzero if lseek fails.
+        -:  472:   Otherwise, return the resulting offset.  */
+        -:  473:
+        -:  474:static off_t
+function xlseek called 2 returned 100% blocks executed 18%
+        2:  475:xlseek (int fd, off_t offset, int whence, char const *filename)
+        -:  476:{
+        2:  477:  off_t new_offset = lseek (fd, offset, whence);
+call    0 returned 100%
+        -:  478:  char buf[INT_BUFSIZE_BOUND (offset)];
+        -:  479:  char *s;
+        -:  480:
+        2:  481:  if (0 <= new_offset)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        2:  482:    return new_offset;
+        -:  483:
+    #####:  484:  s = offtostr (offset, buf);
+call    0 never executed
+    #####:  485:  switch (whence)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  486:    {
+    #####:  487:    case SEEK_SET:
+    #####:  488:      error (EXIT_FAILURE, errno, _("%s: cannot seek to offset %s"),
+call    0 never executed
+call    1 never executed
+        -:  489:             quotef (filename), s);
+        -:  490:      break;
+    #####:  491:    case SEEK_CUR:
+    #####:  492:      error (EXIT_FAILURE, errno, _("%s: cannot seek to relative offset %s"),
+call    0 never executed
+call    1 never executed
+        -:  493:             quotef (filename), s);
+        -:  494:      break;
+    #####:  495:    case SEEK_END:
+    #####:  496:      error (EXIT_FAILURE, errno,
+call    0 never executed
+call    1 never executed
+        -:  497:             _("%s: cannot seek to end-relative offset %s"),
+        -:  498:             quotef (filename), s);
+        -:  499:      break;
+    #####:  500:    default:
+    #####:  501:      unreachable ();
+call    0 never executed
+        -:  502:    }
+        -:  503:}
+        -:  504:
+        -:  505:/* Print the last N_LINES lines from the end of file FD.
+        -:  506:   Go backward through the file, reading 'BUFSIZ' bytes at a time (except
+        -:  507:   probably the first), until we hit the start of the file or have
+        -:  508:   read NUMBER newlines.
+        -:  509:   START_POS is the starting position of the read pointer for the file
+        -:  510:   associated with FD (may be nonzero).
+        -:  511:   END_POS is the file offset of EOF (one larger than offset of last byte).
+        -:  512:   Return true if successful.  */
+        -:  513:
+        -:  514:static bool
+function file_lines called 1 returned 100% blocks executed 48%
+        1:  515:file_lines (char const *pretty_filename, int fd, uintmax_t n_lines,
+        -:  516:            off_t start_pos, off_t end_pos, uintmax_t *read_pos)
+        -:  517:{
+        -:  518:  char buffer[BUFSIZ];
+        -:  519:  size_t bytes_read;
+        1:  520:  off_t pos = end_pos;
+        -:  521:
+        1:  522:  if (n_lines == 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  523:    return true;
+        -:  524:
+        -:  525:  /* Set 'bytes_read' to the size of the last, probably partial, buffer;
+        -:  526:     0 < 'bytes_read' <= 'BUFSIZ'.  */
+        1:  527:  bytes_read = (pos - start_pos) % BUFSIZ;
+        1:  528:  if (bytes_read == 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  529:    bytes_read = BUFSIZ;
+        -:  530:  /* Make 'pos' a multiple of 'BUFSIZ' (0 if the file is short), so that all
+        -:  531:     reads will be on block boundaries, which might increase efficiency.  */
+        1:  532:  pos -= bytes_read;
+        1:  533:  xlseek (fd, pos, SEEK_SET, pretty_filename);
+call    0 returned 100%
+        1:  534:  bytes_read = safe_read (fd, buffer, bytes_read);
+call    0 returned 100%
+        1:  535:  if (bytes_read == SAFE_READ_ERROR)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  536:    {
+    #####:  537:      error (0, errno, _("error reading %s"), quoteaf (pretty_filename));
+call    0 never executed
+    #####:  538:      return false;
+        -:  539:    }
+        1:  540:  *read_pos = pos + bytes_read;
+        -:  541:
+        -:  542:  /* Count the incomplete line on files that don't end with a newline.  */
+        1:  543:  if (bytes_read && buffer[bytes_read - 1] != line_end)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        1:  544:    --n_lines;
+        -:  545:
+        -:  546:  do
+        -:  547:    {
+        -:  548:      /* Scan backward, counting the newlines in this bufferfull.  */
+        -:  549:
+        1:  550:      size_t n = bytes_read;
+        1:  551:      while (n)
+branch  0 taken 100%
+branch  1 taken 0% (fallthrough)
+        -:  552:        {
+        -:  553:          char const *nl;
+        1:  554:          nl = memrchr (buffer, line_end, n);
+        1:  555:          if (nl == nullptr)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  556:            break;
+    #####:  557:          n = nl - buffer;
+    #####:  558:          if (n_lines-- == 0)
+branch  0 never executed
+branch  1 never executed
+        -:  559:            {
+        -:  560:              /* If this newline isn't the last character in the buffer,
+        -:  561:                 output the part that is after it.  */
+    #####:  562:              xwrite_stdout (nl + 1, bytes_read - (n + 1));
+call    0 never executed
+    #####:  563:              *read_pos += dump_remainder (false, pretty_filename, fd,
+    #####:  564:                                           end_pos - (pos + bytes_read));
+call    0 never executed
+    #####:  565:              return true;
+        -:  566:            }
+        -:  567:        }
+        -:  568:
+        -:  569:      /* Not enough newlines in that bufferfull.  */
+        1:  570:      if (pos == start_pos)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  571:        {
+        -:  572:          /* Not enough lines in the file; print everything from
+        -:  573:             start_pos to the end.  */
+        1:  574:          xlseek (fd, start_pos, SEEK_SET, pretty_filename);
+call    0 returned 100%
+        1:  575:          *read_pos = start_pos + dump_remainder (false, pretty_filename, fd,
+call    0 returned 100%
+        -:  576:                                                  end_pos);
+        1:  577:          return true;
+        -:  578:        }
+    #####:  579:      pos -= BUFSIZ;
+    #####:  580:      xlseek (fd, pos, SEEK_SET, pretty_filename);
+call    0 never executed
+        -:  581:
+    #####:  582:      bytes_read = safe_read (fd, buffer, BUFSIZ);
+call    0 never executed
+    #####:  583:      if (bytes_read == SAFE_READ_ERROR)
+branch  0 never executed
+branch  1 never executed
+        -:  584:        {
+    #####:  585:          error (0, errno, _("error reading %s"), quoteaf (pretty_filename));
+call    0 never executed
+    #####:  586:          return false;
+        -:  587:        }
+        -:  588:
+    #####:  589:      *read_pos = pos + bytes_read;
+        -:  590:    }
+    #####:  591:  while (bytes_read > 0);
+branch  0 never executed
+branch  1 never executed
+        -:  592:
+    #####:  593:  return true;
+        -:  594:}
+        -:  595:
+        -:  596:/* Print the last N_LINES lines from the end of the standard input,
+        -:  597:   open for reading as pipe FD.
+        -:  598:   Buffer the text as a linked list of LBUFFERs, adding them as needed.
+        -:  599:   Return true if successful.  */
+        -:  600:
+        -:  601:static bool
+function pipe_lines called 0 returned 0% blocks executed 0%
+    #####:  602:pipe_lines (char const *pretty_filename, int fd, uintmax_t n_lines,
+        -:  603:            uintmax_t *read_pos)
+        -:  604:{
+        -:  605:  struct linebuffer
+        -:  606:  {
+        -:  607:    char buffer[BUFSIZ];
+        -:  608:    size_t nbytes;
+        -:  609:    size_t nlines;
+        -:  610:    struct linebuffer *next;
+        -:  611:  };
+        -:  612:  typedef struct linebuffer LBUFFER;
+        -:  613:  LBUFFER *first, *last, *tmp;
+    #####:  614:  size_t total_lines = 0;	/* Total number of newlines in all buffers.  */
+    #####:  615:  bool ok = true;
+        -:  616:  size_t n_read;		/* Size in bytes of most recent read */
+        -:  617:
+    #####:  618:  first = last = xmalloc (sizeof (LBUFFER));
+call    0 never executed
+    #####:  619:  first->nbytes = first->nlines = 0;
+    #####:  620:  first->next = nullptr;
+    #####:  621:  tmp = xmalloc (sizeof (LBUFFER));
+call    0 never executed
+        -:  622:
+        -:  623:  /* Input is always read into a fresh buffer.  */
+        -:  624:  while (true)
+        -:  625:    {
+    #####:  626:      n_read = safe_read (fd, tmp->buffer, BUFSIZ);
+call    0 never executed
+    #####:  627:      if (n_read == 0 || n_read == SAFE_READ_ERROR)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  628:        break;
+    #####:  629:      tmp->nbytes = n_read;
+    #####:  630:      *read_pos += n_read;
+    #####:  631:      tmp->nlines = 0;
+    #####:  632:      tmp->next = nullptr;
+        -:  633:
+        -:  634:      /* Count the number of newlines just read.  */
+        -:  635:      {
+    #####:  636:        char const *buffer_end = tmp->buffer + n_read;
+    #####:  637:        char const *p = tmp->buffer;
+    #####:  638:        while ((p = memchr (p, line_end, buffer_end - p)))
+branch  0 never executed
+branch  1 never executed
+        -:  639:          {
+    #####:  640:            ++p;
+    #####:  641:            ++tmp->nlines;
+        -:  642:          }
+        -:  643:      }
+    #####:  644:      total_lines += tmp->nlines;
+        -:  645:
+        -:  646:      /* If there is enough room in the last buffer read, just append the new
+        -:  647:         one to it.  This is because when reading from a pipe, 'n_read' can
+        -:  648:         often be very small.  */
+    #####:  649:      if (tmp->nbytes + last->nbytes < BUFSIZ)
+branch  0 never executed
+branch  1 never executed
+        -:  650:        {
+    #####:  651:          memcpy (&last->buffer[last->nbytes], tmp->buffer, tmp->nbytes);
+    #####:  652:          last->nbytes += tmp->nbytes;
+    #####:  653:          last->nlines += tmp->nlines;
+        -:  654:        }
+        -:  655:      else
+        -:  656:        {
+        -:  657:          /* If there's not enough room, link the new buffer onto the end of
+        -:  658:             the list, then either free up the oldest buffer for the next
+        -:  659:             read if that would leave enough lines, or else malloc a new one.
+        -:  660:             Some compaction mechanism is possible but probably not
+        -:  661:             worthwhile.  */
+    #####:  662:          last = last->next = tmp;
+    #####:  663:          if (total_lines - first->nlines > n_lines)
+branch  0 never executed
+branch  1 never executed
+        -:  664:            {
+    #####:  665:              tmp = first;
+    #####:  666:              total_lines -= first->nlines;
+    #####:  667:              first = first->next;
+        -:  668:            }
+        -:  669:          else
+    #####:  670:            tmp = xmalloc (sizeof (LBUFFER));
+call    0 never executed
+        -:  671:        }
+        -:  672:    }
+        -:  673:
+    #####:  674:  free (tmp);
+        -:  675:
+    #####:  676:  if (n_read == SAFE_READ_ERROR)
+branch  0 never executed
+branch  1 never executed
+        -:  677:    {
+    #####:  678:      error (0, errno, _("error reading %s"), quoteaf (pretty_filename));
+call    0 never executed
+    #####:  679:      ok = false;
+    #####:  680:      goto free_lbuffers;
+        -:  681:    }
+        -:  682:
+        -:  683:  /* If the file is empty, then bail out.  */
+    #####:  684:  if (last->nbytes == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  685:    goto free_lbuffers;
+        -:  686:
+        -:  687:  /* This prevents a core dump when the pipe contains no newlines.  */
+    #####:  688:  if (n_lines == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  689:    goto free_lbuffers;
+        -:  690:
+        -:  691:  /* Count the incomplete line on files that don't end with a newline.  */
+    #####:  692:  if (last->buffer[last->nbytes - 1] != line_end)
+branch  0 never executed
+branch  1 never executed
+        -:  693:    {
+    #####:  694:      ++last->nlines;
+    #####:  695:      ++total_lines;
+        -:  696:    }
+        -:  697:
+        -:  698:  /* Run through the list, printing lines.  First, skip over unneeded
+        -:  699:     buffers.  */
+    #####:  700:  for (tmp = first; total_lines - tmp->nlines > n_lines; tmp = tmp->next)
+branch  0 never executed
+branch  1 never executed
+    #####:  701:    total_lines -= tmp->nlines;
+        -:  702:
+        -:  703:  /* Find the correct beginning, then print the rest of the file.  */
+        -:  704:  {
+    #####:  705:    char const *beg = tmp->buffer;
+    #####:  706:    char const *buffer_end = tmp->buffer + tmp->nbytes;
+    #####:  707:    if (total_lines > n_lines)
+branch  0 never executed
+branch  1 never executed
+        -:  708:      {
+        -:  709:        /* Skip 'total_lines' - 'n_lines' newlines.  We made sure that
+        -:  710:           'total_lines' - 'n_lines' <= 'tmp->nlines'.  */
+        -:  711:        size_t j;
+    #####:  712:        for (j = total_lines - n_lines; j; --j)
+branch  0 never executed
+branch  1 never executed
+        -:  713:          {
+    #####:  714:            beg = rawmemchr (beg, line_end);
+    #####:  715:            ++beg;
+        -:  716:          }
+        -:  717:      }
+        -:  718:
+    #####:  719:    xwrite_stdout (beg, buffer_end - beg);
+call    0 never executed
+        -:  720:  }
+        -:  721:
+    #####:  722:  for (tmp = tmp->next; tmp; tmp = tmp->next)
+branch  0 never executed
+branch  1 never executed
+    #####:  723:    xwrite_stdout (tmp->buffer, tmp->nbytes);
+call    0 never executed
+        -:  724:
+    #####:  725:free_lbuffers:
+    #####:  726:  while (first)
+branch  0 never executed
+branch  1 never executed
+        -:  727:    {
+    #####:  728:      tmp = first->next;
+    #####:  729:      free (first);
+    #####:  730:      first = tmp;
+        -:  731:    }
+    #####:  732:  return ok;
+        -:  733:}
+        -:  734:
+        -:  735:/* Print the last N_BYTES characters from the end of pipe FD.
+        -:  736:   This is a stripped down version of pipe_lines.
+        -:  737:   Return true if successful.  */
+        -:  738:
+        -:  739:static bool
+function pipe_bytes called 0 returned 0% blocks executed 0%
+    #####:  740:pipe_bytes (char const *pretty_filename, int fd, uintmax_t n_bytes,
+        -:  741:            uintmax_t *read_pos)
+        -:  742:{
+        -:  743:  struct charbuffer
+        -:  744:  {
+        -:  745:    char buffer[BUFSIZ];
+        -:  746:    size_t nbytes;
+        -:  747:    struct charbuffer *next;
+        -:  748:  };
+        -:  749:  typedef struct charbuffer CBUFFER;
+        -:  750:  CBUFFER *first, *last, *tmp;
+        -:  751:  size_t i;			/* Index into buffers.  */
+    #####:  752:  size_t total_bytes = 0;	/* Total characters in all buffers.  */
+    #####:  753:  bool ok = true;
+        -:  754:  size_t n_read;
+        -:  755:
+    #####:  756:  first = last = xmalloc (sizeof (CBUFFER));
+call    0 never executed
+    #####:  757:  first->nbytes = 0;
+    #####:  758:  first->next = nullptr;
+    #####:  759:  tmp = xmalloc (sizeof (CBUFFER));
+call    0 never executed
+        -:  760:
+        -:  761:  /* Input is always read into a fresh buffer.  */
+        -:  762:  while (true)
+        -:  763:    {
+    #####:  764:      n_read = safe_read (fd, tmp->buffer, BUFSIZ);
+call    0 never executed
+    #####:  765:      if (n_read == 0 || n_read == SAFE_READ_ERROR)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  766:        break;
+    #####:  767:      *read_pos += n_read;
+    #####:  768:      tmp->nbytes = n_read;
+    #####:  769:      tmp->next = nullptr;
+        -:  770:
+    #####:  771:      total_bytes += tmp->nbytes;
+        -:  772:      /* If there is enough room in the last buffer read, just append the new
+        -:  773:         one to it.  This is because when reading from a pipe, 'nbytes' can
+        -:  774:         often be very small.  */
+    #####:  775:      if (tmp->nbytes + last->nbytes < BUFSIZ)
+branch  0 never executed
+branch  1 never executed
+        -:  776:        {
+    #####:  777:          memcpy (&last->buffer[last->nbytes], tmp->buffer, tmp->nbytes);
+    #####:  778:          last->nbytes += tmp->nbytes;
+        -:  779:        }
+        -:  780:      else
+        -:  781:        {
+        -:  782:          /* If there's not enough room, link the new buffer onto the end of
+        -:  783:             the list, then either free up the oldest buffer for the next
+        -:  784:             read if that would leave enough characters, or else malloc a new
+        -:  785:             one.  Some compaction mechanism is possible but probably not
+        -:  786:             worthwhile.  */
+    #####:  787:          last = last->next = tmp;
+    #####:  788:          if (total_bytes - first->nbytes > n_bytes)
+branch  0 never executed
+branch  1 never executed
+        -:  789:            {
+    #####:  790:              tmp = first;
+    #####:  791:              total_bytes -= first->nbytes;
+    #####:  792:              first = first->next;
+        -:  793:            }
+        -:  794:          else
+        -:  795:            {
+    #####:  796:              tmp = xmalloc (sizeof (CBUFFER));
+call    0 never executed
+        -:  797:            }
+        -:  798:        }
+        -:  799:    }
+        -:  800:
+    #####:  801:  free (tmp);
+        -:  802:
+    #####:  803:  if (n_read == SAFE_READ_ERROR)
+branch  0 never executed
+branch  1 never executed
+        -:  804:    {
+    #####:  805:      error (0, errno, _("error reading %s"), quoteaf (pretty_filename));
+call    0 never executed
+    #####:  806:      ok = false;
+    #####:  807:      goto free_cbuffers;
+        -:  808:    }
+        -:  809:
+        -:  810:  /* Run through the list, printing characters.  First, skip over unneeded
+        -:  811:     buffers.  */
+    #####:  812:  for (tmp = first; total_bytes - tmp->nbytes > n_bytes; tmp = tmp->next)
+branch  0 never executed
+branch  1 never executed
+    #####:  813:    total_bytes -= tmp->nbytes;
+        -:  814:
+        -:  815:  /* Find the correct beginning, then print the rest of the file.
+        -:  816:     We made sure that 'total_bytes' - 'n_bytes' <= 'tmp->nbytes'.  */
+    #####:  817:  if (total_bytes > n_bytes)
+branch  0 never executed
+branch  1 never executed
+    #####:  818:    i = total_bytes - n_bytes;
+        -:  819:  else
+    #####:  820:    i = 0;
+    #####:  821:  xwrite_stdout (&tmp->buffer[i], tmp->nbytes - i);
+call    0 never executed
+        -:  822:
+    #####:  823:  for (tmp = tmp->next; tmp; tmp = tmp->next)
+branch  0 never executed
+branch  1 never executed
+    #####:  824:    xwrite_stdout (tmp->buffer, tmp->nbytes);
+call    0 never executed
+        -:  825:
+    #####:  826:free_cbuffers:
+    #####:  827:  while (first)
+branch  0 never executed
+branch  1 never executed
+        -:  828:    {
+    #####:  829:      tmp = first->next;
+    #####:  830:      free (first);
+    #####:  831:      first = tmp;
+        -:  832:    }
+    #####:  833:  return ok;
+        -:  834:}
+        -:  835:
+        -:  836:/* Skip N_BYTES characters from the start of pipe FD, and print
+        -:  837:   any extra characters that were read beyond that.
+        -:  838:   Return 1 on error, 0 if ok, -1 if EOF.  */
+        -:  839:
+        -:  840:static int
+function start_bytes called 0 returned 0% blocks executed 0%
+    #####:  841:start_bytes (char const *pretty_filename, int fd, uintmax_t n_bytes,
+        -:  842:             uintmax_t *read_pos)
+        -:  843:{
+        -:  844:  char buffer[BUFSIZ];
+        -:  845:
+    #####:  846:  while (0 < n_bytes)
+branch  0 never executed
+branch  1 never executed
+        -:  847:    {
+    #####:  848:      size_t bytes_read = safe_read (fd, buffer, BUFSIZ);
+call    0 never executed
+    #####:  849:      if (bytes_read == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  850:        return -1;
+    #####:  851:      if (bytes_read == SAFE_READ_ERROR)
+branch  0 never executed
+branch  1 never executed
+        -:  852:        {
+    #####:  853:          error (0, errno, _("error reading %s"), quoteaf (pretty_filename));
+call    0 never executed
+    #####:  854:          return 1;
+        -:  855:        }
+    #####:  856:      *read_pos += bytes_read;
+    #####:  857:      if (bytes_read <= n_bytes)
+branch  0 never executed
+branch  1 never executed
+    #####:  858:        n_bytes -= bytes_read;
+        -:  859:      else
+        -:  860:        {
+    #####:  861:          size_t n_remaining = bytes_read - n_bytes;
+        -:  862:          /* Print extra characters if there are any.  */
+    #####:  863:          xwrite_stdout (&buffer[n_bytes], n_remaining);
+call    0 never executed
+    #####:  864:          break;
+        -:  865:        }
+        -:  866:    }
+        -:  867:
+    #####:  868:  return 0;
+        -:  869:}
+        -:  870:
+        -:  871:/* Skip N_LINES lines at the start of file or pipe FD, and print
+        -:  872:   any extra characters that were read beyond that.
+        -:  873:   Return 1 on error, 0 if ok, -1 if EOF.  */
+        -:  874:
+        -:  875:static int
+function start_lines called 0 returned 0% blocks executed 0%
+    #####:  876:start_lines (char const *pretty_filename, int fd, uintmax_t n_lines,
+        -:  877:             uintmax_t *read_pos)
+        -:  878:{
+    #####:  879:  if (n_lines == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  880:    return 0;
+        -:  881:
+        -:  882:  while (true)
+    #####:  883:    {
+        -:  884:      char buffer[BUFSIZ];
+    #####:  885:      size_t bytes_read = safe_read (fd, buffer, BUFSIZ);
+call    0 never executed
+    #####:  886:      if (bytes_read == 0) /* EOF */
+branch  0 never executed
+branch  1 never executed
+    #####:  887:        return -1;
+    #####:  888:      if (bytes_read == SAFE_READ_ERROR) /* error */
+branch  0 never executed
+branch  1 never executed
+        -:  889:        {
+    #####:  890:          error (0, errno, _("error reading %s"), quoteaf (pretty_filename));
+call    0 never executed
+    #####:  891:          return 1;
+        -:  892:        }
+        -:  893:
+    #####:  894:      char *buffer_end = buffer + bytes_read;
+        -:  895:
+    #####:  896:      *read_pos += bytes_read;
+        -:  897:
+    #####:  898:      char *p = buffer;
+    #####:  899:      while ((p = memchr (p, line_end, buffer_end - p)))
+branch  0 never executed
+branch  1 never executed
+        -:  900:        {
+    #####:  901:          ++p;
+    #####:  902:          if (--n_lines == 0)
+branch  0 never executed
+branch  1 never executed
+        -:  903:            {
+    #####:  904:              if (p < buffer_end)
+branch  0 never executed
+branch  1 never executed
+    #####:  905:                xwrite_stdout (p, buffer_end - p);
+call    0 never executed
+    #####:  906:              return 0;
+        -:  907:            }
+        -:  908:        }
+        -:  909:    }
+        -:  910:}
+        -:  911:
+        -:  912:/* Return false when FD is open on a file residing on a local file system.
+        -:  913:   If fstatfs fails, give a diagnostic and return true.
+        -:  914:   If fstatfs cannot be called, return true.  */
+        -:  915:static bool
+function fremote called 0 returned 0% blocks executed 0%
+    #####:  916:fremote (int fd, char const *name)
+        -:  917:{
+    #####:  918:  bool remote = true;           /* be conservative (poll by default).  */
+        -:  919:
+        -:  920:#if HAVE_FSTATFS && HAVE_STRUCT_STATFS_F_TYPE \
+        -:  921: && (defined __linux__ || defined __ANDROID__)
+        -:  922:  struct statfs buf;
+    #####:  923:  int err = fstatfs (fd, &buf);
+call    0 never executed
+    #####:  924:  if (err != 0)
+branch  0 never executed
+branch  1 never executed
+        -:  925:    {
+        -:  926:      /* On at least linux-2.6.38, fstatfs fails with ENOSYS when FD
+        -:  927:         is open on a pipe.  Treat that like a remote file.  */
+    #####:  928:      if (errno != ENOSYS)
+branch  0 never executed
+branch  1 never executed
+    #####:  929:        error (0, errno, _("cannot determine location of %s. "
+call    0 never executed
+        -:  930:                           "reverting to polling"), quoteaf (name));
+        -:  931:    }
+        -:  932:  else
+        -:  933:    {
+        -:  934:      /* Treat unrecognized file systems as "remote", so caller polls.
+        -:  935:         Note README-release has instructions for syncing the internal
+        -:  936:         list with the latest Linux kernel file system constants.  */
+    #####:  937:      remote = is_local_fs_type (buf.f_type) <= 0;
+call    0 never executed
+        -:  938:    }
+        -:  939:#endif
+        -:  940:
+    #####:  941:  return remote;
+        -:  942:}
+        -:  943:
+        -:  944:/* open/fstat F->name and handle changes.  */
+        -:  945:static void
+function recheck called 0 returned 0% blocks executed 0%
+    #####:  946:recheck (struct File_spec *f, bool blocking)
+        -:  947:{
+        -:  948:  struct stat new_stats;
+    #####:  949:  bool ok = true;
+    #####:  950:  bool is_stdin = (STREQ (f->name, "-"));
+    #####:  951:  bool was_tailable = f->tailable;
+    #####:  952:  int prev_errnum = f->errnum;
+        -:  953:  bool new_file;
+    #####:  954:  int fd = (is_stdin
+        -:  955:            ? STDIN_FILENO
+    #####:  956:            : open (f->name, O_RDONLY | (blocking ? 0 : O_NONBLOCK)));
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+        -:  957:
+    #####:  958:  affirm (valid_file_spec (f));
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+call    3 never executed
+        -:  959:
+        -:  960:  /* If the open fails because the file doesn't exist,
+        -:  961:     then mark the file as not tailable.  */
+    #####:  962:  f->tailable = !(reopen_inaccessible_files && fd == -1);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  963:
+    #####:  964:  if (! disable_inotify && ! lstat (f->name, &new_stats)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  965:      && S_ISLNK (new_stats.st_mode))
+branch  0 never executed
+branch  1 never executed
+        -:  966:    {
+        -:  967:      /* Diagnose the edge case where a regular file is changed
+        -:  968:         to a symlink.  We avoid inotify with symlinks since
+        -:  969:         it's awkward to match between symlink name and target.  */
+    #####:  970:      ok = false;
+    #####:  971:      f->errnum = -1;
+    #####:  972:      f->ignore = true;
+        -:  973:
+    #####:  974:      error (0, 0, _("%s has been replaced with an untailable symbolic link"),
+call    0 never executed
+call    1 never executed
+        -:  975:             quoteaf (pretty_name (f)));
+        -:  976:    }
+    #####:  977:  else if (fd == -1 || fstat (fd, &new_stats) < 0)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  978:    {
+    #####:  979:      ok = false;
+    #####:  980:      f->errnum = errno;
+    #####:  981:      if (!f->tailable)
+branch  0 never executed
+branch  1 never executed
+        -:  982:        {
+    #####:  983:          if (was_tailable)
+branch  0 never executed
+branch  1 never executed
+        -:  984:            {
+        -:  985:              /* FIXME-maybe: detect the case in which the file first becomes
+        -:  986:                 unreadable (perms), and later becomes readable again and can
+        -:  987:                 be seen to be the same file (dev/ino).  Otherwise, tail prints
+        -:  988:                 the entire contents of the file when it becomes readable.  */
+    #####:  989:              error (0, f->errnum, _("%s has become inaccessible"),
+call    0 never executed
+call    1 never executed
+        -:  990:                     quoteaf (pretty_name (f)));
+        -:  991:            }
+        -:  992:          else
+        -:  993:            {
+        -:  994:              /* say nothing... it's still not tailable */
+        -:  995:            }
+        -:  996:        }
+    #####:  997:      else if (prev_errnum != errno)
+branch  0 never executed
+branch  1 never executed
+    #####:  998:        error (0, errno, "%s", quotef (pretty_name (f)));
+call    0 never executed
+call    1 never executed
+        -:  999:    }
+    #####: 1000:  else if (!IS_TAILABLE_FILE_TYPE (new_stats.st_mode))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+        -: 1001:    {
+    #####: 1002:      ok = false;
+    #####: 1003:      f->errnum = -1;
+    #####: 1004:      f->tailable = false;
+    #####: 1005:      f->ignore = ! (reopen_inaccessible_files && follow_mode == Follow_name);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1006:      if (was_tailable || prev_errnum != f->errnum)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1007:        error (0, 0, _("%s has been replaced with an untailable file%s"),
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+        -: 1008:               quoteaf (pretty_name (f)),
+        -: 1009:               f->ignore ? _("; giving up on this name") : "");
+        -: 1010:    }
+    #####: 1011:  else if ((f->remote = fremote (fd, pretty_name (f))) && ! disable_inotify)
+call    0 never executed
+call    1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -: 1012:    {
+    #####: 1013:      ok = false;
+    #####: 1014:      f->errnum = -1;
+    #####: 1015:      error (0, 0, _("%s has been replaced with an untailable remote file"),
+call    0 never executed
+call    1 never executed
+        -: 1016:             quoteaf (pretty_name (f)));
+    #####: 1017:      f->ignore = true;
+    #####: 1018:      f->remote = true;
+        -: 1019:    }
+        -: 1020:  else
+        -: 1021:    {
+    #####: 1022:      f->errnum = 0;
+        -: 1023:    }
+        -: 1024:
+    #####: 1025:  new_file = false;
+    #####: 1026:  if (!ok)
+branch  0 never executed
+branch  1 never executed
+        -: 1027:    {
+    #####: 1028:      close_fd (fd, pretty_name (f));
+call    0 never executed
+call    1 never executed
+    #####: 1029:      close_fd (f->fd, pretty_name (f));
+call    0 never executed
+call    1 never executed
+    #####: 1030:      f->fd = -1;
+        -: 1031:    }
+    #####: 1032:  else if (prev_errnum && prev_errnum != ENOENT)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1033:    {
+    #####: 1034:      new_file = true;
+    #####: 1035:      affirm (f->fd == -1);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####: 1036:      error (0, 0, _("%s has become accessible"), quoteaf (pretty_name (f)));
+call    0 never executed
+call    1 never executed
+        -: 1037:    }
+    #####: 1038:  else if (f->fd == -1)
+branch  0 never executed
+branch  1 never executed
+        -: 1039:    {
+        -: 1040:      /* A new file even when inodes haven't changed as <dev,inode>
+        -: 1041:         pairs can be reused, and we know the file was missing
+        -: 1042:         on the previous iteration.  Note this also means the file
+        -: 1043:         is redisplayed in --follow=name mode if renamed away from
+        -: 1044:         and back to a monitored name.  */
+    #####: 1045:      new_file = true;
+        -: 1046:
+    #####: 1047:      error (0, 0,
+call    0 never executed
+call    1 never executed
+        -: 1048:             _("%s has appeared;  following new file"),
+        -: 1049:             quoteaf (pretty_name (f)));
+        -: 1050:    }
+    #####: 1051:  else if (f->ino != new_stats.st_ino || f->dev != new_stats.st_dev)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1052:    {
+        -: 1053:      /* File has been replaced (e.g., via log rotation) --
+        -: 1054:        tail the new one.  */
+    #####: 1055:      new_file = true;
+        -: 1056:
+    #####: 1057:      error (0, 0,
+call    0 never executed
+call    1 never executed
+        -: 1058:             _("%s has been replaced;  following new file"),
+        -: 1059:             quoteaf (pretty_name (f)));
+        -: 1060:
+        -: 1061:      /* Close the old one.  */
+    #####: 1062:      close_fd (f->fd, pretty_name (f));
+call    0 never executed
+call    1 never executed
+        -: 1063:
+        -: 1064:    }
+        -: 1065:  else
+        -: 1066:    {
+        -: 1067:      /* No changes detected, so close new fd.  */
+    #####: 1068:      close_fd (fd, pretty_name (f));
+call    0 never executed
+call    1 never executed
+        -: 1069:    }
+        -: 1070:
+        -: 1071:  /* FIXME: When a log is rotated, daemons tend to log to the
+        -: 1072:     old file descriptor until the new file is present and
+        -: 1073:     the daemon is sent a signal.  Therefore tail may miss entries
+        -: 1074:     being written to the old file.  Perhaps we should keep
+        -: 1075:     the older file open and continue to monitor it until
+        -: 1076:     data is written to a new file.  */
+    #####: 1077:  if (new_file)
+branch  0 never executed
+branch  1 never executed
+        -: 1078:    {
+        -: 1079:      /* Start at the beginning of the file.  */
+    #####: 1080:      record_open_fd (f, fd, 0, &new_stats, (is_stdin ? -1 : blocking));
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####: 1081:      if (S_ISREG (new_stats.st_mode))
+branch  0 never executed
+branch  1 never executed
+    #####: 1082:        xlseek (fd, 0, SEEK_SET, pretty_name (f));
+call    0 never executed
+call    1 never executed
+        -: 1083:    }
+    #####: 1084:}
+        -: 1085:
+        -: 1086:/* Return true if any of the N_FILES files in F are live, i.e., have
+        -: 1087:   open file descriptors, or should be checked again (see --retry).
+        -: 1088:   When following descriptors, checking should only continue when any
+        -: 1089:   of the files is not yet ignored.  */
+        -: 1090:
+        -: 1091:static bool
+function any_live_files called 0 returned 0% blocks executed 0%
+    #####: 1092:any_live_files (const struct File_spec *f, size_t n_files)
+        -: 1093:{
+        -: 1094:  /* In inotify mode, ignore may be set for files
+        -: 1095:     which may later be replaced with new files.
+        -: 1096:     So always consider files live in -F mode.  */
+    #####: 1097:  if (reopen_inaccessible_files && follow_mode == Follow_name)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1098:    return true;
+        -: 1099:
+    #####: 1100:  for (size_t i = 0; i < n_files; i++)
+branch  0 never executed
+branch  1 never executed
+        -: 1101:    {
+    #####: 1102:      if (0 <= f[i].fd)
+branch  0 never executed
+branch  1 never executed
+    #####: 1103:        return true;
+        -: 1104:      else
+        -: 1105:        {
+    #####: 1106:          if (! f[i].ignore && reopen_inaccessible_files)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1107:            return true;
+        -: 1108:        }
+        -: 1109:    }
+        -: 1110:
+    #####: 1111:  return false;
+        -: 1112:}
+        -: 1113:
+        -: 1114:/* Tail N_FILES files forever, or until killed.
+        -: 1115:   The pertinent information for each file is stored in an entry of F.
+        -: 1116:   Loop over each of them, doing an fstat to see if they have changed size,
+        -: 1117:   and an occasional open/fstat to see if any dev/ino pair has changed.
+        -: 1118:   If none of them have changed size in one iteration, sleep for a
+        -: 1119:   while and try again.  Continue until the user interrupts us.  */
+        -: 1120:
+        -: 1121:static void
+function tail_forever called 0 returned 0% blocks executed 0%
+    #####: 1122:tail_forever (struct File_spec *f, size_t n_files, double sleep_interval)
+        -: 1123:{
+        -: 1124:  /* Use blocking I/O as an optimization, when it's easy.  */
+    #####: 1125:  bool blocking = (pid == 0 && follow_mode == Follow_descriptor
+branch  0 never executed
+branch  1 never executed
+    #####: 1126:                   && n_files == 1 && f[0].fd != -1 && ! S_ISREG (f[0].mode));
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+        -: 1127:  size_t last;
+    #####: 1128:  bool writer_is_dead = false;
+        -: 1129:
+    #####: 1130:  last = n_files - 1;
+        -: 1131:
+        -: 1132:  while (true)
+    #####: 1133:    {
+        -: 1134:      size_t i;
+    #####: 1135:      bool any_input = false;
+        -: 1136:
+    #####: 1137:      for (i = 0; i < n_files; i++)
+branch  0 never executed
+branch  1 never executed
+        -: 1138:        {
+        -: 1139:          int fd;
+        -: 1140:          char const *name;
+        -: 1141:          mode_t mode;
+        -: 1142:          struct stat stats;
+        -: 1143:          uintmax_t bytes_read;
+        -: 1144:
+    #####: 1145:          if (f[i].ignore)
+branch  0 never executed
+branch  1 never executed
+    #####: 1146:            continue;
+        -: 1147:
+    #####: 1148:          if (f[i].fd < 0)
+branch  0 never executed
+branch  1 never executed
+        -: 1149:            {
+    #####: 1150:              recheck (&f[i], blocking);
+call    0 never executed
+    #####: 1151:              continue;
+        -: 1152:            }
+        -: 1153:
+    #####: 1154:          fd = f[i].fd;
+    #####: 1155:          name = pretty_name (&f[i]);
+call    0 never executed
+    #####: 1156:          mode = f[i].mode;
+        -: 1157:
+    #####: 1158:          if (f[i].blocking != blocking)
+branch  0 never executed
+branch  1 never executed
+        -: 1159:            {
+    #####: 1160:              int old_flags = fcntl (fd, F_GETFL);
+call    0 never executed
+    #####: 1161:              int new_flags = old_flags | (blocking ? 0 : O_NONBLOCK);
+branch  0 never executed
+branch  1 never executed
+    #####: 1162:              if (old_flags < 0
+branch  0 never executed
+branch  1 never executed
+    #####: 1163:                  || (new_flags != old_flags
+branch  0 never executed
+branch  1 never executed
+    #####: 1164:                      && fcntl (fd, F_SETFL, new_flags) == -1))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1165:                {
+        -: 1166:                  /* Don't update f[i].blocking if fcntl fails.  */
+    #####: 1167:                  if (S_ISREG (f[i].mode) && errno == EPERM)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1168:                    {
+        -: 1169:                      /* This happens when using tail -f on a file with
+        -: 1170:                         the append-only attribute.  */
+        -: 1171:                    }
+        -: 1172:                  else
+    #####: 1173:                    error (EXIT_FAILURE, errno,
+call    0 never executed
+call    1 never executed
+        -: 1174:                           _("%s: cannot change nonblocking mode"),
+        -: 1175:                           quotef (name));
+        -: 1176:                }
+        -: 1177:              else
+    #####: 1178:                f[i].blocking = blocking;
+        -: 1179:            }
+        -: 1180:
+    #####: 1181:          bool read_unchanged = false;
+    #####: 1182:          if (!f[i].blocking)
+branch  0 never executed
+branch  1 never executed
+        -: 1183:            {
+    #####: 1184:              if (fstat (fd, &stats) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1185:                {
+    #####: 1186:                  f[i].fd = -1;
+    #####: 1187:                  f[i].errnum = errno;
+    #####: 1188:                  error (0, errno, "%s", quotef (name));
+call    0 never executed
+    #####: 1189:                  close (fd); /* ignore failure */
+call    0 never executed
+    #####: 1190:                  continue;
+        -: 1191:                }
+        -: 1192:
+    #####: 1193:              if (f[i].mode == stats.st_mode
+branch  0 never executed
+branch  1 never executed
+    #####: 1194:                  && (! S_ISREG (stats.st_mode) || f[i].size == stats.st_size)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1195:                  && timespec_cmp (f[i].mtime, get_stat_mtime (&stats)) == 0)
+branch  0 never executed
+branch  1 never executed
+        -: 1196:                {
+    #####: 1197:                  if ((max_n_unchanged_stats_between_opens
+    #####: 1198:                       <= f[i].n_unchanged_stats++)
+branch  0 never executed
+branch  1 never executed
+    #####: 1199:                      && follow_mode == Follow_name)
+branch  0 never executed
+branch  1 never executed
+        -: 1200:                    {
+    #####: 1201:                      recheck (&f[i], f[i].blocking);
+call    0 never executed
+    #####: 1202:                      f[i].n_unchanged_stats = 0;
+        -: 1203:                    }
+    #####: 1204:                  if (fd != f[i].fd || S_ISREG (stats.st_mode) || 1 < n_files)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####: 1205:                    continue;
+        -: 1206:                  else
+    #####: 1207:                    read_unchanged = true;
+        -: 1208:                }
+        -: 1209:
+    #####: 1210:              affirm (fd == f[i].fd);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -: 1211:
+        -: 1212:              /* This file has changed.  Print out what we can, and
+        -: 1213:                 then keep looping.  */
+        -: 1214:
+    #####: 1215:              f[i].mtime = get_stat_mtime (&stats);
+    #####: 1216:              f[i].mode = stats.st_mode;
+        -: 1217:
+        -: 1218:              /* reset counter */
+    #####: 1219:              if (! read_unchanged)
+branch  0 never executed
+branch  1 never executed
+    #####: 1220:                f[i].n_unchanged_stats = 0;
+        -: 1221:
+        -: 1222:              /* XXX: This is only a heuristic, as the file may have also
+        -: 1223:                 been truncated and written to if st_size >= size
+        -: 1224:                 (in which case we ignore new data <= size).  */
+    #####: 1225:              if (S_ISREG (mode) && stats.st_size < f[i].size)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1226:                {
+    #####: 1227:                  error (0, 0, _("%s: file truncated"), quotef (name));
+call    0 never executed
+        -: 1228:                  /* Assume the file was truncated to 0,
+        -: 1229:                     and therefore output all "new" data.  */
+    #####: 1230:                  xlseek (fd, 0, SEEK_SET, name);
+call    0 never executed
+    #####: 1231:                  f[i].size = 0;
+        -: 1232:                }
+        -: 1233:
+    #####: 1234:              if (i != last)
+branch  0 never executed
+branch  1 never executed
+        -: 1235:                {
+    #####: 1236:                  if (print_headers)
+branch  0 never executed
+branch  1 never executed
+    #####: 1237:                    write_header (name);
+call    0 never executed
+    #####: 1238:                  last = i;
+        -: 1239:                }
+        -: 1240:            }
+        -: 1241:
+        -: 1242:          /* Don't read more than st_size on networked file systems
+        -: 1243:             because it was seen on glusterfs at least, that st_size
+        -: 1244:             may be smaller than the data read on a _subsequent_ stat call.  */
+        -: 1245:          uintmax_t bytes_to_read;
+    #####: 1246:          if (f[i].blocking)
+branch  0 never executed
+branch  1 never executed
+    #####: 1247:            bytes_to_read = COPY_A_BUFFER;
+    #####: 1248:          else if (S_ISREG (mode) && f[i].remote)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1249:            bytes_to_read = stats.st_size - f[i].size;
+        -: 1250:          else
+    #####: 1251:            bytes_to_read = COPY_TO_EOF;
+        -: 1252:
+    #####: 1253:          bytes_read = dump_remainder (false, name, fd, bytes_to_read);
+call    0 never executed
+        -: 1254:
+    #####: 1255:          if (read_unchanged && bytes_read)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1256:            f[i].n_unchanged_stats = 0;
+        -: 1257:
+    #####: 1258:          any_input |= (bytes_read != 0);
+    #####: 1259:          f[i].size += bytes_read;
+        -: 1260:        }
+        -: 1261:
+    #####: 1262:      if (! any_live_files (f, n_files))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1263:        {
+        -: 1264:          error (0, 0, _("no files remaining"));
+    #####: 1265:          break;
+        -: 1266:        }
+        -: 1267:
+    #####: 1268:      if ((!any_input || blocking) && fflush (stdout) != 0)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+branch  5 never executed
+branch  6 never executed
+    #####: 1269:        write_error ();
+call    0 never executed
+        -: 1270:
+    #####: 1271:      check_output_alive ();
+call    0 never executed
+        -: 1272:
+        -: 1273:      /* If nothing was read, sleep and/or check for dead writers.  */
+    #####: 1274:      if (!any_input)
+branch  0 never executed
+branch  1 never executed
+        -: 1275:        {
+    #####: 1276:          if (writer_is_dead)
+branch  0 never executed
+branch  1 never executed
+    #####: 1277:            break;
+        -: 1278:
+        -: 1279:          /* Once the writer is dead, read the files once more to
+        -: 1280:             avoid a race condition.  */
+    #####: 1281:          writer_is_dead = (pid != 0
+    #####: 1282:                            && kill (pid, 0) != 0
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1283:                            /* Handle the case in which you cannot send a
+        -: 1284:                               signal to the writer, so kill fails and sets
+        -: 1285:                               errno to EPERM.  */
+    #####: 1286:                            && errno != EPERM);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1287:
+    #####: 1288:          if (!writer_is_dead && xnanosleep (sleep_interval))
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####: 1289:            error (EXIT_FAILURE, errno, _("cannot read realtime clock"));
+call    0 never executed
+        -: 1290:
+        -: 1291:        }
+        -: 1292:    }
+    #####: 1293:}
+        -: 1294:
+        -: 1295:#if HAVE_INOTIFY
+        -: 1296:
+        -: 1297:/* Return true if any of the N_FILES files in F is remote, i.e., has
+        -: 1298:   an open file descriptor and is on a network file system.  */
+        -: 1299:
+        -: 1300:static bool
+function any_remote_file called 0 returned 0% blocks executed 0%
+    #####: 1301:any_remote_file (const struct File_spec *f, size_t n_files)
+        -: 1302:{
+    #####: 1303:  for (size_t i = 0; i < n_files; i++)
+branch  0 never executed
+branch  1 never executed
+    #####: 1304:    if (0 <= f[i].fd && f[i].remote)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1305:      return true;
+    #####: 1306:  return false;
+        -: 1307:}
+        -: 1308:
+        -: 1309:/* Return true if any of the N_FILES files in F is non remote, i.e., has
+        -: 1310:   an open file descriptor and is not on a network file system.  */
+        -: 1311:
+        -: 1312:static bool
+function any_non_remote_file called 0 returned 0% blocks executed 0%
+    #####: 1313:any_non_remote_file (const struct File_spec *f, size_t n_files)
+        -: 1314:{
+    #####: 1315:  for (size_t i = 0; i < n_files; i++)
+branch  0 never executed
+branch  1 never executed
+    #####: 1316:    if (0 <= f[i].fd && ! f[i].remote)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1317:      return true;
+    #####: 1318:  return false;
+        -: 1319:}
+        -: 1320:
+        -: 1321:/* Return true if any of the N_FILES files in F is a symlink.
+        -: 1322:   Note we don't worry about the edge case where "-" exists,
+        -: 1323:   since that will have the same consequences for inotify,
+        -: 1324:   which is the only context this function is currently used.  */
+        -: 1325:
+        -: 1326:static bool
+function any_symlinks called 0 returned 0% blocks executed 0%
+    #####: 1327:any_symlinks (const struct File_spec *f, size_t n_files)
+        -: 1328:{
+        -: 1329:  struct stat st;
+    #####: 1330:  for (size_t i = 0; i < n_files; i++)
+branch  0 never executed
+branch  1 never executed
+    #####: 1331:    if (lstat (f[i].name, &st) == 0 && S_ISLNK (st.st_mode))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####: 1332:      return true;
+    #####: 1333:  return false;
+        -: 1334:}
+        -: 1335:
+        -: 1336:/* Return true if any of the N_FILES files in F is not
+        -: 1337:   a regular file or fifo.  This is used to avoid adding inotify
+        -: 1338:   watches on a device file for example, which inotify
+        -: 1339:   will accept, but not give any events for.  */
+        -: 1340:
+        -: 1341:static bool
+function any_non_regular_fifo called 0 returned 0% blocks executed 0%
+    #####: 1342:any_non_regular_fifo (const struct File_spec *f, size_t n_files)
+        -: 1343:{
+    #####: 1344:  for (size_t i = 0; i < n_files; i++)
+branch  0 never executed
+branch  1 never executed
+    #####: 1345:    if (0 <= f[i].fd && ! S_ISREG (f[i].mode) && ! S_ISFIFO (f[i].mode))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####: 1346:      return true;
+    #####: 1347:  return false;
+        -: 1348:}
+        -: 1349:
+        -: 1350:/* Return true if any of the N_FILES files in F represents
+        -: 1351:   stdin and is tailable.  */
+        -: 1352:
+        -: 1353:static bool
+function tailable_stdin called 0 returned 0% blocks executed 0%
+    #####: 1354:tailable_stdin (const struct File_spec *f, size_t n_files)
+        -: 1355:{
+    #####: 1356:  for (size_t i = 0; i < n_files; i++)
+branch  0 never executed
+branch  1 never executed
+    #####: 1357:    if (!f[i].ignore && STREQ (f[i].name, "-"))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1358:      return true;
+    #####: 1359:  return false;
+        -: 1360:}
+        -: 1361:
+        -: 1362:static size_t
+function wd_hasher called 0 returned 0% blocks executed 0%
+    #####: 1363:wd_hasher (const void *entry, size_t tabsize)
+        -: 1364:{
+    #####: 1365:  const struct File_spec *spec = entry;
+    #####: 1366:  return spec->wd % tabsize;
+        -: 1367:}
+        -: 1368:
+        -: 1369:static bool
+function wd_comparator called 0 returned 0% blocks executed 0%
+    #####: 1370:wd_comparator (const void *e1, const void *e2)
+        -: 1371:{
+    #####: 1372:  const struct File_spec *spec1 = e1;
+    #####: 1373:  const struct File_spec *spec2 = e2;
+    #####: 1374:  return spec1->wd == spec2->wd;
+        -: 1375:}
+        -: 1376:
+        -: 1377:/* Output (new) data for FSPEC->fd.
+        -: 1378:   PREV_FSPEC records the last File_spec for which we output.  */
+        -: 1379:static void
+function check_fspec called 0 returned 0% blocks executed 0%
+    #####: 1380:check_fspec (struct File_spec *fspec, struct File_spec **prev_fspec)
+        -: 1381:{
+        -: 1382:  struct stat stats;
+        -: 1383:  char const *name;
+        -: 1384:
+    #####: 1385:  if (fspec->fd == -1)
+branch  0 never executed
+branch  1 never executed
+    #####: 1386:    return;
+        -: 1387:
+    #####: 1388:  name = pretty_name (fspec);
+call    0 never executed
+        -: 1389:
+    #####: 1390:  if (fstat (fspec->fd, &stats) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1391:    {
+    #####: 1392:      fspec->errnum = errno;
+    #####: 1393:      close_fd (fspec->fd, name);
+call    0 never executed
+    #####: 1394:      fspec->fd = -1;
+    #####: 1395:      return;
+        -: 1396:    }
+        -: 1397:
+        -: 1398:  /* XXX: This is only a heuristic, as the file may have also
+        -: 1399:     been truncated and written to if st_size >= size
+        -: 1400:     (in which case we ignore new data <= size).
+        -: 1401:     Though in the inotify case it's more likely we'll get
+        -: 1402:     separate events for truncate() and write().  */
+    #####: 1403:  if (S_ISREG (fspec->mode) && stats.st_size < fspec->size)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1404:    {
+    #####: 1405:      error (0, 0, _("%s: file truncated"), quotef (name));
+call    0 never executed
+    #####: 1406:      xlseek (fspec->fd, 0, SEEK_SET, name);
+call    0 never executed
+    #####: 1407:      fspec->size = 0;
+        -: 1408:    }
+    #####: 1409:  else if (S_ISREG (fspec->mode) && stats.st_size == fspec->size
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1410:           && timespec_cmp (fspec->mtime, get_stat_mtime (&stats)) == 0)
+branch  0 never executed
+branch  1 never executed
+    #####: 1411:    return;
+        -: 1412:
+    #####: 1413:  bool want_header = print_headers && (fspec != *prev_fspec);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1414:
+    #####: 1415:  uintmax_t bytes_read = dump_remainder (want_header, name, fspec->fd,
+call    0 never executed
+        -: 1416:                                         COPY_TO_EOF);
+    #####: 1417:  fspec->size += bytes_read;
+        -: 1418:
+    #####: 1419:  if (bytes_read)
+branch  0 never executed
+branch  1 never executed
+        -: 1420:    {
+    #####: 1421:      *prev_fspec = fspec;
+    #####: 1422:      if (fflush (stdout) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1423:        write_error ();
+call    0 never executed
+        -: 1424:    }
+        -: 1425:}
+        -: 1426:
+        -: 1427:/* Attempt to tail N_FILES files forever, or until killed.
+        -: 1428:   Check modifications using the inotify events system.
+        -: 1429:   Exit if finished or on fatal error; return to revert to polling.  */
+        -: 1430:static void
+function tail_forever_inotify called 0 returned 0% blocks executed 0%
+    #####: 1431:tail_forever_inotify (int wd, struct File_spec *f, size_t n_files,
+        -: 1432:                      double sleep_interval, Hash_table **wd_to_namep)
+        -: 1433:{
+        -: 1434:# if TAIL_TEST_SLEEP
+        -: 1435:  /* Delay between open() and inotify_add_watch()
+        -: 1436:     to help trigger different cases.  */
+        -: 1437:  xnanosleep (1000000);
+        -: 1438:# endif
+    #####: 1439:  unsigned int max_realloc = 3;
+        -: 1440:
+        -: 1441:  /* Map an inotify watch descriptor to the name of the file it's watching.  */
+        -: 1442:  Hash_table *wd_to_name;
+        -: 1443:
+    #####: 1444:  bool found_watchable_file = false;
+    #####: 1445:  bool tailed_but_unwatchable = false;
+    #####: 1446:  bool found_unwatchable_dir = false;
+    #####: 1447:  bool no_inotify_resources = false;
+    #####: 1448:  bool writer_is_dead = false;
+        -: 1449:  struct File_spec *prev_fspec;
+    #####: 1450:  size_t evlen = 0;
+        -: 1451:  char *evbuf;
+    #####: 1452:  size_t evbuf_off = 0;
+    #####: 1453:  size_t len = 0;
+        -: 1454:
+    #####: 1455:  wd_to_name = hash_initialize (n_files, nullptr, wd_hasher, wd_comparator,
+call    0 never executed
+        -: 1456:                                nullptr);
+    #####: 1457:  if (! wd_to_name)
+branch  0 never executed
+branch  1 never executed
+    #####: 1458:    xalloc_die ();
+call    0 never executed
+    #####: 1459:  *wd_to_namep = wd_to_name;
+        -: 1460:
+        -: 1461:  /* The events mask used with inotify on files (not directories).  */
+    #####: 1462:  uint32_t inotify_wd_mask = IN_MODIFY;
+        -: 1463:  /* TODO: Perhaps monitor these events in Follow_descriptor mode also,
+        -: 1464:     to tag reported file names with "deleted", "moved" etc.  */
+    #####: 1465:  if (follow_mode == Follow_name)
+branch  0 never executed
+branch  1 never executed
+    #####: 1466:    inotify_wd_mask |= (IN_ATTRIB | IN_DELETE_SELF | IN_MOVE_SELF);
+        -: 1467:
+        -: 1468:  /* Add an inotify watch for each watched file.  If -F is specified then watch
+        -: 1469:     its parent directory too, in this way when they re-appear we can add them
+        -: 1470:     again to the watch list.  */
+        -: 1471:  size_t i;
+    #####: 1472:  for (i = 0; i < n_files; i++)
+branch  0 never executed
+branch  1 never executed
+        -: 1473:    {
+    #####: 1474:      if (!f[i].ignore)
+branch  0 never executed
+branch  1 never executed
+        -: 1475:        {
+    #####: 1476:          size_t fnlen = strlen (f[i].name);
+    #####: 1477:          if (evlen < fnlen)
+branch  0 never executed
+branch  1 never executed
+    #####: 1478:            evlen = fnlen;
+        -: 1479:
+    #####: 1480:          f[i].wd = -1;
+        -: 1481:
+    #####: 1482:          if (follow_mode == Follow_name)
+branch  0 never executed
+branch  1 never executed
+        -: 1483:            {
+    #####: 1484:              size_t dirlen = dir_len (f[i].name);
+    #####: 1485:              char prev = f[i].name[dirlen];
+    #####: 1486:              f[i].basename_start = last_component (f[i].name) - f[i].name;
+        -: 1487:
+    #####: 1488:              f[i].name[dirlen] = '\0';
+        -: 1489:
+        -: 1490:               /* It's fine to add the same directory more than once.
+        -: 1491:                  In that case the same watch descriptor is returned.  */
+    #####: 1492:              f[i].parent_wd = inotify_add_watch (wd, dirlen ? f[i].name : ".",
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -: 1493:                                                  (IN_CREATE | IN_DELETE
+        -: 1494:                                                   | IN_MOVED_TO | IN_ATTRIB
+        -: 1495:                                                   | IN_DELETE_SELF));
+        -: 1496:
+    #####: 1497:              f[i].name[dirlen] = prev;
+        -: 1498:
+    #####: 1499:              if (f[i].parent_wd < 0)
+branch  0 never executed
+branch  1 never executed
+        -: 1500:                {
+    #####: 1501:                  if (errno != ENOSPC) /* suppress confusing error.  */
+branch  0 never executed
+branch  1 never executed
+    #####: 1502:                    error (0, errno, _("cannot watch parent directory of %s"),
+call    0 never executed
+        -: 1503:                           quoteaf (f[i].name));
+        -: 1504:                  else
+        -: 1505:                    error (0, 0, _("inotify resources exhausted"));
+    #####: 1506:                  found_unwatchable_dir = true;
+        -: 1507:                  /* We revert to polling below.  Note invalid uses
+        -: 1508:                     of the inotify API will still be diagnosed.  */
+    #####: 1509:                  break;
+        -: 1510:                }
+        -: 1511:            }
+        -: 1512:
+    #####: 1513:          f[i].wd = inotify_add_watch (wd, f[i].name, inotify_wd_mask);
+call    0 never executed
+        -: 1514:
+    #####: 1515:          if (f[i].wd < 0)
+branch  0 never executed
+branch  1 never executed
+        -: 1516:            {
+    #####: 1517:              if (f[i].fd != -1)  /* already tailed.  */
+branch  0 never executed
+branch  1 never executed
+    #####: 1518:                tailed_but_unwatchable = true;
+    #####: 1519:              if (errno == ENOSPC || errno == ENOMEM)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1520:                {
+    #####: 1521:                  no_inotify_resources = true;
+        -: 1522:                  error (0, 0, _("inotify resources exhausted"));
+    #####: 1523:                  break;
+        -: 1524:                }
+    #####: 1525:              else if (errno != f[i].errnum)
+branch  0 never executed
+branch  1 never executed
+    #####: 1526:                error (0, errno, _("cannot watch %s"), quoteaf (f[i].name));
+call    0 never executed
+    #####: 1527:              continue;
+        -: 1528:            }
+        -: 1529:
+    #####: 1530:          if (hash_insert (wd_to_name, &(f[i])) == nullptr)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1531:            xalloc_die ();
+call    0 never executed
+        -: 1532:
+    #####: 1533:          found_watchable_file = true;
+        -: 1534:        }
+        -: 1535:    }
+        -: 1536:
+        -: 1537:  /* Linux kernel 2.6.24 at least has a bug where eventually, ENOSPC is always
+        -: 1538:     returned by inotify_add_watch.  In any case we should revert to polling
+        -: 1539:     when there are no inotify resources.  Also a specified directory may not
+        -: 1540:     be currently present or accessible, so revert to polling.  Also an already
+        -: 1541:     tailed but unwatchable due rename/unlink race, should also revert.  */
+    #####: 1542:  if (no_inotify_resources || found_unwatchable_dir
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1543:      || (follow_mode == Follow_descriptor && tailed_but_unwatchable))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1544:    return;
+    #####: 1545:  if (follow_mode == Follow_descriptor && !found_watchable_file)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1546:    exit (EXIT_FAILURE);
+call    0 never executed
+        -: 1547:
+    #####: 1548:  prev_fspec = &(f[n_files - 1]);
+        -: 1549:
+        -: 1550:  /* Check files again.  New files or data can be available since last time we
+        -: 1551:     checked and before they are watched by inotify.  */
+    #####: 1552:  for (i = 0; i < n_files; i++)
+branch  0 never executed
+branch  1 never executed
+        -: 1553:    {
+    #####: 1554:      if (! f[i].ignore)
+branch  0 never executed
+branch  1 never executed
+        -: 1555:        {
+        -: 1556:          /* check for new files.  */
+    #####: 1557:          if (follow_mode == Follow_name)
+branch  0 never executed
+branch  1 never executed
+    #####: 1558:            recheck (&(f[i]), false);
+call    0 never executed
+    #####: 1559:          else if (f[i].fd != -1)
+branch  0 never executed
+branch  1 never executed
+        -: 1560:            {
+        -: 1561:              /* If the file was replaced in the small window since we tailed,
+        -: 1562:                 then assume the watch is on the wrong item (different to
+        -: 1563:                 that we've already produced output for), and so revert to
+        -: 1564:                 polling the original descriptor.  */
+        -: 1565:              struct stat stats;
+        -: 1566:
+    #####: 1567:              if (stat (f[i].name, &stats) == 0
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1568:                  && (f[i].dev != stats.st_dev || f[i].ino != stats.st_ino))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1569:                {
+    #####: 1570:                  error (0, errno, _("%s was replaced"),
+call    0 never executed
+call    1 never executed
+        -: 1571:                         quoteaf (pretty_name (&(f[i]))));
+    #####: 1572:                  return;
+        -: 1573:                }
+        -: 1574:            }
+        -: 1575:
+        -: 1576:          /* check for new data.  */
+    #####: 1577:          check_fspec (&f[i], &prev_fspec);
+call    0 never executed
+        -: 1578:        }
+        -: 1579:    }
+        -: 1580:
+    #####: 1581:  evlen += sizeof (struct inotify_event) + 1;
+    #####: 1582:  evbuf = xmalloc (evlen);
+call    0 never executed
+        -: 1583:
+        -: 1584:  /* Wait for inotify events and handle them.  Events on directories
+        -: 1585:     ensure that watched files can be re-added when following by name.
+        -: 1586:     This loop blocks on the 'safe_read' call until a new event is notified.
+        -: 1587:     But when --pid=P is specified, tail usually waits via poll.  */
+        -: 1588:  while (true)
+    #####: 1589:    {
+        -: 1590:      struct File_spec *fspec;
+        -: 1591:      struct inotify_event *ev;
+        -: 1592:      void *void_ev;
+        -: 1593:
+        -: 1594:      /* When following by name without --retry, and the last file has
+        -: 1595:         been unlinked or renamed-away, diagnose it and return.  */
+    #####: 1596:      if (follow_mode == Follow_name
+branch  0 never executed
+branch  1 never executed
+    #####: 1597:          && ! reopen_inaccessible_files
+branch  0 never executed
+branch  1 never executed
+    #####: 1598:          && hash_get_n_entries (wd_to_name) == 0)
+branch  0 never executed
+branch  1 never executed
+    #####: 1599:        error (EXIT_FAILURE, 0, _("no files remaining"));
+call    0 never executed
+        -: 1600:
+    #####: 1601:      if (len <= evbuf_off)
+branch  0 never executed
+branch  1 never executed
+        -: 1602:        {
+        -: 1603:          /* Poll for inotify events.  When watching a PID, ensure
+        -: 1604:             that a read from WD will not block indefinitely.
+        -: 1605:             If MONITOR_OUTPUT, also poll for a broken output pipe.  */
+        -: 1606:
+        -: 1607:          int file_change;
+        -: 1608:          struct pollfd pfd[2];
+        -: 1609:          do
+        -: 1610:            {
+        -: 1611:              /* How many ms to wait for changes.  -1 means wait forever.  */
+    #####: 1612:              int delay = -1;
+        -: 1613:
+    #####: 1614:              if (pid)
+branch  0 never executed
+branch  1 never executed
+        -: 1615:                {
+    #####: 1616:                  if (writer_is_dead)
+branch  0 never executed
+branch  1 never executed
+    #####: 1617:                    exit (EXIT_SUCCESS);
+call    0 never executed
+        -: 1618:
+    #####: 1619:                  writer_is_dead = (kill (pid, 0) != 0 && errno != EPERM);
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+        -: 1620:
+    #####: 1621:                  if (writer_is_dead || sleep_interval <= 0)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1622:                    delay = 0;
+    #####: 1623:                  else if (sleep_interval < INT_MAX / 1000 - 1)
+branch  0 never executed
+branch  1 never executed
+        -: 1624:                    {
+        -: 1625:                      /* delay = ceil (sleep_interval * 1000), sans libm.  */
+    #####: 1626:                      double ddelay = sleep_interval * 1000;
+    #####: 1627:                      delay = ddelay;
+    #####: 1628:                      delay += delay < ddelay;
+        -: 1629:                    }
+        -: 1630:                }
+        -: 1631:
+    #####: 1632:              pfd[0].fd = wd;
+    #####: 1633:              pfd[0].events = POLLIN;
+    #####: 1634:              pfd[1].fd = STDOUT_FILENO;
+    #####: 1635:              pfd[1].events = pfd[1].revents = 0;
+    #####: 1636:              file_change = poll (pfd, monitor_output + 1, delay);
+call    0 never executed
+        -: 1637:            }
+    #####: 1638:          while (file_change == 0);
+branch  0 never executed
+branch  1 never executed
+        -: 1639:
+    #####: 1640:          if (file_change < 0)
+branch  0 never executed
+branch  1 never executed
+    #####: 1641:            error (EXIT_FAILURE, errno,
+call    0 never executed
+        -: 1642:                   _("error waiting for inotify and output events"));
+    #####: 1643:          if (pfd[1].revents)
+branch  0 never executed
+branch  1 never executed
+    #####: 1644:            die_pipe ();
+call    0 never executed
+        -: 1645:
+    #####: 1646:          len = safe_read (wd, evbuf, evlen);
+call    0 never executed
+    #####: 1647:          evbuf_off = 0;
+        -: 1648:
+        -: 1649:          /* For kernels prior to 2.6.21, read returns 0 when the buffer
+        -: 1650:             is too small.  */
+    #####: 1651:          if ((len == 0 || (len == SAFE_READ_ERROR && errno == EINVAL))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####: 1652:              && max_realloc--)
+branch  0 never executed
+branch  1 never executed
+        -: 1653:            {
+    #####: 1654:              len = 0;
+    #####: 1655:              evlen *= 2;
+    #####: 1656:              evbuf = xrealloc (evbuf, evlen);
+call    0 never executed
+    #####: 1657:              continue;
+        -: 1658:            }
+        -: 1659:
+    #####: 1660:          if (len == 0 || len == SAFE_READ_ERROR)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1661:            error (EXIT_FAILURE, errno, _("error reading inotify event"));
+call    0 never executed
+        -: 1662:        }
+        -: 1663:
+    #####: 1664:      void_ev = evbuf + evbuf_off;
+    #####: 1665:      ev = void_ev;
+    #####: 1666:      evbuf_off += sizeof (*ev) + ev->len;
+        -: 1667:
+        -: 1668:      /* If a directory is deleted, IN_DELETE_SELF is emitted
+        -: 1669:         with ev->name of length 0.
+        -: 1670:         We need to catch it, otherwise it would wait forever,
+        -: 1671:         as wd for directory becomes inactive. Revert to polling now.   */
+    #####: 1672:      if ((ev->mask & IN_DELETE_SELF) && ! ev->len)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1673:        {
+    #####: 1674:          for (i = 0; i < n_files; i++)
+branch  0 never executed
+branch  1 never executed
+        -: 1675:            {
+    #####: 1676:              if (ev->wd == f[i].parent_wd)
+branch  0 never executed
+branch  1 never executed
+        -: 1677:                {
+        -: 1678:                  error (0, 0,
+        -: 1679:                      _("directory containing watched file was removed"));
+    #####: 1680:                  return;
+        -: 1681:                }
+        -: 1682:            }
+        -: 1683:        }
+        -: 1684:
+    #####: 1685:      if (ev->len) /* event on ev->name in watched directory.  */
+branch  0 never executed
+branch  1 never executed
+        -: 1686:        {
+        -: 1687:          size_t j;
+    #####: 1688:          for (j = 0; j < n_files; j++)
+branch  0 never executed
+branch  1 never executed
+        -: 1689:            {
+        -: 1690:              /* With N=hundreds of frequently-changing files, this O(N^2)
+        -: 1691:                 process might be a problem.  FIXME: use a hash table?  */
+    #####: 1692:              if (f[j].parent_wd == ev->wd
+branch  0 never executed
+branch  1 never executed
+    #####: 1693:                  && STREQ (ev->name, f[j].name + f[j].basename_start))
+branch  0 never executed
+branch  1 never executed
+    #####: 1694:                break;
+        -: 1695:            }
+        -: 1696:
+        -: 1697:          /* It is not a watched file.  */
+    #####: 1698:          if (j == n_files)
+branch  0 never executed
+branch  1 never executed
+    #####: 1699:            continue;
+        -: 1700:
+    #####: 1701:          fspec = &(f[j]);
+        -: 1702:
+    #####: 1703:          int new_wd = -1;
+    #####: 1704:          bool deleting = !! (ev->mask & IN_DELETE);
+        -: 1705:
+    #####: 1706:          if (! deleting)
+branch  0 never executed
+branch  1 never executed
+        -: 1707:            {
+        -: 1708:              /* Adding the same inode again will look up any existing wd.  */
+    #####: 1709:              new_wd = inotify_add_watch (wd, f[j].name, inotify_wd_mask);
+call    0 never executed
+        -: 1710:            }
+        -: 1711:
+    #####: 1712:          if (! deleting && new_wd < 0)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1713:            {
+    #####: 1714:              if (errno == ENOSPC || errno == ENOMEM)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1715:                {
+        -: 1716:                  error (0, 0, _("inotify resources exhausted"));
+    #####: 1717:                  return; /* revert to polling.  */
+        -: 1718:                }
+        -: 1719:              else
+        -: 1720:                {
+        -: 1721:                  /* Can get ENOENT for a dangling symlink for example.  */
+    #####: 1722:                  error (0, errno, _("cannot watch %s"), quoteaf (f[j].name));
+call    0 never executed
+        -: 1723:                }
+        -: 1724:              /* We'll continue below after removing the existing watch.  */
+        -: 1725:            }
+        -: 1726:
+        -: 1727:          /* This will be false if only attributes of file change.  */
+        -: 1728:          bool new_watch;
+    #####: 1729:          new_watch = (! deleting) && (fspec->wd < 0 || new_wd != fspec->wd);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -: 1730:
+    #####: 1731:          if (new_watch)
+branch  0 never executed
+branch  1 never executed
+        -: 1732:            {
+    #####: 1733:              if (0 <= fspec->wd)
+branch  0 never executed
+branch  1 never executed
+        -: 1734:                {
+    #####: 1735:                  inotify_rm_watch (wd, fspec->wd);
+call    0 never executed
+    #####: 1736:                  hash_remove (wd_to_name, fspec);
+call    0 never executed
+        -: 1737:                }
+        -: 1738:
+    #####: 1739:              fspec->wd = new_wd;
+        -: 1740:
+    #####: 1741:              if (new_wd == -1)
+branch  0 never executed
+branch  1 never executed
+    #####: 1742:                continue;
+        -: 1743:
+        -: 1744:              /* If the file was moved then inotify will use the source file wd
+        -: 1745:                for the destination file.  Make sure the key is not present in
+        -: 1746:                the table.  */
+    #####: 1747:              struct File_spec *prev = hash_remove (wd_to_name, fspec);
+call    0 never executed
+    #####: 1748:              if (prev && prev != fspec)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1749:                {
+    #####: 1750:                  if (follow_mode == Follow_name)
+branch  0 never executed
+branch  1 never executed
+    #####: 1751:                    recheck (prev, false);
+call    0 never executed
+    #####: 1752:                  prev->wd = -1;
+    #####: 1753:                  close_fd (prev->fd, pretty_name (prev));
+call    0 never executed
+call    1 never executed
+        -: 1754:                }
+        -: 1755:
+    #####: 1756:              if (hash_insert (wd_to_name, fspec) == nullptr)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1757:                xalloc_die ();
+call    0 never executed
+        -: 1758:            }
+        -: 1759:
+    #####: 1760:          if (follow_mode == Follow_name)
+branch  0 never executed
+branch  1 never executed
+    #####: 1761:            recheck (fspec, false);
+call    0 never executed
+        -: 1762:        }
+        -: 1763:      else
+        -: 1764:        {
+        -: 1765:          struct File_spec key;
+    #####: 1766:          key.wd = ev->wd;
+    #####: 1767:          fspec = hash_lookup (wd_to_name, &key);
+call    0 never executed
+        -: 1768:        }
+        -: 1769:
+    #####: 1770:      if (! fspec)
+branch  0 never executed
+branch  1 never executed
+    #####: 1771:        continue;
+        -: 1772:
+    #####: 1773:      if (ev->mask & (IN_ATTRIB | IN_DELETE | IN_DELETE_SELF | IN_MOVE_SELF))
+branch  0 never executed
+branch  1 never executed
+        -: 1774:        {
+        -: 1775:          /* Note for IN_MOVE_SELF (the file we're watching has
+        -: 1776:             been clobbered via a rename) we leave the watch
+        -: 1777:             in place since it may still be part of the set
+        -: 1778:             of watched names.  */
+    #####: 1779:          if (ev->mask & IN_DELETE_SELF)
+branch  0 never executed
+branch  1 never executed
+        -: 1780:            {
+    #####: 1781:              inotify_rm_watch (wd, fspec->wd);
+call    0 never executed
+    #####: 1782:              hash_remove (wd_to_name, fspec);
+call    0 never executed
+        -: 1783:            }
+        -: 1784:
+        -: 1785:          /* Note we get IN_ATTRIB for unlink() as st_nlink decrements.
+        -: 1786:             The usual path is a close() done in recheck() triggers
+        -: 1787:             an IN_DELETE_SELF event as the inode is removed.
+        -: 1788:             However sometimes open() will succeed as even though
+        -: 1789:             st_nlink is decremented, the dentry (cache) is not updated.
+        -: 1790:             Thus we depend on the IN_DELETE event on the directory
+        -: 1791:             to trigger processing for the removed file.  */
+        -: 1792:
+    #####: 1793:          recheck (fspec, false);
+call    0 never executed
+        -: 1794:
+    #####: 1795:          continue;
+        -: 1796:        }
+    #####: 1797:      check_fspec (fspec, &prev_fspec);
+call    0 never executed
+        -: 1798:    }
+        -: 1799:}
+        -: 1800:#endif
+        -: 1801:
+        -: 1802:/* Output the last N_BYTES bytes of file FILENAME open for reading in FD.
+        -: 1803:   Return true if successful.  */
+        -: 1804:
+        -: 1805:static bool
+function tail_bytes called 0 returned 0% blocks executed 0%
+    #####: 1806:tail_bytes (char const *pretty_filename, int fd, uintmax_t n_bytes,
+        -: 1807:            uintmax_t *read_pos)
+        -: 1808:{
+        -: 1809:  struct stat stats;
+        -: 1810:
+    #####: 1811:  if (fstat (fd, &stats))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1812:    {
+    #####: 1813:      error (0, errno, _("cannot fstat %s"), quoteaf (pretty_filename));
+call    0 never executed
+    #####: 1814:      return false;
+        -: 1815:    }
+        -: 1816:
+    #####: 1817:  if (from_start)
+branch  0 never executed
+branch  1 never executed
+        -: 1818:    {
+    #####: 1819:      if (! presume_input_pipe && n_bytes <= OFF_T_MAX
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1820:          && ((S_ISREG (stats.st_mode)
+branch  0 never executed
+branch  1 never executed
+    #####: 1821:               && xlseek (fd, n_bytes, SEEK_CUR, pretty_filename) >= 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1822:              || lseek (fd, n_bytes, SEEK_CUR) != -1))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1823:        *read_pos += n_bytes;
+        -: 1824:      else
+        -: 1825:        {
+    #####: 1826:          int t = start_bytes (pretty_filename, fd, n_bytes, read_pos);
+call    0 never executed
+    #####: 1827:          if (t)
+branch  0 never executed
+branch  1 never executed
+    #####: 1828:            return t < 0;
+        -: 1829:        }
+    #####: 1830:      n_bytes = COPY_TO_EOF;
+        -: 1831:    }
+        -: 1832:  else
+        -: 1833:    {
+    #####: 1834:      off_t end_pos = -1;
+    #####: 1835:      off_t current_pos = -1;
+        -: 1836:
+    #####: 1837:      if (! presume_input_pipe && n_bytes <= OFF_T_MAX)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1838:        {
+    #####: 1839:          if (usable_st_size (&stats))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1840:            end_pos = stats.st_size;
+    #####: 1841:          else if ((current_pos = lseek (fd, -n_bytes, SEEK_END)) != -1)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1842:            end_pos = current_pos + n_bytes;
+        -: 1843:        }
+    #####: 1844:      if (end_pos <= (off_t) ST_BLKSIZE (stats))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####: 1845:        return pipe_bytes (pretty_filename, fd, n_bytes, read_pos);
+call    0 never executed
+    #####: 1846:      if (current_pos == -1)
+branch  0 never executed
+branch  1 never executed
+    #####: 1847:        current_pos = xlseek (fd, 0, SEEK_CUR, pretty_filename);
+call    0 never executed
+    #####: 1848:      if (current_pos < end_pos)
+branch  0 never executed
+branch  1 never executed
+        -: 1849:        {
+    #####: 1850:          off_t bytes_remaining = end_pos - current_pos;
+        -: 1851:
+    #####: 1852:          if (n_bytes < bytes_remaining)
+branch  0 never executed
+branch  1 never executed
+        -: 1853:            {
+    #####: 1854:              current_pos = end_pos - n_bytes;
+    #####: 1855:              xlseek (fd, current_pos, SEEK_SET, pretty_filename);
+call    0 never executed
+        -: 1856:            }
+        -: 1857:        }
+    #####: 1858:      *read_pos = current_pos;
+        -: 1859:    }
+        -: 1860:
+    #####: 1861:  *read_pos += dump_remainder (false, pretty_filename, fd, n_bytes);
+call    0 never executed
+    #####: 1862:  return true;
+        -: 1863:}
+        -: 1864:
+        -: 1865:/* Output the last N_LINES lines of file FILENAME open for reading in FD.
+        -: 1866:   Return true if successful.  */
+        -: 1867:
+        -: 1868:static bool
+function tail_lines called 1 returned 100% blocks executed 52%
+        1: 1869:tail_lines (char const *pretty_filename, int fd, uintmax_t n_lines,
+        -: 1870:            uintmax_t *read_pos)
+        -: 1871:{
+        -: 1872:  struct stat stats;
+        -: 1873:
+        1: 1874:  if (fstat (fd, &stats))
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+        -: 1875:    {
+    #####: 1876:      error (0, errno, _("cannot fstat %s"), quoteaf (pretty_filename));
+call    0 never executed
+    #####: 1877:      return false;
+        -: 1878:    }
+        -: 1879:
+        1: 1880:  if (from_start)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1881:    {
+    #####: 1882:      int t = start_lines (pretty_filename, fd, n_lines, read_pos);
+call    0 never executed
+    #####: 1883:      if (t)
+branch  0 never executed
+branch  1 never executed
+    #####: 1884:        return t < 0;
+    #####: 1885:      *read_pos += dump_remainder (false, pretty_filename, fd, COPY_TO_EOF);
+call    0 never executed
+        -: 1886:    }
+        -: 1887:  else
+        -: 1888:    {
+        1: 1889:      off_t start_pos = -1;
+        -: 1890:      off_t end_pos;
+        -: 1891:
+        -: 1892:      /* Use file_lines only if FD refers to a regular file for
+        -: 1893:         which lseek (... SEEK_END) works.  */
+        1: 1894:      if ( ! presume_input_pipe
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1: 1895:           && S_ISREG (stats.st_mode)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1: 1896:           && (start_pos = lseek (fd, 0, SEEK_CUR)) != -1
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+        1: 1897:           && start_pos < (end_pos = lseek (fd, 0, SEEK_END)))
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+        -: 1898:        {
+        1: 1899:          *read_pos = end_pos;
+        1: 1900:          if (end_pos != 0
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1: 1901:              && ! file_lines (pretty_filename, fd, n_lines,
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+        -: 1902:                               start_pos, end_pos, read_pos))
+    #####: 1903:            return false;
+        -: 1904:        }
+        -: 1905:      else
+        -: 1906:        {
+        -: 1907:          /* Under very unlikely circumstances, it is possible to reach
+        -: 1908:             this point after positioning the file pointer to end of file
+        -: 1909:             via the 'lseek (...SEEK_END)' above.  In that case, reposition
+        -: 1910:             the file pointer back to start_pos before calling pipe_lines.  */
+    #####: 1911:          if (start_pos != -1)
+branch  0 never executed
+branch  1 never executed
+    #####: 1912:            xlseek (fd, start_pos, SEEK_SET, pretty_filename);
+call    0 never executed
+        -: 1913:
+    #####: 1914:          return pipe_lines (pretty_filename, fd, n_lines, read_pos);
+call    0 never executed
+        -: 1915:        }
+        -: 1916:    }
+        1: 1917:  return true;
+        -: 1918:}
+        -: 1919:
+        -: 1920:/* Display the last N_UNITS units of file FILENAME, open for reading
+        -: 1921:   via FD.  Set *READ_POS to the position of the input stream pointer.
+        -: 1922:   *READ_POS is usually the number of bytes read and corresponds to an
+        -: 1923:   offset from the beginning of a file.  However, it may be larger than
+        -: 1924:   OFF_T_MAX (as for an input pipe), and may also be larger than the
+        -: 1925:   number of bytes read (when an input pointer is initially not at
+        -: 1926:   beginning of file), and may be far greater than the number of bytes
+        -: 1927:   actually read for an input file that is seekable.
+        -: 1928:   Return true if successful.  */
+        -: 1929:
+        -: 1930:static bool
+function tail called 1 returned 100% blocks executed 67%
+        1: 1931:tail (char const *filename, int fd, uintmax_t n_units,
+        -: 1932:      uintmax_t *read_pos)
+        -: 1933:{
+        1: 1934:  *read_pos = 0;
+        1: 1935:  if (count_lines)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1: 1936:    return tail_lines (filename, fd, n_units, read_pos);
+call    0 returned 100%
+        -: 1937:  else
+    #####: 1938:    return tail_bytes (filename, fd, n_units, read_pos);
+call    0 never executed
+        -: 1939:}
+        -: 1940:
+        -: 1941:/* Display the last N_UNITS units of the file described by F.
+        -: 1942:   Return true if successful.  */
+        -: 1943:
+        -: 1944:static bool
+function tail_file called 1 returned 100% blocks executed 19%
+        1: 1945:tail_file (struct File_spec *f, uintmax_t n_units)
+        -: 1946:{
+        -: 1947:  int fd;
+        -: 1948:  bool ok;
+        -: 1949:
+        1: 1950:  bool is_stdin = (STREQ (f->name, "-"));
+        -: 1951:
+        1: 1952:  if (is_stdin)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -: 1953:    {
+        1: 1954:      have_read_stdin = true;
+        1: 1955:      fd = STDIN_FILENO;
+        1: 1956:      xset_binary_mode (STDIN_FILENO, O_BINARY);
+call    0 returned 100%
+        -: 1957:    }
+        -: 1958:  else
+    #####: 1959:    fd = open (f->name, O_RDONLY | O_BINARY);
+call    0 never executed
+        -: 1960:
+       1*: 1961:  f->tailable = !(reopen_inaccessible_files && fd == -1);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -: 1962:
+        1: 1963:  if (fd == -1)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1964:    {
+    #####: 1965:      if (forever)
+branch  0 never executed
+branch  1 never executed
+        -: 1966:        {
+    #####: 1967:          f->fd = -1;
+    #####: 1968:          f->errnum = errno;
+    #####: 1969:          f->ignore = ! reopen_inaccessible_files;
+    #####: 1970:          f->ino = 0;
+    #####: 1971:          f->dev = 0;
+        -: 1972:        }
+    #####: 1973:      error (0, errno, _("cannot open %s for reading"),
+call    0 never executed
+call    1 never executed
+        -: 1974:             quoteaf (pretty_name (f)));
+    #####: 1975:      ok = false;
+        -: 1976:    }
+        -: 1977:  else
+        -: 1978:    {
+        -: 1979:      uintmax_t read_pos;
+        -: 1980:
+        1: 1981:      if (print_headers)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1982:        write_header (pretty_name (f));
+call    0 never executed
+call    1 never executed
+        1: 1983:      ok = tail (pretty_name (f), fd, n_units, &read_pos);
+call    0 returned 100%
+call    1 returned 100%
+        1: 1984:      if (forever)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1985:        {
+        -: 1986:          struct stat stats;
+        -: 1987:
+        -: 1988:#if TAIL_TEST_SLEEP
+        -: 1989:          /* Before the tail function provided 'read_pos', there was
+        -: 1990:             a race condition described in the URL below.  This sleep
+        -: 1991:             call made the window big enough to exercise the problem.  */
+        -: 1992:          xnanosleep (1);
+        -: 1993:#endif
+    #####: 1994:          f->errnum = ok - 1;
+    #####: 1995:          if (fstat (fd, &stats) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1996:            {
+    #####: 1997:              ok = false;
+    #####: 1998:              f->errnum = errno;
+    #####: 1999:              error (0, errno, _("error reading %s"),
+call    0 never executed
+call    1 never executed
+        -: 2000:                     quoteaf (pretty_name (f)));
+        -: 2001:            }
+    #####: 2002:          else if (!IS_TAILABLE_FILE_TYPE (stats.st_mode))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+        -: 2003:            {
+    #####: 2004:              ok = false;
+    #####: 2005:              f->errnum = -1;
+    #####: 2006:              f->tailable = false;
+    #####: 2007:              f->ignore = ! reopen_inaccessible_files;
+    #####: 2008:              error (0, 0, _("%s: cannot follow end of this type of file%s"),
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+        -: 2009:                     quotef (pretty_name (f)),
+        -: 2010:                     f->ignore ? _("; giving up on this name") : "");
+        -: 2011:            }
+        -: 2012:
+    #####: 2013:          if (!ok)
+branch  0 never executed
+branch  1 never executed
+        -: 2014:            {
+    #####: 2015:              f->ignore = ! reopen_inaccessible_files;
+    #####: 2016:              close_fd (fd, pretty_name (f));
+call    0 never executed
+call    1 never executed
+    #####: 2017:              f->fd = -1;
+        -: 2018:            }
+        -: 2019:          else
+        -: 2020:            {
+        -: 2021:              /* Note: we must use read_pos here, not stats.st_size,
+        -: 2022:                 to avoid a race condition described by Ken Raeburn:
+        -: 2023:       https://lists.gnu.org/r/bug-textutils/2003-05/msg00007.html */
+    #####: 2024:              record_open_fd (f, fd, read_pos, &stats, (is_stdin ? -1 : 1));
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####: 2025:              f->remote = fremote (fd, pretty_name (f));
+call    0 never executed
+call    1 never executed
+        -: 2026:            }
+        -: 2027:        }
+        -: 2028:      else
+        -: 2029:        {
+       1*: 2030:          if (!is_stdin && close (fd))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -: 2031:            {
+    #####: 2032:              error (0, errno, _("error reading %s"),
+call    0 never executed
+call    1 never executed
+        -: 2033:                     quoteaf (pretty_name (f)));
+    #####: 2034:              ok = false;
+        -: 2035:            }
+        -: 2036:        }
+        -: 2037:    }
+        -: 2038:
+        1: 2039:  return ok;
+        -: 2040:}
+        -: 2041:
+        -: 2042:/* If obsolete usage is allowed, and the command line arguments are of
+        -: 2043:   the obsolete form and the option string is well-formed, set
+        -: 2044:   *N_UNITS, the globals COUNT_LINES, FOREVER, and FROM_START, and
+        -: 2045:   return true.  If the command line arguments are obviously incorrect
+        -: 2046:   (e.g., because obsolete usage is not allowed and the arguments are
+        -: 2047:   incorrect for non-obsolete usage), report an error and exit.
+        -: 2048:   Otherwise, return false and don't modify any parameter or global
+        -: 2049:   variable.  */
+        -: 2050:
+        -: 2051:static bool
+function parse_obsolete_option called 30 returned 100% blocks executed 75%
+       30: 2052:parse_obsolete_option (int argc, char * const *argv, uintmax_t *n_units)
+        -: 2053:{
+        -: 2054:  char const *p;
+        -: 2055:  char const *n_string;
+        -: 2056:  char const *n_string_end;
+       30: 2057:  int default_count = DEFAULT_N_LINES;
+        -: 2058:  bool t_from_start;
+       30: 2059:  bool t_count_lines = true;
+       30: 2060:  bool t_forever = false;
+        -: 2061:
+        -: 2062:  /* With the obsolete form, there is one option string and at most
+        -: 2063:     one file argument.  Watch out for "-" and "--", though.  */
+       34: 2064:  if (! (argc == 2
+branch  0 taken 83% (fallthrough)
+branch  1 taken 17%
+branch  2 taken 75% (fallthrough)
+branch  3 taken 25%
+       25: 2065:         || (argc == 3 && ! (argv[2][0] == '-' && argv[2][1]))
+branch  0 taken 92% (fallthrough)
+branch  1 taken 8%
+branch  2 taken 13% (fallthrough)
+branch  3 taken 87%
+branch  4 taken 67% (fallthrough)
+branch  5 taken 33%
+        3: 2066:         || (3 <= argc && argc <= 4 && STREQ (argv[2], "--"))))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        4: 2067:    return false;
+        -: 2068:
+       26: 2069:  int posix_ver = posix2_version ();
+call    0 returned 100%
+       26: 2070:  bool obsolete_usage = posix_ver < 200112;
+      26*: 2071:  bool traditional_usage = obsolete_usage || 200809 <= posix_ver;
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+       26: 2072:  p = argv[1];
+        -: 2073:
+       26: 2074:  switch (*p++)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 100%
+        -: 2075:    {
+    #####: 2076:    default:
+    #####: 2077:      return false;
+        -: 2078:
+    #####: 2079:    case '+':
+        -: 2080:      /* Leading "+" is a file name in the standard form.  */
+    #####: 2081:      if (!traditional_usage)
+branch  0 never executed
+branch  1 never executed
+    #####: 2082:        return false;
+        -: 2083:
+    #####: 2084:      t_from_start = true;
+    #####: 2085:      break;
+        -: 2086:
+       26: 2087:    case '-':
+        -: 2088:      /* In the non-obsolete form, "-" is standard input and "-c"
+        -: 2089:         requires an option-argument.  The obsolete multidigit options
+        -: 2090:         are supported as a GNU extension even when conforming to
+        -: 2091:         POSIX 1003.1-2001 or later, so don't complain about them.  */
+       26: 2092:      if (!obsolete_usage && !p[p[0] == 'c'])
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 85% (fallthrough)
+branch  3 taken 15%
+       22: 2093:        return false;
+        -: 2094:
+        4: 2095:      t_from_start = false;
+        4: 2096:      break;
+        -: 2097:    }
+        -: 2098:
+        4: 2099:  n_string = p;
+        6: 2100:  while (ISDIGIT (*p))
+branch  0 taken 33%
+branch  1 taken 67% (fallthrough)
+        2: 2101:    p++;
+        4: 2102:  n_string_end = p;
+        -: 2103:
+        4: 2104:  switch (*p)
+branch  0 taken 50%
+branch  1 taken 25%
+branch  2 taken 0%
+branch  3 taken 25%
+        -: 2105:    {
+        2: 2106:    case 'b': default_count *= 512; FALLTHROUGH;
+        3: 2107:    case 'c': t_count_lines = false; FALLTHROUGH;
+        3: 2108:    case 'l': p++; break;
+        -: 2109:    }
+        -: 2110:
+        4: 2111:  if (*p == 'f')
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+        -: 2112:    {
+        2: 2113:      t_forever = true;
+        2: 2114:      ++p;
+        -: 2115:    }
+        -: 2116:
+        4: 2117:  if (*p)
+branch  0 taken 75% (fallthrough)
+branch  1 taken 25%
+        3: 2118:    return false;
+        -: 2119:
+        1: 2120:  if (n_string == n_string_end)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 2121:    *n_units = default_count;
+        1: 2122:  else if ((xstrtoumax (n_string, nullptr, 10, n_units, "b")
+call    0 returned 100%
+        1: 2123:            & ~LONGINT_INVALID_SUFFIX_CHAR)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 2124:           != LONGINT_OK)
+    #####: 2125:    error (EXIT_FAILURE, errno, "%s: %s", _("invalid number"),
+call    0 never executed
+call    1 never executed
+        -: 2126:           quote (argv[1]));
+        -: 2127:
+        -: 2128:  /* Set globals.  */
+        1: 2129:  from_start = t_from_start;
+        1: 2130:  count_lines = t_count_lines;
+        1: 2131:  forever = t_forever;
+        -: 2132:
+        1: 2133:  return true;
+        -: 2134:}
+        -: 2135:
+        -: 2136:static void
+function parse_options called 30 returned 10% blocks executed 29%
+       30: 2137:parse_options (int argc, char **argv,
+        -: 2138:               uintmax_t *n_units, enum header_mode *header_mode,
+        -: 2139:               double *sleep_interval)
+        -: 2140:{
+        -: 2141:  int c;
+        -: 2142:
+       32: 2143:  while ((c = getopt_long (argc, argv, "c:n:fFqs:vz0123456789",
+call    0 returned 100%
+        -: 2144:                           long_options, nullptr))
+       32: 2145:         != -1)
+branch  0 taken 91%
+branch  1 taken 9% (fallthrough)
+        -: 2146:    {
+       29: 2147:      switch (c)
+branch  0 taken 0%
+branch  1 taken 76%
+branch  2 taken 3%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 0%
+branch 13 taken 0%
+branch 14 taken 3%
+branch 15 taken 17%
+        -: 2148:        {
+    #####: 2149:        case 'F':
+    #####: 2150:          forever = true;
+    #####: 2151:          follow_mode = Follow_name;
+    #####: 2152:          reopen_inaccessible_files = true;
+    #####: 2153:          break;
+        -: 2154:
+       22: 2155:        case 'c':
+        -: 2156:        case 'n':
+       22: 2157:          count_lines = (c == 'n');
+       22: 2158:          if (*optarg == '+')
+branch  0 taken 68% (fallthrough)
+branch  1 taken 32%
+       15: 2159:            from_start = true;
+        7: 2160:          else if (*optarg == '-')
+branch  0 taken 14% (fallthrough)
+branch  1 taken 86%
+        1: 2161:            ++optarg;
+        -: 2162:
+      22*: 2163:          *n_units = xdectoumax (optarg, 0, UINTMAX_MAX, "bkKmMGTPEZYRQ0",
+call    0 returned 5%
+        -: 2164:                                 count_lines
+       22: 2165:                                 ? _("invalid number of lines")
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 2166:                                 : _("invalid number of bytes"), 0);
+        1: 2167:          break;
+        -: 2168:
+        1: 2169:        case 'f':
+        -: 2170:        case LONG_FOLLOW_OPTION:
+        1: 2171:          forever = true;
+        1: 2172:          if (optarg == nullptr)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1: 2173:            follow_mode = DEFAULT_FOLLOW_MODE;
+        -: 2174:          else
+    #####: 2175:            follow_mode = XARGMATCH ("--follow", optarg,
+call    0 never executed
+        -: 2176:                                     follow_mode_string, follow_mode_map);
+        1: 2177:          break;
+        -: 2178:
+    #####: 2179:        case RETRY_OPTION:
+    #####: 2180:          reopen_inaccessible_files = true;
+    #####: 2181:          break;
+        -: 2182:
+    #####: 2183:        case MAX_UNCHANGED_STATS_OPTION:
+        -: 2184:          /* --max-unchanged-stats=N */
+    #####: 2185:          max_n_unchanged_stats_between_opens =
+    #####: 2186:            xdectoumax (optarg, 0, UINTMAX_MAX, "",
+call    0 never executed
+        -: 2187:              _("invalid maximum number of unchanged stats between opens"), 0);
+    #####: 2188:          break;
+        -: 2189:
+    #####: 2190:        case DISABLE_INOTIFY_OPTION:
+    #####: 2191:          disable_inotify = true;
+    #####: 2192:          break;
+        -: 2193:
+    #####: 2194:        case PID_OPTION:
+    #####: 2195:          pid = xdectoumax (optarg, 0, PID_T_MAX, "", _("invalid PID"), 0);
+call    0 never executed
+    #####: 2196:          break;
+        -: 2197:
+    #####: 2198:        case PRESUME_INPUT_PIPE_OPTION:
+    #####: 2199:          presume_input_pipe = true;
+    #####: 2200:          break;
+        -: 2201:
+    #####: 2202:        case 'q':
+    #####: 2203:          *header_mode = never;
+    #####: 2204:          break;
+        -: 2205:
+    #####: 2206:        case 's':
+        -: 2207:          {
+        -: 2208:            double s;
+    #####: 2209:            if (! (xstrtod (optarg, nullptr, &s, cl_strtod) && 0 <= s))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####: 2210:              error (EXIT_FAILURE, 0,
+call    0 never executed
+call    1 never executed
+        -: 2211:                     _("invalid number of seconds: %s"), quote (optarg));
+    #####: 2212:            *sleep_interval = s;
+        -: 2213:          }
+    #####: 2214:          break;
+        -: 2215:
+    #####: 2216:        case 'v':
+    #####: 2217:          *header_mode = always;
+    #####: 2218:          break;
+        -: 2219:
+    #####: 2220:        case 'z':
+    #####: 2221:          line_end = '\0';
+    #####: 2222:          break;
+        -: 2223:
+    #####: 2224:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -: 2225:
+    #####: 2226:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+call    4 never executed
+call    5 never executed
+        -: 2227:
+        1: 2228:        case '0': case '1': case '2': case '3': case '4':
+        -: 2229:        case '5': case '6': case '7': case '8': case '9':
+    #####: 2230:          error (EXIT_FAILURE, 0, _("option used in invalid context -- %c"), c);
+call    0 never executed
+        -: 2231:
+        5: 2232:        default:
+        5: 2233:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -: 2234:        }
+        -: 2235:    }
+        -: 2236:
+        3: 2237:  if (reopen_inaccessible_files)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 2238:    {
+    #####: 2239:      if (!forever)
+branch  0 never executed
+branch  1 never executed
+        -: 2240:        {
+    #####: 2241:          reopen_inaccessible_files = false;
+        -: 2242:          error (0, 0, _("warning: --retry ignored; --retry is useful"
+        -: 2243:                         " only when following"));
+        -: 2244:        }
+    #####: 2245:      else if (follow_mode == Follow_descriptor)
+branch  0 never executed
+branch  1 never executed
+        -: 2246:        error (0, 0, _("warning: --retry only effective for the initial open"));
+        -: 2247:    }
+        -: 2248:
+       3*: 2249:  if (pid && !forever)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####: 2250:    error (0, 0,
+        -: 2251:           _("warning: PID ignored; --pid=PID is useful only when following"));
+       3*: 2252:  else if (pid && kill (pid, 0) != 0 && errno == ENOSYS)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+        -: 2253:    {
+        -: 2254:      error (0, 0, _("warning: --pid=PID is not supported on this system"));
+    #####: 2255:      pid = 0;
+        -: 2256:    }
+        3: 2257:}
+        -: 2258:
+        -: 2259:/* Mark as '.ignore'd each member of F that corresponds to a
+        -: 2260:   pipe or fifo, and return the number of non-ignored members.  */
+        -: 2261:static size_t
+function ignore_fifo_and_pipe called 0 returned 0% blocks executed 0%
+    #####: 2262:ignore_fifo_and_pipe (struct File_spec *f, size_t n_files)
+        -: 2263:{
+        -: 2264:  /* When there is no FILE operand and stdin is a pipe or FIFO
+        -: 2265:     POSIX requires that tail ignore the -f option.
+        -: 2266:     Since we allow multiple FILE operands, we extend that to say: with -f,
+        -: 2267:     ignore any "-" operand that corresponds to a pipe or FIFO.  */
+    #####: 2268:  size_t n_viable = 0;
+        -: 2269:
+    #####: 2270:  for (size_t i = 0; i < n_files; i++)
+branch  0 never executed
+branch  1 never executed
+        -: 2271:    {
+    #####: 2272:      bool is_a_fifo_or_pipe =
+    #####: 2273:        (STREQ (f[i].name, "-")
+    #####: 2274:         && !f[i].ignore
+branch  0 never executed
+branch  1 never executed
+    #####: 2275:         && 0 <= f[i].fd
+branch  0 never executed
+branch  1 never executed
+    #####: 2276:         && (S_ISFIFO (f[i].mode)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 2277:             || (HAVE_FIFO_PIPES != 1 && isapipe (f[i].fd))));
+    #####: 2278:      if (is_a_fifo_or_pipe)
+branch  0 never executed
+branch  1 never executed
+        -: 2279:        {
+    #####: 2280:          f[i].fd = -1;
+    #####: 2281:          f[i].ignore = true;
+        -: 2282:        }
+        -: 2283:      else
+    #####: 2284:        ++n_viable;
+        -: 2285:    }
+        -: 2286:
+    #####: 2287:  return n_viable;
+        -: 2288:}
+        -: 2289:
+        -: 2290:int
+function main called 30 returned 10% blocks executed 36%
+       30: 2291:main (int argc, char **argv)
+        -: 2292:{
+       30: 2293:  enum header_mode header_mode = multiple_files;
+       30: 2294:  bool ok = true;
+        -: 2295:  /* If from_start, the number of items to skip before printing; otherwise,
+        -: 2296:     the number of items at the end of the file to print.  Although the type
+        -: 2297:     is signed, the value is never negative.  */
+       30: 2298:  uintmax_t n_units = DEFAULT_N_LINES;
+        -: 2299:  size_t n_files;
+        -: 2300:  char **file;
+        -: 2301:  struct File_spec *F;
+        -: 2302:  size_t i;
+        -: 2303:  bool obsolete_option;
+        -: 2304:
+        -: 2305:  /* The number of seconds to sleep between iterations.
+        -: 2306:     During one iteration, every file name or descriptor is checked to
+        -: 2307:     see if it has changed.  */
+       30: 2308:  double sleep_interval = 1.0;
+        -: 2309:
+        -: 2310:  initialize_main (&argc, &argv);
+       30: 2311:  set_program_name (argv[0]);
+call    0 returned 100%
+       30: 2312:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -: 2313:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -: 2314:  textdomain (PACKAGE);
+        -: 2315:
+       30: 2316:  atexit (close_stdout);
+call    0 returned 100%
+        -: 2317:
+       30: 2318:  have_read_stdin = false;
+        -: 2319:
+       30: 2320:  count_lines = true;
+       30: 2321:  forever = from_start = print_headers = false;
+       30: 2322:  line_end = '\n';
+       30: 2323:  obsolete_option = parse_obsolete_option (argc, argv, &n_units);
+call    0 returned 100%
+       30: 2324:  argc -= obsolete_option;
+       30: 2325:  argv += obsolete_option;
+       30: 2326:  parse_options (argc, argv, &n_units, &header_mode, &sleep_interval);
+call    0 returned 10%
+        -: 2327:
+        -: 2328:  /* To start printing with item N_UNITS from the start of the file, skip
+        -: 2329:     N_UNITS - 1 items.  'tail -n +0' is actually meaningless, but for Unix
+        -: 2330:     compatibility it's treated the same as 'tail -n +1'.  */
+        3: 2331:  if (from_start)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 2332:    {
+    #####: 2333:      if (n_units)
+branch  0 never executed
+branch  1 never executed
+    #####: 2334:        --n_units;
+        -: 2335:    }
+        -: 2336:
+        3: 2337:  if (optind < argc)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 2338:    {
+    #####: 2339:      n_files = argc - optind;
+    #####: 2340:      file = argv + optind;
+        -: 2341:    }
+        -: 2342:  else
+        -: 2343:    {
+        -: 2344:      static char *dummy_stdin = (char *) "-";
+        3: 2345:      n_files = 1;
+        3: 2346:      file = &dummy_stdin;
+        -: 2347:    }
+        -: 2348:
+        -: 2349:  {
+        3: 2350:    bool found_hyphen = false;
+        -: 2351:
+        6: 2352:    for (i = 0; i < n_files; i++)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        3: 2353:      if (STREQ (file[i], "-"))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        3: 2354:        found_hyphen = true;
+        -: 2355:
+        -: 2356:    /* When following by name, there must be a name.  */
+        3: 2357:    if (found_hyphen && follow_mode == Follow_name)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+    #####: 2358:      error (EXIT_FAILURE, 0, _("cannot follow %s by name"), quoteaf ("-"));
+call    0 never executed
+call    1 never executed
+        -: 2359:
+        -: 2360:    /* When following forever, and not using simple blocking, warn if
+        -: 2361:       any file is '-' as the stats() used to check for input are ineffective.
+        -: 2362:       This is only a warning, since tail's output (before a failing seek,
+        -: 2363:       and that from any non-stdin files) might still be useful.  */
+       3*: 2364:    if (forever && found_hyphen)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -: 2365:      {
+        -: 2366:        struct stat in_stat;
+        -: 2367:        bool blocking_stdin;
+    #####: 2368:        blocking_stdin = (pid == 0 && follow_mode == Follow_descriptor
+branch  0 never executed
+branch  1 never executed
+    #####: 2369:                          && n_files == 1 && ! fstat (STDIN_FILENO, &in_stat)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####: 2370:                          && ! S_ISREG (in_stat.st_mode));
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 2371:
+    #####: 2372:        if (! blocking_stdin && isatty (STDIN_FILENO))
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -: 2373:          error (0, 0, _("warning: following standard input"
+        -: 2374:                         " indefinitely is ineffective"));
+        -: 2375:      }
+        -: 2376:  }
+        -: 2377:
+        -: 2378:  /* Don't read anything if we'll never output anything.  */
+        3: 2379:  if (! n_units && ! forever && ! from_start)
+branch  0 taken 67% (fallthrough)
+branch  1 taken 33%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+        2: 2380:    return EXIT_SUCCESS;
+        -: 2381:
+        1: 2382:  F = xnmalloc (n_files, sizeof *F);
+call    0 returned 100%
+        2: 2383:  for (i = 0; i < n_files; i++)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        1: 2384:    F[i].name = file[i];
+        -: 2385:
+        1: 2386:  if (header_mode == always
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1: 2387:      || (header_mode == multiple_files && n_files > 1))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+    #####: 2388:    print_headers = true;
+        -: 2389:
+        1: 2390:  xset_binary_mode (STDOUT_FILENO, O_BINARY);
+call    0 returned 100%
+        -: 2391:
+        2: 2392:  for (i = 0; i < n_files; i++)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        1: 2393:    ok &= tail_file (&F[i], n_units);
+call    0 returned 100%
+        -: 2394:
+       1*: 2395:  if (forever && ignore_fifo_and_pipe (F, n_files))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -: 2396:    {
+        -: 2397:      /* If stdout is a fifo or pipe, then monitor it
+        -: 2398:         so that we exit if the reader goes away.  */
+        -: 2399:      struct stat out_stat;
+    #####: 2400:      if (fstat (STDOUT_FILENO, &out_stat) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 2401:        error (EXIT_FAILURE, errno, _("standard output"));
+call    0 never executed
+    #####: 2402:      monitor_output = (S_ISFIFO (out_stat.st_mode)
+    #####: 2403:                        || (HAVE_FIFO_PIPES != 1 && isapipe (STDOUT_FILENO)));
+        -: 2404:
+        -: 2405:#if HAVE_INOTIFY
+        -: 2406:      /* tailable_stdin() checks if the user specifies stdin via  "-",
+        -: 2407:         or implicitly by providing no arguments. If so, we won't use inotify.
+        -: 2408:         Technically, on systems with a working /dev/stdin, we *could*,
+        -: 2409:         but would it be worth it?  Verifying that it's a real device
+        -: 2410:         and hooked up to stdin is not trivial, while reverting to
+        -: 2411:         non-inotify-based tail_forever is easy and portable.
+        -: 2412:
+        -: 2413:         any_remote_file() checks if the user has specified any
+        -: 2414:         files that reside on remote file systems.  inotify is not used
+        -: 2415:         in this case because it would miss any updates to the file
+        -: 2416:         that were not initiated from the local system.
+        -: 2417:
+        -: 2418:         any_non_remote_file() checks if the user has specified any
+        -: 2419:         files that don't reside on remote file systems.  inotify is not used
+        -: 2420:         if there are no open files, as we can't determine if those file
+        -: 2421:         will be on a remote file system.
+        -: 2422:
+        -: 2423:         any_symlinks() checks if the user has specified any symbolic links.
+        -: 2424:         inotify is not used in this case because it returns updated _targets_
+        -: 2425:         which would not match the specified names.  If we tried to always
+        -: 2426:         use the target names, then we would miss changes to the symlink itself.
+        -: 2427:
+        -: 2428:         ok is false when one of the files specified could not be opened for
+        -: 2429:         reading.  In this case and when following by descriptor,
+        -: 2430:         tail_forever_inotify() cannot be used (in its current implementation).
+        -: 2431:
+        -: 2432:         FIXME: inotify doesn't give any notification when a new
+        -: 2433:         (remote) file or directory is mounted on top a watched file.
+        -: 2434:         When follow_mode == Follow_name we would ideally like to detect that.
+        -: 2435:         Note if there is a change to the original file then we'll
+        -: 2436:         recheck it and follow the new file, or ignore it if the
+        -: 2437:         file has changed to being remote.
+        -: 2438:
+        -: 2439:         FIXME-maybe: inotify has a watch descriptor per inode, and hence with
+        -: 2440:         our current hash implementation will only --follow data for one
+        -: 2441:         of the names when multiple hardlinked files are specified, or
+        -: 2442:         for one name when a name is specified multiple times.  */
+    #####: 2443:      if (!disable_inotify && (tailable_stdin (F, n_files)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####: 2444:                               || any_remote_file (F, n_files)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 2445:                               || ! any_non_remote_file (F, n_files)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 2446:                               || any_symlinks (F, n_files)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 2447:                               || any_non_regular_fifo (F, n_files)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 2448:                               || (!ok && follow_mode == Follow_descriptor)))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 2449:        disable_inotify = true;
+        -: 2450:
+    #####: 2451:      if (!disable_inotify)
+branch  0 never executed
+branch  1 never executed
+        -: 2452:        {
+    #####: 2453:          int wd = inotify_init ();
+call    0 never executed
+    #####: 2454:          if (0 <= wd)
+branch  0 never executed
+branch  1 never executed
+        -: 2455:            {
+        -: 2456:              /* Flush any output from tail_file, now, since
+        -: 2457:                 tail_forever_inotify flushes only after writing,
+        -: 2458:                 not before reading.  */
+    #####: 2459:              if (fflush (stdout) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 2460:                write_error ();
+call    0 never executed
+        -: 2461:
+        -: 2462:              Hash_table *ht;
+    #####: 2463:              tail_forever_inotify (wd, F, n_files, sleep_interval, &ht);
+call    0 never executed
+    #####: 2464:              hash_free (ht);
+call    0 never executed
+    #####: 2465:              close (wd);
+call    0 never executed
+    #####: 2466:              errno = 0;
+        -: 2467:            }
+    #####: 2468:          error (0, errno, _("inotify cannot be used, reverting to polling"));
+        -: 2469:        }
+        -: 2470:#endif
+    #####: 2471:      disable_inotify = true;
+    #####: 2472:      tail_forever (F, n_files, sleep_interval);
+call    0 never executed
+        -: 2473:    }
+        -: 2474:
+        1: 2475:  if (have_read_stdin && close (STDIN_FILENO) < 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+call    2 returned 100%
+branch  3 taken 0% (fallthrough)
+branch  4 taken 100%
+    #####: 2476:    error (EXIT_FAILURE, errno, "-");
+call    0 never executed
+        1: 2477:  main_exit (ok ? EXIT_SUCCESS : EXIT_FAILURE);
+        -: 2478:}

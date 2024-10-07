@@ -1,0 +1,337 @@
+        -:    0:Source:src/runcon.c
+        -:    0:Graph:runcon.gcno
+        -:    0:Data:runcon.gcda
+        -:    0:Runs:4
+        -:    1:/* runcon -- run command with specified security context
+        -:    2:   Copyright (C) 2005-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/*
+        -:   18: * runcon [ context
+        -:   19: *          | ( [ -c ] [ -r role ] [-t type] [ -u user ] [ -l levelrange ] )
+        -:   20: *          command [arg1 [arg2 ...] ]
+        -:   21: *
+        -:   22: * attempt to run the specified command with the specified context.
+        -:   23: *
+        -:   24: * -r role  : use the current context with the specified role
+        -:   25: * -t type  : use the current context with the specified type
+        -:   26: * -u user  : use the current context with the specified user
+        -:   27: * -l level : use the current context with the specified level range
+        -:   28: * -c       : compute process transition context before modifying
+        -:   29: *
+        -:   30: * Contexts are interpreted as follows:
+        -:   31: *
+        -:   32: * Number of       MLS
+        -:   33: * components    system?
+        -:   34: *
+        -:   35: *     1            -         type
+        -:   36: *     2            -         role:type
+        -:   37: *     3            Y         role:type:range
+        -:   38: *     3            N         user:role:type
+        -:   39: *     4            Y         user:role:type:range
+        -:   40: *     4            N         error
+        -:   41: */
+        -:   42:
+        -:   43:#include <config.h>
+        -:   44:#include <stdio.h>
+        -:   45:#include <getopt.h>
+        -:   46:#include <selinux/selinux.h>
+        -:   47:#include <selinux/context.h>
+        -:   48:#include <sys/types.h>
+        -:   49:#include "system.h"
+        -:   50:#include "quote.h"
+        -:   51:
+        -:   52:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   53:#define PROGRAM_NAME "runcon"
+        -:   54:
+        -:   55:#define AUTHORS proper_name ("Russell Coker")
+        -:   56:
+        -:   57:static struct option const long_options[] =
+        -:   58:{
+        -:   59:  {"role", required_argument, nullptr, 'r'},
+        -:   60:  {"type", required_argument, nullptr, 't'},
+        -:   61:  {"user", required_argument, nullptr, 'u'},
+        -:   62:  {"range", required_argument, nullptr, 'l'},
+        -:   63:  {"compute", no_argument, nullptr, 'c'},
+        -:   64:  {GETOPT_HELP_OPTION_DECL},
+        -:   65:  {GETOPT_VERSION_OPTION_DECL},
+        -:   66:  {nullptr, 0, nullptr, 0}
+        -:   67:};
+        -:   68:
+        -:   69:void
+function usage called 1 returned 0% blocks executed 27%
+        1:   70:usage (int status)
+        -:   71:{
+        1:   72:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:   73:    emit_try_help ();
+call    0 returned 100%
+        -:   74:  else
+        -:   75:    {
+    #####:   76:      printf (_("\
+call    0 never executed
+        -:   77:Usage: %s CONTEXT COMMAND [args]\n\
+        -:   78:  or:  %s [ -c ] [-u USER] [-r ROLE] [-t TYPE] [-l RANGE] COMMAND [args]\n\
+        -:   79:"), program_name, program_name);
+    #####:   80:      fputs (_("\
+call    0 never executed
+        -:   81:Run a program in a different SELinux security context.\n\
+        -:   82:With neither CONTEXT nor COMMAND, print the current security context.\n\
+        -:   83:"), stdout);
+        -:   84:
+    #####:   85:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:   86:
+    #####:   87:      fputs (_("\
+call    0 never executed
+        -:   88:  CONTEXT            Complete security context\n\
+        -:   89:  -c, --compute      compute process transition context before modifying\n\
+        -:   90:  -t, --type=TYPE    type (for same role as parent)\n\
+        -:   91:  -u, --user=USER    user identity\n\
+        -:   92:  -r, --role=ROLE    role\n\
+        -:   93:  -l, --range=RANGE  levelrange\n\
+        -:   94:"), stdout);
+    #####:   95:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   96:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   97:      emit_exec_status (PROGRAM_NAME);
+call    0 never executed
+    #####:   98:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   99:    }
+        1:  100:  exit (status);
+        -:  101:}
+        -:  102:
+        -:  103:int
+function main called 4 returned 0% blocks executed 38%
+        4:  104:main (int argc, char **argv)
+        -:  105:{
+        4:  106:  char *role = nullptr;
+        4:  107:  char *range = nullptr;
+        4:  108:  char *user = nullptr;
+        4:  109:  char *type = nullptr;
+        4:  110:  char *context = nullptr;
+        4:  111:  char *cur_context = nullptr;
+        4:  112:  char *file_context = nullptr;
+        4:  113:  char *new_context = nullptr;
+        4:  114:  bool compute_trans = false;
+        -:  115:
+        -:  116:  context_t con;
+        -:  117:
+        -:  118:  initialize_main (&argc, &argv);
+        4:  119:  set_program_name (argv[0]);
+call    0 returned 100%
+        4:  120:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  121:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  122:  textdomain (PACKAGE);
+        -:  123:
+        4:  124:  initialize_exit_failure (EXIT_CANCELED);
+call    0 returned 100%
+        4:  125:  atexit (close_stdout);
+call    0 returned 100%
+        -:  126:
+        -:  127:  while (true)
+    #####:  128:    {
+        4:  129:      int option_index = 0;
+        4:  130:      int c = getopt_long (argc, argv, "+r:t:u:l:c", long_options,
+call    0 returned 100%
+        -:  131:                           &option_index);
+        4:  132:      if (c == -1)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        4:  133:        break;
+    #####:  134:      switch (c)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+        -:  135:        {
+    #####:  136:        case 'r':
+    #####:  137:          if (role)
+branch  0 never executed
+branch  1 never executed
+    #####:  138:            error (EXIT_CANCELED, 0, _("multiple roles"));
+call    0 never executed
+    #####:  139:          role = optarg;
+    #####:  140:          break;
+    #####:  141:        case 't':
+    #####:  142:          if (type)
+branch  0 never executed
+branch  1 never executed
+    #####:  143:            error (EXIT_CANCELED, 0, _("multiple types"));
+call    0 never executed
+    #####:  144:          type = optarg;
+    #####:  145:          break;
+    #####:  146:        case 'u':
+    #####:  147:          if (user)
+branch  0 never executed
+branch  1 never executed
+    #####:  148:            error (EXIT_CANCELED, 0, _("multiple users"));
+call    0 never executed
+    #####:  149:          user = optarg;
+    #####:  150:          break;
+    #####:  151:        case 'l':
+    #####:  152:          if (range)
+branch  0 never executed
+branch  1 never executed
+    #####:  153:            error (EXIT_CANCELED, 0, _("multiple levelranges"));
+call    0 never executed
+    #####:  154:          range = optarg;
+    #####:  155:          break;
+    #####:  156:        case 'c':
+    #####:  157:          compute_trans = true;
+    #####:  158:          break;
+        -:  159:
+    #####:  160:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  161:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####:  162:        default:
+    #####:  163:          usage (EXIT_CANCELED);
+call    0 never executed
+        -:  164:          break;
+        -:  165:        }
+        -:  166:    }
+        -:  167:
+        4:  168:  if (argc - optind == 0)
+branch  0 taken 25%
+branch  1 taken 75%
+        -:  169:    {
+        1:  170:      if (getcon (&cur_context) < 0)
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+       1*:  171:        error (EXIT_CANCELED, errno, _("failed to get current context"));
+call    0 never executed
+    #####:  172:      fputs (cur_context, stdout);
+call    0 never executed
+    #####:  173:      fputc ('\n', stdout);
+call    0 never executed
+    #####:  174:      return EXIT_SUCCESS;
+        -:  175:    }
+        -:  176:
+        3:  177:  if (!(user || role || type || range || compute_trans))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+branch  6 taken 100% (fallthrough)
+branch  7 taken 0%
+branch  8 taken 100% (fallthrough)
+branch  9 taken 0%
+        -:  178:    {
+        3:  179:      if (optind >= argc)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  180:        {
+        -:  181:          error (0, 0, _("you must specify -c, -t, -u, -l, -r, or context"));
+    #####:  182:          usage (EXIT_CANCELED);
+call    0 never executed
+        -:  183:        }
+        3:  184:      context = argv[optind++];
+        -:  185:    }
+        -:  186:
+        3:  187:  if (optind >= argc)
+branch  0 taken 33% (fallthrough)
+branch  1 taken 67%
+        -:  188:    {
+        -:  189:      error (0, 0, _("no command specified"));
+        1:  190:      usage (EXIT_CANCELED);
+call    0 returned 0%
+        -:  191:    }
+        -:  192:
+        -:  193:  if (is_selinux_enabled () != 1)
+       2*:  194:    error (EXIT_CANCELED, 0, _("%s may be used only on a SELinux kernel"),
+call    0 never executed
+        -:  195:           program_name);
+        -:  196:
+        -:  197:  if (context)
+        -:  198:    {
+        -:  199:      con = context_new (context);
+        -:  200:      if (!con)
+        -:  201:        error (EXIT_CANCELED, errno, _("failed to create security context: %s"),
+        -:  202:               quote (context));
+        -:  203:    }
+        -:  204:  else
+        -:  205:    {
+        -:  206:      if (getcon (&cur_context) < 0)
+        -:  207:        error (EXIT_CANCELED, errno, _("failed to get current context"));
+        -:  208:
+        -:  209:      /* We will generate context based on process transition */
+        -:  210:      if (compute_trans)
+        -:  211:        {
+        -:  212:          /* Get context of file to be executed */
+        -:  213:          if (getfilecon (argv[optind], &file_context) == -1)
+        -:  214:            error (EXIT_CANCELED, errno,
+        -:  215:                   _("failed to get security context of %s"),
+        -:  216:                   quoteaf (argv[optind]));
+        -:  217:          /* compute result of process transition */
+        -:  218:          if (security_compute_create (cur_context, file_context,
+        -:  219:                                       string_to_security_class ("process"),
+        -:  220:                                       &new_context) != 0)
+        -:  221:            error (EXIT_CANCELED, errno, _("failed to compute a new context"));
+        -:  222:          /* free contexts */
+        -:  223:          freecon (file_context);
+        -:  224:          freecon (cur_context);
+        -:  225:
+        -:  226:          /* set cur_context equal to new_context */
+        -:  227:          cur_context = new_context;
+        -:  228:        }
+        -:  229:
+        -:  230:      con = context_new (cur_context);
+        -:  231:      if (!con)
+        -:  232:        error (EXIT_CANCELED, errno, _("failed to create security context: %s"),
+        -:  233:               quote (cur_context));
+        -:  234:      if (user && context_user_set (con, user))
+        -:  235:        error (EXIT_CANCELED, errno, _("failed to set new user: %s"),
+        -:  236:               quote (user));
+        -:  237:      if (type && context_type_set (con, type))
+        -:  238:        error (EXIT_CANCELED, errno, _("failed to set new type: %s"),
+        -:  239:               quote (type));
+        -:  240:      if (range && context_range_set (con, range))
+        -:  241:        error (EXIT_CANCELED, errno, _("failed to set new range: %s"),
+        -:  242:               quote (range));
+        -:  243:      if (role && context_role_set (con, role))
+        -:  244:        error (EXIT_CANCELED, errno, _("failed to set new role: %s"),
+        -:  245:               quote (role));
+        -:  246:    }
+        -:  247:
+        -:  248:  if (security_check_context (context_str (con)) < 0)
+        -:  249:    error (EXIT_CANCELED, errno, _("invalid context: %s"),
+        -:  250:           quote (context_str (con)));
+        -:  251:
+        -:  252:  if (setexeccon (context_str (con)) != 0)
+        -:  253:    error (EXIT_CANCELED, errno, _("unable to set security context %s"),
+        -:  254:           quote (context_str (con)));
+        -:  255:  if (cur_context != nullptr)
+        -:  256:    freecon (cur_context);
+        -:  257:
+        -:  258:  (compute_trans ? execv : execvp) (argv[optind], argv + optind);
+        -:  259:
+        -:  260:  int exit_status = errno == ENOENT ? EXIT_ENOENT : EXIT_CANNOT_INVOKE;
+        -:  261:  error (0, errno, "%s", quote (argv[optind]));
+        -:  262:  return exit_status;
+        -:  263:}

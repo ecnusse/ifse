@@ -1,0 +1,263 @@
+        -:    0:Source:src/mkfifo.c
+        -:    0:Graph:mkfifo.gcno
+        -:    0:Data:mkfifo.gcda
+        -:    0:Runs:32
+        -:    1:/* mkfifo -- make fifo's (named pipes)
+        -:    2:   Copyright (C) 1990-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* David MacKenzie <djm@ai.mit.edu>  */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <stdio.h>
+        -:   21:#include <getopt.h>
+        -:   22:#include <sys/types.h>
+        -:   23:#include <selinux/label.h>
+        -:   24:
+        -:   25:#include "system.h"
+        -:   26:#include "modechange.h"
+        -:   27:#include "quote.h"
+        -:   28:#include "selinux.h"
+        -:   29:#include "smack.h"
+        -:   30:
+        -:   31:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   32:#define PROGRAM_NAME "mkfifo"
+        -:   33:
+        -:   34:#define AUTHORS proper_name ("David MacKenzie")
+        -:   35:
+        -:   36:static struct option const longopts[] =
+        -:   37:{
+        -:   38:  {GETOPT_SELINUX_CONTEXT_OPTION_DECL},
+        -:   39:  {"mode", required_argument, nullptr, 'm'},
+        -:   40:  {GETOPT_HELP_OPTION_DECL},
+        -:   41:  {GETOPT_VERSION_OPTION_DECL},
+        -:   42:  {nullptr, 0, nullptr, 0}
+        -:   43:};
+        -:   44:
+        -:   45:void
+function usage called 2 returned 0% blocks executed 27%
+        2:   46:usage (int status)
+        -:   47:{
+        2:   48:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        2:   49:    emit_try_help ();
+call    0 returned 100%
+        -:   50:  else
+        -:   51:    {
+    #####:   52:      printf (_("Usage: %s [OPTION]... NAME...\n"), program_name);
+call    0 never executed
+    #####:   53:      fputs (_("\
+call    0 never executed
+        -:   54:Create named pipes (FIFOs) with the given NAMEs.\n\
+        -:   55:"), stdout);
+        -:   56:
+    #####:   57:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:   58:
+    #####:   59:      fputs (_("\
+call    0 never executed
+        -:   60:  -m, --mode=MODE    set file permission bits to MODE, not a=rw - umask\n\
+        -:   61:"), stdout);
+    #####:   62:      fputs (_("\
+call    0 never executed
+        -:   63:  -Z                   set the SELinux security context to default type\n\
+        -:   64:      --context[=CTX]  like -Z, or if CTX is specified then set the SELinux\n\
+        -:   65:                         or SMACK security context to CTX\n\
+        -:   66:"), stdout);
+    #####:   67:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   68:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   69:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   70:    }
+        2:   71:  exit (status);
+        -:   72:}
+        -:   73:
+        -:   74:int
+function main called 32 returned 94% blocks executed 39%
+       32:   75:main (int argc, char **argv)
+        -:   76:{
+        -:   77:  mode_t newmode;
+       32:   78:  char const *specified_mode = nullptr;
+       32:   79:  int exit_status = EXIT_SUCCESS;
+        -:   80:  int optc;
+       32:   81:  char const *scontext = nullptr;
+       32:   82:  struct selabel_handle *set_security_context = nullptr;
+        -:   83:
+        -:   84:  initialize_main (&argc, &argv);
+       32:   85:  set_program_name (argv[0]);
+call    0 returned 100%
+       32:   86:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:   87:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:   88:  textdomain (PACKAGE);
+        -:   89:
+       32:   90:  atexit (close_stdout);
+call    0 returned 100%
+        -:   91:
+       32:   92:  while ((optc = getopt_long (argc, argv, "m:Z", longopts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 3%
+branch  2 taken 97% (fallthrough)
+        -:   93:    {
+        1:   94:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 100%
+        -:   95:        {
+    #####:   96:        case 'm':
+    #####:   97:          specified_mode = optarg;
+    #####:   98:          break;
+    #####:   99:        case 'Z':
+    #####:  100:          if (is_smack_enabled ())
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  101:            {
+        -:  102:              /* We don't yet support -Z to restore context with SMACK.  */
+    #####:  103:              scontext = optarg;
+        -:  104:            }
+        -:  105:          else if (is_selinux_enabled () > 0)
+        -:  106:            {
+        -:  107:              if (optarg)
+        -:  108:                scontext = optarg;
+        -:  109:              else
+        -:  110:                {
+        -:  111:                  set_security_context = selabel_open (SELABEL_CTX_FILE,
+        -:  112:                                                       nullptr, 0);
+        -:  113:                  if (! set_security_context)
+        -:  114:                    error (0, errno, _("warning: ignoring --context"));
+        -:  115:                }
+        -:  116:            }
+    #####:  117:          else if (optarg)
+branch  0 never executed
+branch  1 never executed
+        -:  118:            {
+        -:  119:              error (0, 0,
+        -:  120:                     _("warning: ignoring --context; "
+        -:  121:                       "it requires an SELinux/SMACK-enabled kernel"));
+        -:  122:            }
+    #####:  123:          break;
+    #####:  124:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  125:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        1:  126:        default:
+        1:  127:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  128:        }
+        -:  129:    }
+        -:  130:
+       31:  131:  if (optind == argc)
+branch  0 taken 3% (fallthrough)
+branch  1 taken 97%
+        -:  132:    {
+        -:  133:      error (0, 0, _("missing operand"));
+        1:  134:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  135:    }
+        -:  136:
+       30:  137:  if (scontext)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  138:    {
+    #####:  139:      int ret = 0;
+    #####:  140:      if (is_smack_enabled ())
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  141:        ret = smack_set_label_for_self (scontext);
+call    0 never executed
+        -:  142:      else
+    #####:  143:        ret = setfscreatecon (scontext);
+call    0 never executed
+        -:  144:
+    #####:  145:      if (ret < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  146:        error (EXIT_FAILURE, errno,
+call    0 never executed
+call    1 never executed
+        -:  147:               _("failed to set default file creation context to %s"),
+        -:  148:               quote (scontext));
+        -:  149:    }
+        -:  150:
+       30:  151:  newmode = MODE_RW_UGO;
+       30:  152:  if (specified_mode)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  153:    {
+        -:  154:      mode_t umask_value;
+    #####:  155:      struct mode_change *change = mode_compile (specified_mode);
+call    0 never executed
+    #####:  156:      if (!change)
+branch  0 never executed
+branch  1 never executed
+    #####:  157:        error (EXIT_FAILURE, 0, _("invalid mode"));
+call    0 never executed
+    #####:  158:      umask_value = umask (0);
+call    0 never executed
+    #####:  159:      umask (umask_value);
+call    0 never executed
+    #####:  160:      newmode = mode_adjust (newmode, false, umask_value, change, nullptr);
+    #####:  161:      free (change);
+    #####:  162:      if (newmode & ~S_IRWXUGO)
+branch  0 never executed
+branch  1 never executed
+    #####:  163:        error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  164:               _("mode must specify only file permission bits"));
+        -:  165:    }
+        -:  166:
+       64:  167:  for (; optind < argc; ++optind)
+branch  0 taken 53%
+branch  1 taken 47% (fallthrough)
+        -:  168:    {
+       34:  169:      if (set_security_context)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  170:        defaultcon (set_security_context, argv[optind], S_IFIFO);
+call    0 never executed
+       34:  171:      if (mkfifo (argv[optind], newmode) != 0)
+call    0 returned 100%
+branch  1 taken 18% (fallthrough)
+branch  2 taken 82%
+        -:  172:        {
+        6:  173:          error (0, errno, _("cannot create fifo %s"), quoteaf (argv[optind]));
+call    0 returned 100%
+        6:  174:          exit_status = EXIT_FAILURE;
+        -:  175:        }
+      28*:  176:      else if (specified_mode && lchmod (argv[optind], newmode) != 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  177:        {
+    #####:  178:          error (0, errno, _("cannot set permissions of %s"),
+call    0 never executed
+        -:  179:                 quoteaf (argv[optind]));
+    #####:  180:          exit_status = EXIT_FAILURE;
+        -:  181:        }
+        -:  182:    }
+        -:  183:
+       30:  184:  return exit_status;
+        -:  185:}

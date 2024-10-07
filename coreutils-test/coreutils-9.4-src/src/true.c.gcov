@@ -1,0 +1,104 @@
+        -:    0:Source:src/true.c
+        -:    0:Graph:false.gcno
+        -:    0:Data:false.gcda
+        -:    0:Runs:4
+        -:    1:/* Exit with a status code indicating success.
+        -:    2:   Copyright (C) 1999-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:#include <config.h>
+        -:   18:#include <stdio.h>
+        -:   19:#include <sys/types.h>
+        -:   20:#include "system.h"
+        -:   21:
+        -:   22:/* Act like "true" by default; false.c overrides this.  */
+        -:   23:#ifndef EXIT_STATUS
+        -:   24:# define EXIT_STATUS EXIT_SUCCESS
+        -:   25:#endif
+        -:   26:
+        -:   27:#if EXIT_STATUS == EXIT_SUCCESS
+        -:   28:# define PROGRAM_NAME "true"
+        -:   29:#else
+        -:   30:# define PROGRAM_NAME "false"
+        -:   31:#endif
+        -:   32:
+        -:   33:#define AUTHORS proper_name ("Jim Meyering")
+        -:   34:
+        -:   35:void
+function usage called 0 returned 0% blocks executed 0%
+    #####:   36:usage (int status)
+        -:   37:{
+    #####:   38:  printf (_("\
+call    0 never executed
+        -:   39:Usage: %s [ignored command line arguments]\n\
+        -:   40:  or:  %s OPTION\n\
+        -:   41:"),
+        -:   42:          program_name, program_name);
+    #####:   43:  printf ("%s\n\n",
+call    0 never executed
+        -:   44:          _(EXIT_STATUS == EXIT_SUCCESS
+        -:   45:            ? N_("Exit with a status code indicating success.")
+        -:   46:            : N_("Exit with a status code indicating failure.")));
+    #####:   47:  fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   48:  fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   49:  printf (USAGE_BUILTIN_WARNING, PROGRAM_NAME);
+call    0 never executed
+    #####:   50:  emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+    #####:   51:  exit (status);
+        -:   52:}
+        -:   53:
+        -:   54:int
+function main called 4 returned 100% blocks executed 73%
+        4:   55:main (int argc, char **argv)
+        -:   56:{
+        -:   57:  /* Recognize --help or --version only if it's the only command-line
+        -:   58:     argument.  */
+        4:   59:  if (argc == 2)
+branch  0 taken 25% (fallthrough)
+branch  1 taken 75%
+        -:   60:    {
+        -:   61:      initialize_main (&argc, &argv);
+        1:   62:      set_program_name (argv[0]);
+call    0 returned 100%
+        1:   63:      setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:   64:      bindtextdomain (PACKAGE, LOCALEDIR);
+        -:   65:      textdomain (PACKAGE);
+        -:   66:
+        -:   67:      /* Note true(1) will return EXIT_FAILURE in the
+        -:   68:         edge case where writes fail with GNU specific options.  */
+        1:   69:      atexit (close_stdout);
+call    0 returned 100%
+        -:   70:
+        1:   71:      if (STREQ (argv[1], "--help"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:   72:        usage (EXIT_STATUS);
+call    0 never executed
+        -:   73:
+        1:   74:      if (STREQ (argv[1], "--version"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:   75:        version_etc (stdout, PROGRAM_NAME, PACKAGE_NAME, Version, AUTHORS,
+call    0 never executed
+call    1 never executed
+        -:   76:                     (char *) nullptr);
+        -:   77:    }
+        -:   78:
+        4:   79:  return EXIT_STATUS;
+        -:   80:}

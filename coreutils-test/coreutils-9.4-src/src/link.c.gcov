@@ -1,0 +1,126 @@
+        -:    0:Source:src/link.c
+        -:    0:Graph:link.gcno
+        -:    0:Data:link.gcda
+        -:    0:Runs:43
+        -:    1:/* link utility for GNU.
+        -:    2:   Copyright (C) 2001-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Michael Stone */
+        -:   18:
+        -:   19:/* Implementation overview:
+        -:   20:
+        -:   21:   Simply call the system 'link' function */
+        -:   22:
+        -:   23:#include <config.h>
+        -:   24:#include <stdio.h>
+        -:   25:#include <sys/types.h>
+        -:   26:
+        -:   27:#include "system.h"
+        -:   28:#include "long-options.h"
+        -:   29:#include "quote.h"
+        -:   30:
+        -:   31:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   32:#define PROGRAM_NAME "link"
+        -:   33:
+        -:   34:#define AUTHORS proper_name ("Michael Stone")
+        -:   35:
+        -:   36:void
+function usage called 23 returned 0% blocks executed 38%
+       23:   37:usage (int status)
+        -:   38:{
+       23:   39:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       23:   40:    emit_try_help ();
+call    0 returned 100%
+        -:   41:  else
+        -:   42:    {
+    #####:   43:      printf (_("\
+call    0 never executed
+        -:   44:Usage: %s FILE1 FILE2\n\
+        -:   45:  or:  %s OPTION\n"), program_name, program_name);
+    #####:   46:      fputs (_("Call the link function to create a link named FILE2\
+call    0 never executed
+        -:   47: to an existing FILE1.\n\n"),
+        -:   48:             stdout);
+    #####:   49:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   50:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   51:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   52:    }
+       23:   53:  exit (status);
+        -:   54:}
+        -:   55:
+        -:   56:int
+function main called 43 returned 0% blocks executed 91%
+       43:   57:main (int argc, char **argv)
+        -:   58:{
+        -:   59:  initialize_main (&argc, &argv);
+       43:   60:  set_program_name (argv[0]);
+call    0 returned 100%
+       43:   61:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:   62:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:   63:  textdomain (PACKAGE);
+        -:   64:
+       43:   65:  atexit (close_stdout);
+call    0 returned 100%
+        -:   66:
+       43:   67:  parse_gnu_standard_options_only (argc, argv, PROGRAM_NAME, PACKAGE_NAME,
+call    0 returned 100%
+call    1 returned 98%
+        -:   68:                                   Version, true, usage, AUTHORS,
+        -:   69:                                   (char const *) nullptr);
+        -:   70:
+       42:   71:  if (argc < optind + 2)
+branch  0 taken 48% (fallthrough)
+branch  1 taken 52%
+        -:   72:    {
+       20:   73:      if (argc < optind + 1)
+branch  0 taken 5% (fallthrough)
+branch  1 taken 95%
+        -:   74:        error (0, 0, _("missing operand"));
+        -:   75:      else
+       19:   76:        error (0, 0, _("missing operand after %s"), quote (argv[optind]));
+call    0 returned 100%
+       20:   77:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:   78:    }
+        -:   79:
+       22:   80:  if (optind + 2 < argc)
+branch  0 taken 9% (fallthrough)
+branch  1 taken 91%
+        -:   81:    {
+        2:   82:      error (0, 0, _("extra operand %s"), quote (argv[optind + 2]));
+call    0 returned 100%
+        2:   83:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:   84:    }
+        -:   85:
+       20:   86:  if (link (argv[optind], argv[optind + 1]) != 0)
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+      20*:   87:    error (EXIT_FAILURE, errno, _("cannot create link %s to %s"),
+call    0 returned 100%
+call    1 returned 100%
+call    2 never executed
+        -:   88:           quoteaf_n (0, argv[optind + 1]), quoteaf_n (1, argv[optind]));
+        -:   89:
+    #####:   90:  return EXIT_SUCCESS;
+        -:   91:}

@@ -1,0 +1,201 @@
+        -:    0:Source:src/users.c
+        -:    0:Graph:users.gcno
+        -:    0:Data:users.gcda
+        -:    0:Runs:23
+        -:    1:/* GNU's users.
+        -:    2:   Copyright (C) 1992-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by jla; revised by djm */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <stdio.h>
+        -:   21:
+        -:   22:#include <sys/types.h>
+        -:   23:#include "system.h"
+        -:   24:
+        -:   25:#include "long-options.h"
+        -:   26:#include "quote.h"
+        -:   27:#include "readutmp.h"
+        -:   28:
+        -:   29:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   30:#define PROGRAM_NAME "users"
+        -:   31:
+        -:   32:#define AUTHORS \
+        -:   33:  proper_name ("Joseph Arceneaux"), \
+        -:   34:  proper_name ("David MacKenzie")
+        -:   35:
+        -:   36:static int
+function userid_compare called 0 returned 0% blocks executed 0%
+    #####:   37:userid_compare (const void *v_a, const void *v_b)
+        -:   38:{
+    #####:   39:  char **a = (char **) v_a;
+    #####:   40:  char **b = (char **) v_b;
+    #####:   41:  return strcmp (*a, *b);
+        -:   42:}
+        -:   43:
+        -:   44:static void
+function list_entries_users called 1 returned 100% blocks executed 43%
+        1:   45:list_entries_users (idx_t n, struct gl_utmp const *this)
+        -:   46:{
+        1:   47:  char **u = xinmalloc (n, sizeof *u);
+call    0 returned 100%
+        -:   48:  idx_t i;
+        1:   49:  idx_t n_entries = 0;
+        -:   50:
+        1:   51:  while (n--)
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+        -:   52:    {
+    #####:   53:      if (IS_USER_PROCESS (this))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:   54:        {
+        -:   55:          char *trimmed_name;
+        -:   56:
+    #####:   57:          trimmed_name = extract_trimmed_name (this);
+call    0 never executed
+        -:   58:
+    #####:   59:          u[n_entries] = trimmed_name;
+    #####:   60:          ++n_entries;
+        -:   61:        }
+    #####:   62:      this++;
+        -:   63:    }
+        -:   64:
+        1:   65:  qsort (u, n_entries, sizeof (u[0]), userid_compare);
+call    0 returned 100%
+        -:   66:
+       1*:   67:  for (i = 0; i < n_entries; i++)
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+        -:   68:    {
+    #####:   69:      char c = (i < n_entries - 1 ? ' ' : '\n');
+branch  0 never executed
+branch  1 never executed
+    #####:   70:      fputs (u[i], stdout);
+call    0 never executed
+    #####:   71:      putchar (c);
+call    0 never executed
+        -:   72:    }
+        -:   73:
+       1*:   74:  for (i = 0; i < n_entries; i++)
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+    #####:   75:    free (u[i]);
+        1:   76:  free (u);
+        1:   77:}
+        -:   78:
+        -:   79:/* Display a list of users on the system, according to utmp file FILENAME.
+        -:   80:   Use read_utmp OPTIONS to read FILENAME.  */
+        -:   81:
+        -:   82:static void
+function users called 1 returned 100% blocks executed 44%
+        1:   83:users (char const *filename, int options)
+        -:   84:{
+        -:   85:  idx_t n_users;
+        -:   86:  struct gl_utmp *utmp_buf;
+        1:   87:  options |= READ_UTMP_USER_PROCESS;
+        1:   88:  if (read_utmp (filename, &n_users, &utmp_buf, options) != 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:   89:    error (EXIT_FAILURE, errno, "%s", quotef (filename));
+call    0 never executed
+call    1 never executed
+        -:   90:
+        1:   91:  list_entries_users (n_users, utmp_buf);
+call    0 returned 100%
+        -:   92:
+        1:   93:  free (utmp_buf);
+        1:   94:}
+        -:   95:
+        -:   96:void
+function usage called 22 returned 0% blocks executed 38%
+       22:   97:usage (int status)
+        -:   98:{
+       22:   99:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       22:  100:    emit_try_help ();
+call    0 returned 100%
+        -:  101:  else
+        -:  102:    {
+    #####:  103:      printf (_("Usage: %s [OPTION]... [FILE]\n"), program_name);
+call    0 never executed
+    #####:  104:      printf (_("\
+call    0 never executed
+        -:  105:Output who is currently logged in according to FILE.\n\
+        -:  106:If FILE is not specified, use %s.  %s as FILE is common.\n\
+        -:  107:\n\
+        -:  108:"),
+        -:  109:              UTMP_FILE, WTMP_FILE);
+    #####:  110:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  111:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  112:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  113:    }
+       22:  114:  exit (status);
+        -:  115:}
+        -:  116:
+        -:  117:int
+function main called 23 returned 4% blocks executed 89%
+       23:  118:main (int argc, char **argv)
+        -:  119:{
+        -:  120:  initialize_main (&argc, &argv);
+       23:  121:  set_program_name (argv[0]);
+call    0 returned 100%
+       23:  122:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  123:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  124:  textdomain (PACKAGE);
+        -:  125:
+       23:  126:  atexit (close_stdout);
+call    0 returned 100%
+        -:  127:
+       23:  128:  parse_gnu_standard_options_only (argc, argv, PROGRAM_NAME, PACKAGE_NAME,
+call    0 returned 100%
+call    1 returned 100%
+call    2 returned 96%
+        -:  129:                                   Version, true, usage, AUTHORS,
+        -:  130:                                   (char const *) nullptr);
+        -:  131:
+       22:  132:  switch (argc - optind)
+branch  0 taken 5%
+branch  1 taken 0%
+branch  2 taken 95%
+        -:  133:    {
+        1:  134:    case 0:			/* users */
+        1:  135:      users (UTMP_FILE, READ_UTMP_CHECK_PIDS);
+call    0 returned 100%
+        1:  136:      break;
+        -:  137:
+    #####:  138:    case 1:			/* users <utmp file> */
+    #####:  139:      users (argv[optind], 0);
+call    0 never executed
+    #####:  140:      break;
+        -:  141:
+       21:  142:    default:			/* lose */
+       21:  143:      error (0, 0, _("extra operand %s"), quote (argv[optind + 1]));
+call    0 returned 100%
+       21:  144:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  145:    }
+        -:  146:
+        1:  147:  return EXIT_SUCCESS;
+        -:  148:}

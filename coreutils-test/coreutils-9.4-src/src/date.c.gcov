@@ -1,0 +1,901 @@
+        -:    0:Source:src/date.c
+        -:    0:Graph:date.gcno
+        -:    0:Data:date.gcda
+        -:    0:Runs:37
+        -:    1:/* date - print or set the system date and time
+        -:    2:   Copyright (C) 1989-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+        -:   16:
+        -:   17:   David MacKenzie <djm@gnu.ai.mit.edu> */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <stdio.h>
+        -:   21:#include <getopt.h>
+        -:   22:#include <sys/types.h>
+        -:   23:#if HAVE_LANGINFO_CODESET
+        -:   24:# include <langinfo.h>
+        -:   25:#endif
+        -:   26:
+        -:   27:#include "system.h"
+        -:   28:#include "argmatch.h"
+        -:   29:#include "parse-datetime.h"
+        -:   30:#include "posixtm.h"
+        -:   31:#include "quote.h"
+        -:   32:#include "stat-time.h"
+        -:   33:#include "fprintftime.h"
+        -:   34:
+        -:   35:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   36:#define PROGRAM_NAME "date"
+        -:   37:
+        -:   38:#define AUTHORS proper_name ("David MacKenzie")
+        -:   39:
+        -:   40:static bool show_date (char const *, struct timespec, timezone_t);
+        -:   41:
+        -:   42:enum Time_spec
+        -:   43:{
+        -:   44:  /* Display only the date.  */
+        -:   45:  TIME_SPEC_DATE,
+        -:   46:  /* Display date, hours, minutes, and seconds.  */
+        -:   47:  TIME_SPEC_SECONDS,
+        -:   48:  /* Similar, but display nanoseconds. */
+        -:   49:  TIME_SPEC_NS,
+        -:   50:
+        -:   51:  /* Put these last, since they aren't valid for --rfc-3339.  */
+        -:   52:
+        -:   53:  /* Display date and hour.  */
+        -:   54:  TIME_SPEC_HOURS,
+        -:   55:  /* Display date, hours, and minutes.  */
+        -:   56:  TIME_SPEC_MINUTES
+        -:   57:};
+        -:   58:
+        -:   59:static char const *const time_spec_string[] =
+        -:   60:{
+        -:   61:  /* Put "hours" and "minutes" first, since they aren't valid for
+        -:   62:     --rfc-3339.  */
+        -:   63:  "hours", "minutes",
+        -:   64:  "date", "seconds", "ns", nullptr
+        -:   65:};
+        -:   66:static enum Time_spec const time_spec[] =
+        -:   67:{
+        -:   68:  TIME_SPEC_HOURS, TIME_SPEC_MINUTES,
+        -:   69:  TIME_SPEC_DATE, TIME_SPEC_SECONDS, TIME_SPEC_NS
+        -:   70:};
+        -:   71:ARGMATCH_VERIFY (time_spec_string, time_spec);
+        -:   72:
+        -:   73:/* A format suitable for Internet RFCs 5322, 2822, and 822.  */
+        -:   74:static char const rfc_email_format[] = "%a, %d %b %Y %H:%M:%S %z";
+        -:   75:
+        -:   76:/* For long options that have no equivalent short option, use a
+        -:   77:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:   78:enum
+        -:   79:{
+        -:   80:  DEBUG_DATE_PARSING_OPTION = CHAR_MAX + 1,
+        -:   81:  RESOLUTION_OPTION,
+        -:   82:  RFC_3339_OPTION
+        -:   83:};
+        -:   84:
+        -:   85:static char const short_options[] = "d:f:I::r:Rs:u";
+        -:   86:
+        -:   87:static struct option const long_options[] =
+        -:   88:{
+        -:   89:  {"date", required_argument, nullptr, 'd'},
+        -:   90:  {"debug", no_argument, nullptr, DEBUG_DATE_PARSING_OPTION},
+        -:   91:  {"file", required_argument, nullptr, 'f'},
+        -:   92:  {"iso-8601", optional_argument, nullptr, 'I'},
+        -:   93:  {"reference", required_argument, nullptr, 'r'},
+        -:   94:  {"resolution", no_argument, nullptr, RESOLUTION_OPTION},
+        -:   95:  {"rfc-email", no_argument, nullptr, 'R'},
+        -:   96:  {"rfc-822", no_argument, nullptr, 'R'},
+        -:   97:  {"rfc-2822", no_argument, nullptr, 'R'},
+        -:   98:  {"rfc-3339", required_argument, nullptr, RFC_3339_OPTION},
+        -:   99:  {"set", required_argument, nullptr, 's'},
+        -:  100:  {"uct", no_argument, nullptr, 'u'},
+        -:  101:  {"utc", no_argument, nullptr, 'u'},
+        -:  102:  {"universal", no_argument, nullptr, 'u'},
+        -:  103:  {GETOPT_HELP_OPTION_DECL},
+        -:  104:  {GETOPT_VERSION_OPTION_DECL},
+        -:  105:  {nullptr, 0, nullptr, 0}
+        -:  106:};
+        -:  107:
+        -:  108:/* flags for parse_datetime2 */
+        -:  109:static unsigned int parse_datetime_flags;
+        -:  110:
+        -:  111:#if LOCALTIME_CACHE
+        -:  112:# define TZSET tzset ()
+        -:  113:#else
+        -:  114:# define TZSET /* empty */
+        -:  115:#endif
+        -:  116:
+        -:  117:#ifdef _DATE_FMT
+        -:  118:# define DATE_FMT_LANGINFO() nl_langinfo (_DATE_FMT)
+        -:  119:#else
+        -:  120:# define DATE_FMT_LANGINFO() ""
+        -:  121:#endif
+        -:  122:
+        -:  123:void
+function usage called 5 returned 0% blocks executed 9%
+        5:  124:usage (int status)
+        -:  125:{
+        5:  126:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        5:  127:    emit_try_help ();
+call    0 returned 100%
+        -:  128:  else
+        -:  129:    {
+    #####:  130:      printf (_("\
+call    0 never executed
+        -:  131:Usage: %s [OPTION]... [+FORMAT]\n\
+        -:  132:  or:  %s [-u|--utc|--universal] [MMDDhhmm[[CC]YY][.ss]]\n\
+        -:  133:"),
+        -:  134:              program_name, program_name);
+    #####:  135:      fputs (_("\
+call    0 never executed
+        -:  136:Display date and time in the given FORMAT.\n\
+        -:  137:With -s, or with [MMDDhhmm[[CC]YY][.ss]], set the date and time.\n\
+        -:  138:"), stdout);
+        -:  139:
+    #####:  140:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  141:
+    #####:  142:      fputs (_("\
+call    0 never executed
+        -:  143:  -d, --date=STRING          display time described by STRING, not 'now'\n\
+        -:  144:"), stdout);
+    #####:  145:      fputs (_("\
+call    0 never executed
+        -:  146:      --debug                annotate the parsed date,\n\
+        -:  147:                              and warn about questionable usage to stderr\n\
+        -:  148:"), stdout);
+    #####:  149:      fputs (_("\
+call    0 never executed
+        -:  150:  -f, --file=DATEFILE        like --date; once for each line of DATEFILE\n\
+        -:  151:"), stdout);
+    #####:  152:      fputs (_("\
+call    0 never executed
+        -:  153:  -I[FMT], --iso-8601[=FMT]  output date/time in ISO 8601 format.\n\
+        -:  154:                               FMT='date' for date only (the default),\n\
+        -:  155:                               'hours', 'minutes', 'seconds', or 'ns'\n\
+        -:  156:                               for date and time to the indicated precision.\n\
+        -:  157:                               Example: 2006-08-14T02:34:56-06:00\n\
+        -:  158:"), stdout);
+    #####:  159:      fputs (_("\
+call    0 never executed
+        -:  160:  --resolution               output the available resolution of timestamps\n\
+        -:  161:                               Example: 0.000000001\n\
+        -:  162:"), stdout);
+    #####:  163:      fputs (_("\
+call    0 never executed
+        -:  164:  -R, --rfc-email            output date and time in RFC 5322 format.\n\
+        -:  165:                               Example: Mon, 14 Aug 2006 02:34:56 -0600\n\
+        -:  166:"), stdout);
+    #####:  167:      fputs (_("\
+call    0 never executed
+        -:  168:      --rfc-3339=FMT         output date/time in RFC 3339 format.\n\
+        -:  169:                               FMT='date', 'seconds', or 'ns'\n\
+        -:  170:                               for date and time to the indicated precision.\n\
+        -:  171:                               Example: 2006-08-14 02:34:56-06:00\n\
+        -:  172:"), stdout);
+    #####:  173:      fputs (_("\
+call    0 never executed
+        -:  174:  -r, --reference=FILE       display the last modification time of FILE\n\
+        -:  175:"), stdout);
+    #####:  176:      fputs (_("\
+call    0 never executed
+        -:  177:  -s, --set=STRING           set time described by STRING\n\
+        -:  178:  -u, --utc, --universal     print or set Coordinated Universal Time (UTC)\n\
+        -:  179:"), stdout);
+    #####:  180:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  181:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  182:      fputs (_("\
+call    0 never executed
+        -:  183:\n\
+        -:  184:All options that specify the date to display are mutually exclusive.\n\
+        -:  185:I.e.: --date, --file, --reference, --resolution.\n\
+        -:  186:"), stdout);
+    #####:  187:      fputs (_("\
+call    0 never executed
+        -:  188:\n\
+        -:  189:FORMAT controls the output.  Interpreted sequences are:\n\
+        -:  190:\n\
+        -:  191:  %%   a literal %\n\
+        -:  192:  %a   locale's abbreviated weekday name (e.g., Sun)\n\
+        -:  193:"), stdout);
+    #####:  194:      fputs (_("\
+call    0 never executed
+        -:  195:  %A   locale's full weekday name (e.g., Sunday)\n\
+        -:  196:  %b   locale's abbreviated month name (e.g., Jan)\n\
+        -:  197:  %B   locale's full month name (e.g., January)\n\
+        -:  198:  %c   locale's date and time (e.g., Thu Mar  3 23:05:25 2005)\n\
+        -:  199:"), stdout);
+    #####:  200:      fputs (_("\
+call    0 never executed
+        -:  201:  %C   century; like %Y, except omit last two digits (e.g., 20)\n\
+        -:  202:  %d   day of month (e.g., 01)\n\
+        -:  203:  %D   date; same as %m/%d/%y\n\
+        -:  204:  %e   day of month, space padded; same as %_d\n\
+        -:  205:"), stdout);
+    #####:  206:      fputs (_("\
+call    0 never executed
+        -:  207:  %F   full date; like %+4Y-%m-%d\n\
+        -:  208:  %g   last two digits of year of ISO week number (see %G)\n\
+        -:  209:  %G   year of ISO week number (see %V); normally useful only with %V\n\
+        -:  210:"), stdout);
+    #####:  211:      fputs (_("\
+call    0 never executed
+        -:  212:  %h   same as %b\n\
+        -:  213:  %H   hour (00..23)\n\
+        -:  214:  %I   hour (01..12)\n\
+        -:  215:  %j   day of year (001..366)\n\
+        -:  216:"), stdout);
+    #####:  217:      fputs (_("\
+call    0 never executed
+        -:  218:  %k   hour, space padded ( 0..23); same as %_H\n\
+        -:  219:  %l   hour, space padded ( 1..12); same as %_I\n\
+        -:  220:  %m   month (01..12)\n\
+        -:  221:  %M   minute (00..59)\n\
+        -:  222:"), stdout);
+    #####:  223:      fputs (_("\
+call    0 never executed
+        -:  224:  %n   a newline\n\
+        -:  225:  %N   nanoseconds (000000000..999999999)\n\
+        -:  226:  %p   locale's equivalent of either AM or PM; blank if not known\n\
+        -:  227:  %P   like %p, but lower case\n\
+        -:  228:  %q   quarter of year (1..4)\n\
+        -:  229:  %r   locale's 12-hour clock time (e.g., 11:11:04 PM)\n\
+        -:  230:  %R   24-hour hour and minute; same as %H:%M\n\
+        -:  231:  %s   seconds since the Epoch (1970-01-01 00:00 UTC)\n\
+        -:  232:"), stdout);
+    #####:  233:      fputs (_("\
+call    0 never executed
+        -:  234:  %S   second (00..60)\n\
+        -:  235:  %t   a tab\n\
+        -:  236:  %T   time; same as %H:%M:%S\n\
+        -:  237:  %u   day of week (1..7); 1 is Monday\n\
+        -:  238:"), stdout);
+    #####:  239:      fputs (_("\
+call    0 never executed
+        -:  240:  %U   week number of year, with Sunday as first day of week (00..53)\n\
+        -:  241:  %V   ISO week number, with Monday as first day of week (01..53)\n\
+        -:  242:  %w   day of week (0..6); 0 is Sunday\n\
+        -:  243:  %W   week number of year, with Monday as first day of week (00..53)\n\
+        -:  244:"), stdout);
+    #####:  245:      fputs (_("\
+call    0 never executed
+        -:  246:  %x   locale's date representation (e.g., 12/31/99)\n\
+        -:  247:  %X   locale's time representation (e.g., 23:13:48)\n\
+        -:  248:  %y   last two digits of year (00..99)\n\
+        -:  249:  %Y   year\n\
+        -:  250:"), stdout);
+    #####:  251:      fputs (_("\
+call    0 never executed
+        -:  252:  %z   +hhmm numeric time zone (e.g., -0400)\n\
+        -:  253:  %:z  +hh:mm numeric time zone (e.g., -04:00)\n\
+        -:  254:  %::z  +hh:mm:ss numeric time zone (e.g., -04:00:00)\n\
+        -:  255:  %:::z  numeric time zone with : to necessary precision (e.g., -04, +05:30)\n\
+        -:  256:  %Z   alphabetic time zone abbreviation (e.g., EDT)\n\
+        -:  257:\n\
+        -:  258:By default, date pads numeric fields with zeroes.\n\
+        -:  259:"), stdout);
+    #####:  260:      fputs (_("\
+call    0 never executed
+        -:  261:The following optional flags may follow '%':\n\
+        -:  262:\n\
+        -:  263:  -  (hyphen) do not pad the field\n\
+        -:  264:  _  (underscore) pad with spaces\n\
+        -:  265:  0  (zero) pad with zeros\n\
+        -:  266:  +  pad with zeros, and put '+' before future years with >4 digits\n\
+        -:  267:  ^  use upper case if possible\n\
+        -:  268:  #  use opposite case if possible\n\
+        -:  269:"), stdout);
+    #####:  270:      fputs (_("\
+call    0 never executed
+        -:  271:\n\
+        -:  272:After any flags comes an optional field width, as a decimal number;\n\
+        -:  273:then an optional modifier, which is either\n\
+        -:  274:E to use the locale's alternate representations if available, or\n\
+        -:  275:O to use the locale's alternate numeric symbols if available.\n\
+        -:  276:"), stdout);
+    #####:  277:      fputs (_("\
+call    0 never executed
+        -:  278:\n\
+        -:  279:Examples:\n\
+        -:  280:Convert seconds since the Epoch (1970-01-01 UTC) to a date\n\
+        -:  281:  $ date --date='@2147483647'\n\
+        -:  282:\n\
+        -:  283:Show the time on the west coast of the US (use tzselect(1) to find TZ)\n\
+        -:  284:  $ TZ='America/Los_Angeles' date\n\
+        -:  285:\n\
+        -:  286:Show the local time for 9AM next Friday on the west coast of the US\n\
+        -:  287:  $ date --date='TZ=\"America/Los_Angeles\" 09:00 next Fri'\n\
+        -:  288:"), stdout);
+    #####:  289:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  290:    }
+        5:  291:  exit (status);
+        -:  292:}
+        -:  293:
+        -:  294:/* Yield the number of decimal digits needed to output a time with the
+        -:  295:   nanosecond resolution RES, without losing information.  */
+        -:  296:
+        -:  297:static int
+function res_width called 5 returned 100% blocks executed 80%
+        5:  298:res_width (long int res)
+        -:  299:{
+        5:  300:  int i = 9;
+        5:  301:  for (long long int r = 1; (r *= 10) <= res; )
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+    #####:  302:    i--;
+        5:  303:  return i;
+        -:  304:}
+        -:  305:
+        -:  306:/* Return a newly allocated copy of FORMAT with each "%-N" adjusted to
+        -:  307:   be "%9N", "%6N", or whatever other resolution is appropriate for
+        -:  308:   the current platform.  If no "%-N" appears, return nullptr.  */
+        -:  309:
+        -:  310:static char *
+function adjust_resolution called 32 returned 100% blocks executed 100%
+       32:  311:adjust_resolution (char const *format)
+        -:  312:{
+       32:  313:  char *copy = nullptr;
+        -:  314:
+      522:  315:  for (char const *f = format; *f; f++)
+branch  0 taken 94%
+branch  1 taken 6% (fallthrough)
+      490:  316:    if (f[0] == '%')
+branch  0 taken 36% (fallthrough)
+branch  1 taken 64%
+        -:  317:      {
+      176:  318:        if (f[1] == '-' && f[2] == 'N')
+branch  0 taken 5% (fallthrough)
+branch  1 taken 95%
+branch  2 taken 56% (fallthrough)
+branch  3 taken 44%
+        -:  319:          {
+        5:  320:            if (!copy)
+branch  0 taken 80% (fallthrough)
+branch  1 taken 20%
+        4:  321:              copy = xstrdup (format);
+call    0 returned 100%
+        5:  322:            copy[f + 1 - format] = '0' + res_width (gettime_res ());
+call    0 returned 100%
+call    1 returned 100%
+        5:  323:            f += 2;
+        -:  324:          }
+        -:  325:        else
+      171:  326:          f += f[1] == '%';
+        -:  327:      }
+        -:  328:
+       32:  329:  return copy;
+        -:  330:}
+        -:  331:
+        -:  332:/* Parse each line in INPUT_FILENAME as with --date and display each
+        -:  333:   resulting time and date.  If the file cannot be opened, tell why
+        -:  334:   then exit.  Issue a diagnostic for any lines that cannot be parsed.
+        -:  335:   Return true if successful.  */
+        -:  336:
+        -:  337:static bool
+function batch_convert called 0 returned 0% blocks executed 0%
+    #####:  338:batch_convert (char const *input_filename, char const *format,
+        -:  339:               timezone_t tz, char const *tzstring)
+        -:  340:{
+        -:  341:  bool ok;
+        -:  342:  FILE *in_stream;
+        -:  343:  char *line;
+        -:  344:  size_t buflen;
+        -:  345:  struct timespec when;
+        -:  346:
+    #####:  347:  if (STREQ (input_filename, "-"))
+branch  0 never executed
+branch  1 never executed
+        -:  348:    {
+    #####:  349:      input_filename = _("standard input");
+    #####:  350:      in_stream = stdin;
+        -:  351:    }
+        -:  352:  else
+        -:  353:    {
+    #####:  354:      in_stream = fopen (input_filename, "r");
+call    0 never executed
+    #####:  355:      if (in_stream == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  356:        error (EXIT_FAILURE, errno, "%s", quotef (input_filename));
+call    0 never executed
+call    1 never executed
+        -:  357:    }
+        -:  358:
+    #####:  359:  line = nullptr;
+    #####:  360:  buflen = 0;
+    #####:  361:  ok = true;
+        -:  362:  while (true)
+    #####:  363:    {
+    #####:  364:      ssize_t line_length = getline (&line, &buflen, in_stream);
+call    0 never executed
+    #####:  365:      if (line_length < 0)
+branch  0 never executed
+branch  1 never executed
+        -:  366:        {
+    #####:  367:          if (ferror (in_stream))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  368:            error (EXIT_FAILURE, errno, _("%s: read error"),
+call    0 never executed
+call    1 never executed
+        -:  369:                   quotef (input_filename));
+    #####:  370:          break;
+        -:  371:        }
+        -:  372:
+    #####:  373:      if (! parse_datetime2 (&when, line, nullptr,
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  374:                             parse_datetime_flags, tz, tzstring))
+        -:  375:        {
+    #####:  376:          if (line[line_length - 1] == '\n')
+branch  0 never executed
+branch  1 never executed
+    #####:  377:            line[line_length - 1] = '\0';
+    #####:  378:          error (0, 0, _("invalid date %s"), quote (line));
+call    0 never executed
+    #####:  379:          ok = false;
+        -:  380:        }
+        -:  381:      else
+        -:  382:        {
+    #####:  383:          ok &= show_date (format, when, tz);
+call    0 never executed
+        -:  384:        }
+        -:  385:    }
+        -:  386:
+    #####:  387:  if (fclose (in_stream) == EOF)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  388:    error (EXIT_FAILURE, errno, "%s", quotef (input_filename));
+call    0 never executed
+call    1 never executed
+        -:  389:
+    #####:  390:  free (line);
+        -:  391:
+    #####:  392:  return ok;
+        -:  393:}
+        -:  394:
+        -:  395:int
+function main called 37 returned 35% blocks executed 37%
+       37:  396:main (int argc, char **argv)
+        -:  397:{
+        -:  398:  int optc;
+       37:  399:  char const *datestr = nullptr;
+       37:  400:  char const *set_datestr = nullptr;
+        -:  401:  struct timespec when;
+       37:  402:  bool set_date = false;
+       37:  403:  char const *format = nullptr;
+       37:  404:  bool get_resolution = false;
+       37:  405:  char *batch_file = nullptr;
+       37:  406:  char *reference = nullptr;
+        -:  407:  struct stat refstats;
+        -:  408:  bool ok;
+       37:  409:  bool discarded_datestr = false;
+       37:  410:  bool discarded_set_datestr = false;
+        -:  411:
+        -:  412:  initialize_main (&argc, &argv);
+       37:  413:  set_program_name (argv[0]);
+call    0 returned 100%
+       37:  414:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  415:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  416:  textdomain (PACKAGE);
+        -:  417:
+       37:  418:  atexit (close_stdout);
+call    0 returned 100%
+        -:  419:
+       37:  420:  while ((optc = getopt_long (argc, argv, short_options, long_options, nullptr))
+call    0 returned 100%
+       37:  421:         != -1)
+branch  0 taken 3%
+branch  1 taken 97% (fallthrough)
+        -:  422:    {
+        1:  423:      char const *new_format = nullptr;
+        -:  424:
+        1:  425:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 100%
+        -:  426:        {
+    #####:  427:        case 'd':
+    #####:  428:          if (datestr)
+branch  0 never executed
+branch  1 never executed
+    #####:  429:            discarded_datestr = true;
+    #####:  430:          datestr = optarg;
+    #####:  431:          break;
+    #####:  432:        case DEBUG_DATE_PARSING_OPTION:
+    #####:  433:          parse_datetime_flags |= PARSE_DATETIME_DEBUG;
+    #####:  434:          break;
+    #####:  435:        case 'f':
+    #####:  436:          batch_file = optarg;
+    #####:  437:          break;
+    #####:  438:        case RESOLUTION_OPTION:
+    #####:  439:          get_resolution = true;
+    #####:  440:          break;
+    #####:  441:        case RFC_3339_OPTION:
+        -:  442:          {
+        -:  443:            static char const rfc_3339_format[][32] =
+        -:  444:              {
+        -:  445:                "%Y-%m-%d",
+        -:  446:                "%Y-%m-%d %H:%M:%S%:z",
+        -:  447:                "%Y-%m-%d %H:%M:%S.%N%:z"
+        -:  448:              };
+    #####:  449:            enum Time_spec i =
+    #####:  450:              XARGMATCH ("--rfc-3339", optarg,
+call    0 never executed
+        -:  451:                         time_spec_string + 2, time_spec + 2);
+    #####:  452:            new_format = rfc_3339_format[i];
+    #####:  453:            break;
+        -:  454:          }
+    #####:  455:        case 'I':
+        -:  456:          {
+        -:  457:            static char const iso_8601_format[][32] =
+        -:  458:              {
+        -:  459:                "%Y-%m-%d",
+        -:  460:                "%Y-%m-%dT%H:%M:%S%:z",
+        -:  461:                "%Y-%m-%dT%H:%M:%S,%N%:z",
+        -:  462:                "%Y-%m-%dT%H%:z",
+        -:  463:                "%Y-%m-%dT%H:%M%:z"
+        -:  464:              };
+    #####:  465:            enum Time_spec i =
+        -:  466:              (optarg
+    #####:  467:               ? XARGMATCH ("--iso-8601", optarg, time_spec_string, time_spec)
+call    0 never executed
+    #####:  468:               : TIME_SPEC_DATE);
+branch  0 never executed
+branch  1 never executed
+    #####:  469:            new_format = iso_8601_format[i];
+    #####:  470:            break;
+        -:  471:          }
+    #####:  472:        case 'r':
+    #####:  473:          reference = optarg;
+    #####:  474:          break;
+    #####:  475:        case 'R':
+    #####:  476:          new_format = rfc_email_format;
+    #####:  477:          break;
+    #####:  478:        case 's':
+    #####:  479:          if (set_datestr)
+branch  0 never executed
+branch  1 never executed
+    #####:  480:            discarded_set_datestr = true;
+    #####:  481:          set_datestr = optarg;
+    #####:  482:          set_date = true;
+    #####:  483:          break;
+    #####:  484:        case 'u':
+        -:  485:          /* POSIX says that 'date -u' is equivalent to setting the TZ
+        -:  486:             environment variable, so this option should do nothing other
+        -:  487:             than setting TZ.  */
+    #####:  488:          if (putenv (bad_cast ("TZ=UTC0")) != 0)
+call    0 never executed
+call    1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  489:            xalloc_die ();
+call    0 never executed
+        -:  490:          TZSET;
+    #####:  491:          break;
+    #####:  492:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  493:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        1:  494:        default:
+        1:  495:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  496:        }
+        -:  497:
+    #####:  498:      if (new_format)
+branch  0 never executed
+branch  1 never executed
+        -:  499:        {
+    #####:  500:          if (format)
+branch  0 never executed
+branch  1 never executed
+    #####:  501:            error (EXIT_FAILURE, 0, _("multiple output formats specified"));
+call    0 never executed
+    #####:  502:          format = new_format;
+        -:  503:        }
+        -:  504:    }
+        -:  505:
+       36:  506:  int option_specified_date = (!!datestr + !!batch_file + !!reference
+       36:  507:                               + get_resolution);
+        -:  508:
+       36:  509:  if (option_specified_date > 1)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  510:    {
+        -:  511:      error (0, 0,
+        -:  512:        _("the options to specify dates for printing are mutually exclusive"));
+    #####:  513:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  514:    }
+        -:  515:
+      36*:  516:  if (set_date && option_specified_date)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  517:    {
+        -:  518:      error (0, 0,
+        -:  519:          _("the options to print and set the time may not be used together"));
+    #####:  520:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  521:    }
+        -:  522:
+      36*:  523:  if (discarded_datestr && (parse_datetime_flags & PARSE_DATETIME_DEBUG))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  524:    error (0, 0, _("only using last of multiple -d options"));
+        -:  525:
+      36*:  526:  if (discarded_set_datestr && (parse_datetime_flags & PARSE_DATETIME_DEBUG))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  527:    error (0, 0, _("only using last of multiple -s options"));
+        -:  528:
+       36:  529:  if (optind < argc)
+branch  0 taken 97% (fallthrough)
+branch  1 taken 3%
+        -:  530:    {
+       35:  531:      if (optind + 1 < argc)
+branch  0 taken 11% (fallthrough)
+branch  1 taken 89%
+        -:  532:        {
+        4:  533:          error (0, 0, _("extra operand %s"), quote (argv[optind + 1]));
+call    0 returned 100%
+        4:  534:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  535:        }
+        -:  536:
+       31:  537:      if (argv[optind][0] == '+')
+branch  0 taken 39% (fallthrough)
+branch  1 taken 61%
+        -:  538:        {
+       12:  539:          if (format)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  540:            error (EXIT_FAILURE, 0, _("multiple output formats specified"));
+call    0 never executed
+       12:  541:          format = argv[optind++] + 1;
+        -:  542:        }
+       19:  543:      else if (set_date || option_specified_date)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+        -:  544:        {
+    #####:  545:          error (0, 0,
+call    0 never executed
+        -:  546:                 _("the argument %s lacks a leading '+';\n"
+        -:  547:                   "when using an option to specify date(s), any non-option\n"
+        -:  548:                   "argument must be a format string beginning with '+'"),
+        -:  549:                 quote (argv[optind]));
+    #####:  550:          usage (EXIT_FAILURE);
+call    0 never executed
+        -:  551:        }
+        -:  552:    }
+        -:  553:
+       32:  554:  if (!format)
+branch  0 taken 62% (fallthrough)
+branch  1 taken 38%
+        -:  555:    {
+       20:  556:      if (get_resolution)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  557:        format = "%s.%N";
+        -:  558:      else
+        -:  559:        {
+       20:  560:          format = DATE_FMT_LANGINFO ();
+call    0 returned 100%
+        -:  561:
+        -:  562:          /* Do not wrap the following literal format string with _(...).
+        -:  563:             For example, suppose LC_ALL is unset, LC_TIME=POSIX,
+        -:  564:             and LANG="ko_KR".  In that case, POSIX says that LC_TIME
+        -:  565:             determines the format and contents of date and time strings
+        -:  566:             written by date, which means "date" must generate output
+        -:  567:             using the POSIX locale; but adding _() would cause "date"
+        -:  568:             to use a Korean translation of the format.  */
+       20:  569:          if (! *format)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  570:            format = "%a %b %e %H:%M:%S %Z %Y";
+        -:  571:        }
+        -:  572:    }
+        -:  573:
+       32:  574:  char *format_copy = adjust_resolution (format);
+call    0 returned 100%
+       32:  575:  char const *format_res = format_copy ? format_copy : format;
+branch  0 taken 12% (fallthrough)
+branch  1 taken 88%
+       32:  576:  char const *tzstring = getenv ("TZ");
+call    0 returned 100%
+       32:  577:  timezone_t tz = tzalloc (tzstring);
+call    0 returned 100%
+        -:  578:
+       32:  579:  if (batch_file != nullptr)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  580:    ok = batch_convert (batch_file, format_res, tz, tzstring);
+call    0 never executed
+        -:  581:  else
+        -:  582:    {
+       32:  583:      bool valid_date = true;
+       32:  584:      ok = true;
+        -:  585:
+       32:  586:      if (!option_specified_date && !set_date)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        -:  587:        {
+       32:  588:          if (optind < argc)
+branch  0 taken 59% (fallthrough)
+branch  1 taken 41%
+        -:  589:            {
+        -:  590:              /* Prepare to set system clock to the specified date/time
+        -:  591:                 given in the POSIX-format.  */
+       19:  592:              set_date = true;
+       19:  593:              datestr = argv[optind];
+       19:  594:              valid_date = posixtime (&when.tv_sec,
+call    0 returned 100%
+        -:  595:                                      datestr,
+        -:  596:                                      (PDS_TRAILING_YEAR
+        -:  597:                                       | PDS_CENTURY | PDS_SECONDS));
+       19:  598:              when.tv_nsec = 0; /* FIXME: posixtime should set this.  */
+        -:  599:            }
+        -:  600:          else
+        -:  601:            {
+        -:  602:              /* Prepare to print the current date/time.  */
+       13:  603:              gettime (&when);
+call    0 returned 100%
+        -:  604:            }
+        -:  605:        }
+        -:  606:      else
+        -:  607:        {
+        -:  608:          /* (option_specified_date || set_date) */
+    #####:  609:          if (reference != nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  610:            {
+    #####:  611:              if (stat (reference, &refstats) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  612:                error (EXIT_FAILURE, errno, "%s", quotef (reference));
+call    0 never executed
+call    1 never executed
+    #####:  613:              when = get_stat_mtime (&refstats);
+        -:  614:            }
+    #####:  615:          else if (get_resolution)
+branch  0 never executed
+branch  1 never executed
+        -:  616:            {
+    #####:  617:              long int res = gettime_res ();
+call    0 never executed
+    #####:  618:              when.tv_sec = res / TIMESPEC_HZ;
+    #####:  619:              when.tv_nsec = res % TIMESPEC_HZ;
+        -:  620:            }
+        -:  621:          else
+        -:  622:            {
+    #####:  623:              if (set_datestr)
+branch  0 never executed
+branch  1 never executed
+    #####:  624:                datestr = set_datestr;
+    #####:  625:              valid_date = parse_datetime2 (&when, datestr, nullptr,
+call    0 never executed
+        -:  626:                                            parse_datetime_flags,
+        -:  627:                                            tz, tzstring);
+        -:  628:            }
+        -:  629:        }
+        -:  630:
+       32:  631:      if (! valid_date)
+branch  0 taken 59% (fallthrough)
+branch  1 taken 41%
+      19*:  632:        error (EXIT_FAILURE, 0, _("invalid date %s"), quote (datestr));
+call    0 returned 100%
+call    1 never executed
+        -:  633:
+       13:  634:      if (set_date)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  635:        {
+        -:  636:          /* Set the system clock to the specified date, then regardless of
+        -:  637:             the success of that operation, format and print that date.  */
+    #####:  638:          if (settime (&when) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  639:            {
+    #####:  640:              error (0, errno, _("cannot set date"));
+    #####:  641:              ok = false;
+        -:  642:            }
+        -:  643:        }
+        -:  644:
+       13:  645:      ok &= show_date (format_res, when, tz);
+call    0 returned 100%
+        -:  646:    }
+        -:  647:
+       13:  648:  main_exit (ok ? EXIT_SUCCESS : EXIT_FAILURE);
+        -:  649:}
+        -:  650:
+        -:  651:/* Display the date and/or time in WHEN according to the format specified
+        -:  652:   in FORMAT, followed by a newline.  Return true if successful.  */
+        -:  653:
+        -:  654:static bool
+function show_date called 13 returned 100% blocks executed 43%
+       13:  655:show_date (char const *format, struct timespec when, timezone_t tz)
+        -:  656:{
+        -:  657:  struct tm tm;
+        -:  658:
+       13:  659:  if (parse_datetime_flags & PARSE_DATETIME_DEBUG)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  660:    error (0, 0, _("output format: %s"), quote (format));
+call    0 never executed
+        -:  661:
+       13:  662:  if (localtime_rz (tz, &when.tv_sec, &tm))
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+        -:  663:    {
+       13:  664:      if (format == rfc_email_format)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  665:        setlocale (LC_TIME, "C");
+call    0 never executed
+       13:  666:      fprintftime (stdout, format, &tm, tz, when.tv_nsec);
+call    0 returned 100%
+       13:  667:      if (format == rfc_email_format)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  668:        setlocale (LC_TIME, "");
+call    0 never executed
+       13:  669:      fputc ('\n', stdout);
+call    0 returned 100%
+       13:  670:      return true;
+        -:  671:    }
+        -:  672:  else
+        -:  673:    {
+        -:  674:      char buf[INT_BUFSIZE_BOUND (intmax_t)];
+    #####:  675:      error (0, 0, _("time %s is out of range"),
+call    0 never executed
+call    1 never executed
+        -:  676:             quote (timetostr (when.tv_sec, buf)));
+    #####:  677:      return false;
+        -:  678:    }
+        -:  679:}

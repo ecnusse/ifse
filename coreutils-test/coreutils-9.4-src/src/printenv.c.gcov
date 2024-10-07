@@ -1,0 +1,212 @@
+        -:    0:Source:src/printenv.c
+        -:    0:Graph:printenv.gcno
+        -:    0:Data:printenv.gcda
+        -:    0:Runs:4
+        -:    1:/* printenv -- print all or part of environment
+        -:    2:   Copyright (C) 1989-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Usage: printenv [variable...]
+        -:   18:
+        -:   19:   If no arguments are given, print the entire environment.
+        -:   20:   If one or more variable names are given, print the value of
+        -:   21:   each one that is set, and nothing for ones that are not set.
+        -:   22:
+        -:   23:   Exit status:
+        -:   24:   0 if all variables specified were found
+        -:   25:   1 if not
+        -:   26:   2 if some other error occurred
+        -:   27:
+        -:   28:   David MacKenzie and Richard Mlynarik */
+        -:   29:
+        -:   30:#include <config.h>
+        -:   31:#include <stdio.h>
+        -:   32:#include <sys/types.h>
+        -:   33:#include <getopt.h>
+        -:   34:
+        -:   35:#include "system.h"
+        -:   36:
+        -:   37:/* Exit status for syntax errors, etc.  */
+        -:   38:enum { PRINTENV_FAILURE = 2 };
+        -:   39:
+        -:   40:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   41:#define PROGRAM_NAME "printenv"
+        -:   42:
+        -:   43:#define AUTHORS \
+        -:   44:  proper_name ("David MacKenzie"), \
+        -:   45:  proper_name ("Richard Mlynarik")
+        -:   46:
+        -:   47:static struct option const longopts[] =
+        -:   48:{
+        -:   49:  {"null", no_argument, nullptr, '0'},
+        -:   50:  {GETOPT_HELP_OPTION_DECL},
+        -:   51:  {GETOPT_VERSION_OPTION_DECL},
+        -:   52:  {nullptr, 0, nullptr, 0}
+        -:   53:};
+        -:   54:
+        -:   55:void
+function usage called 0 returned 0% blocks executed 0%
+    #####:   56:usage (int status)
+        -:   57:{
+    #####:   58:  if (status != EXIT_SUCCESS)
+branch  0 never executed
+branch  1 never executed
+    #####:   59:    emit_try_help ();
+call    0 never executed
+        -:   60:  else
+        -:   61:    {
+    #####:   62:      printf (_("\
+call    0 never executed
+        -:   63:Usage: %s [OPTION]... [VARIABLE]...\n\
+        -:   64:Print the values of the specified environment VARIABLE(s).\n\
+        -:   65:If no VARIABLE is specified, print name and value pairs for them all.\n\
+        -:   66:\n\
+        -:   67:"),
+        -:   68:              program_name);
+    #####:   69:      fputs (_("\
+call    0 never executed
+        -:   70:  -0, --null     end each output line with NUL, not newline\n\
+        -:   71:"), stdout);
+    #####:   72:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   73:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   74:      printf (USAGE_BUILTIN_WARNING, PROGRAM_NAME);
+call    0 never executed
+    #####:   75:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   76:    }
+    #####:   77:  exit (status);
+        -:   78:}
+        -:   79:
+        -:   80:int
+function main called 4 returned 100% blocks executed 62%
+        4:   81:main (int argc, char **argv)
+        -:   82:{
+        -:   83:  char **env;
+        -:   84:  char *ep, *ap;
+        -:   85:  int i;
+        -:   86:  bool ok;
+        -:   87:  int optc;
+        4:   88:  bool opt_nul_terminate_output = false;
+        -:   89:
+        -:   90:  initialize_main (&argc, &argv);
+        4:   91:  set_program_name (argv[0]);
+call    0 returned 100%
+        4:   92:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:   93:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:   94:  textdomain (PACKAGE);
+        -:   95:
+        4:   96:  initialize_exit_failure (PRINTENV_FAILURE);
+call    0 returned 100%
+        4:   97:  atexit (close_stdout);
+call    0 returned 100%
+        -:   98:
+        4:   99:  while ((optc = getopt_long (argc, argv, "+iu:0", longopts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+        -:  100:    {
+    #####:  101:      switch (optc)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  102:        {
+    #####:  103:        case '0':
+    #####:  104:          opt_nul_terminate_output = true;
+    #####:  105:          break;
+    #####:  106:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  107:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+    #####:  108:        default:
+    #####:  109:          usage (PRINTENV_FAILURE);
+call    0 never executed
+        -:  110:        }
+        -:  111:    }
+        -:  112:
+        4:  113:  if (optind >= argc)
+branch  0 taken 25% (fallthrough)
+branch  1 taken 75%
+        -:  114:    {
+       52:  115:      for (env = environ; *env != nullptr; ++env)
+branch  0 taken 98%
+branch  1 taken 2% (fallthrough)
+      51*:  116:        printf ("%s%c", *env, opt_nul_terminate_output ? '\0' : '\n');
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 returned 100%
+        1:  117:      ok = true;
+        -:  118:    }
+        -:  119:  else
+        -:  120:    {
+        3:  121:      int matches = 0;
+        -:  122:
+        9:  123:      for (i = optind; i < argc; ++i)
+branch  0 taken 67%
+branch  1 taken 33% (fallthrough)
+        -:  124:        {
+        6:  125:          bool matched = false;
+        -:  126:
+        -:  127:          /* 'printenv a=b' is silent, even if 'a=b=c' is in environ.  */
+       6*:  128:          if (strchr (argv[i], '='))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  129:            continue;
+        -:  130:
+      312:  131:          for (env = environ; *env; ++env)
+branch  0 taken 98%
+branch  1 taken 2% (fallthrough)
+        -:  132:            {
+      306:  133:              ep = *env;
+      306:  134:              ap = argv[i];
+     306*:  135:              while (*ep != '\0' && *ap != '\0' && *ep++ == *ap++)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+branch  4 never executed
+branch  5 never executed
+        -:  136:                {
+    #####:  137:                  if (*ep == '=' && *ap == '\0')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  138:                    {
+    #####:  139:                      printf ("%s%c", ep + 1,
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  140:                              opt_nul_terminate_output ? '\0' : '\n');
+    #####:  141:                      matched = true;
+    #####:  142:                      break;
+        -:  143:                    }
+        -:  144:                }
+        -:  145:            }
+        -:  146:
+        6:  147:          matches += matched;
+        -:  148:        }
+        -:  149:
+        3:  150:      ok = (matches == argc - optind);
+        -:  151:    }
+        -:  152:
+        4:  153:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -:  154:}

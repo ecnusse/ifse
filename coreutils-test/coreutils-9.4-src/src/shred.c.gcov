@@ -1,0 +1,1698 @@
+        -:    0:Source:src/shred.c
+        -:    0:Graph:shred.gcno
+        -:    0:Data:shred.gcda
+        -:    0:Runs:1
+        -:    1:/* shred.c - overwrite files and devices to make it harder to recover data
+        -:    2:
+        -:    3:   Copyright (C) 1999-2023 Free Software Foundation, Inc.
+        -:    4:   Copyright (C) 1997, 1998, 1999 Colin Plumb.
+        -:    5:
+        -:    6:   This program is free software: you can redistribute it and/or modify
+        -:    7:   it under the terms of the GNU General Public License as published by
+        -:    8:   the Free Software Foundation, either version 3 of the License, or
+        -:    9:   (at your option) any later version.
+        -:   10:
+        -:   11:   This program is distributed in the hope that it will be useful,
+        -:   12:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   13:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   14:   GNU General Public License for more details.
+        -:   15:
+        -:   16:   You should have received a copy of the GNU General Public License
+        -:   17:   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+        -:   18:
+        -:   19:   Written by Colin Plumb.  */
+        -:   20:
+        -:   21:/*
+        -:   22: * Do a more secure overwrite of given files or devices, to make it harder
+        -:   23: * for even very expensive hardware probing to recover the data.
+        -:   24: *
+        -:   25: * Although this process is also known as "wiping", I prefer the longer
+        -:   26: * name both because I think it is more evocative of what is happening and
+        -:   27: * because a longer name conveys a more appropriate sense of deliberateness.
+        -:   28: *
+        -:   29: * For the theory behind this, see "Secure Deletion of Data from Magnetic
+        -:   30: * and Solid-State Memory", on line at
+        -:   31: * https://www.cs.auckland.ac.nz/~pgut001/pubs/secure_del.html
+        -:   32: *
+        -:   33: * Just for the record, reversing one or two passes of disk overwrite
+        -:   34: * is not terribly difficult with hardware help.  Hook up a good-quality
+        -:   35: * digitizing oscilloscope to the output of the head preamplifier and copy
+        -:   36: * the high-res digitized data to a computer for some off-line analysis.
+        -:   37: * Read the "current" data and average all the pulses together to get an
+        -:   38: * "average" pulse on the disk.  Subtract this average pulse from all of
+        -:   39: * the actual pulses and you can clearly see the "echo" of the previous
+        -:   40: * data on the disk.
+        -:   41: *
+        -:   42: * Real hard drives have to balance the cost of the media, the head,
+        -:   43: * and the read circuitry.  They use better-quality media than absolutely
+        -:   44: * necessary to limit the cost of the read circuitry.  By throwing that
+        -:   45: * assumption out, and the assumption that you want the data processed
+        -:   46: * as fast as the hard drive can spin, you can do better.
+        -:   47: *
+        -:   48: * If asked to wipe a file, this also unlinks it, renaming it in a
+        -:   49: * clever way to try to leave no trace of the original filename.
+        -:   50: *
+        -:   51: * This was inspired by a desire to improve on some code titled:
+        -:   52: * Wipe V1.0-- Overwrite and delete files.  S. 2/3/96
+        -:   53: * but I've rewritten everything here so completely that no trace of
+        -:   54: * the original remains.
+        -:   55: *
+        -:   56: * Thanks to:
+        -:   57: * Bob Jenkins, for his good RNG work and patience with the FSF copyright
+        -:   58: * paperwork.
+        -:   59: * Jim Meyering, for his work merging this into the GNU fileutils while
+        -:   60: * still letting me feel a sense of ownership and pride.  Getting me to
+        -:   61: * tolerate the GNU brace style was quite a feat of diplomacy.
+        -:   62: * Paul Eggert, for lots of useful discussion and code.  I disagree with
+        -:   63: * an awful lot of his suggestions, but they're disagreements worth having.
+        -:   64: *
+        -:   65: * Things to think about:
+        -:   66: * - Security: Is there any risk to the race
+        -:   67: *   between overwriting and unlinking a file?  Will it do anything
+        -:   68: *   drastically bad if told to attack a named pipe or socket?
+        -:   69: */
+        -:   70:
+        -:   71:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   72:#define PROGRAM_NAME "shred"
+        -:   73:
+        -:   74:#define AUTHORS proper_name ("Colin Plumb")
+        -:   75:
+        -:   76:#include <config.h>
+        -:   77:
+        -:   78:#include <getopt.h>
+        -:   79:#include <stdio.h>
+        -:   80:#include <setjmp.h>
+        -:   81:#include <sys/types.h>
+        -:   82:#if defined __linux__ && HAVE_SYS_MTIO_H
+        -:   83:# include <sys/mtio.h>
+        -:   84:#endif
+        -:   85:
+        -:   86:#include "system.h"
+        -:   87:#include "alignalloc.h"
+        -:   88:#include "argmatch.h"
+        -:   89:#include "assure.h"
+        -:   90:#include "xdectoint.h"
+        -:   91:#include "fcntl--.h"
+        -:   92:#include "human.h"
+        -:   93:#include "randint.h"
+        -:   94:#include "randread.h"
+        -:   95:#include "renameatu.h"
+        -:   96:#include "stat-size.h"
+        -:   97:
+        -:   98:/* Default number of times to overwrite.  */
+        -:   99:enum { DEFAULT_PASSES = 3 };
+        -:  100:
+        -:  101:/* How many seconds to wait before checking whether to output another
+        -:  102:   verbose output line.  */
+        -:  103:enum { VERBOSE_UPDATE = 5 };
+        -:  104:
+        -:  105:/* Sector size and corresponding mask, for recovering after write failures.
+        -:  106:   The size must be a power of 2.  */
+        -:  107:enum { SECTOR_SIZE = 512 };
+        -:  108:enum { SECTOR_MASK = SECTOR_SIZE - 1 };
+        -:  109:static_assert (0 < SECTOR_SIZE && (SECTOR_SIZE & SECTOR_MASK) == 0);
+        -:  110:
+        -:  111:enum remove_method
+        -:  112:{
+        -:  113:  remove_none = 0,      /* the default: only wipe data.  */
+        -:  114:  remove_unlink,        /* don't obfuscate name, just unlink.  */
+        -:  115:  remove_wipe,          /* obfuscate name before unlink.  */
+        -:  116:  remove_wipesync       /* obfuscate name, syncing each byte, before unlink.  */
+        -:  117:};
+        -:  118:
+        -:  119:static char const *const remove_args[] =
+        -:  120:{
+        -:  121:  "unlink", "wipe", "wipesync", nullptr
+        -:  122:};
+        -:  123:
+        -:  124:static enum remove_method const remove_methods[] =
+        -:  125:{
+        -:  126:  remove_unlink, remove_wipe, remove_wipesync
+        -:  127:};
+        -:  128:
+        -:  129:struct Options
+        -:  130:{
+        -:  131:  bool force;		/* -f flag: chmod files if necessary */
+        -:  132:  size_t n_iterations;	/* -n flag: Number of iterations */
+        -:  133:  off_t size;		/* -s flag: size of file */
+        -:  134:  enum remove_method remove_file; /* -u flag: remove file after shredding */
+        -:  135:  bool verbose;		/* -v flag: Print progress */
+        -:  136:  bool exact;		/* -x flag: Do not round up file size */
+        -:  137:  bool zero_fill;	/* -z flag: Add a final zero pass */
+        -:  138:};
+        -:  139:
+        -:  140:/* For long options that have no equivalent short option, use a
+        -:  141:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:  142:enum
+        -:  143:{
+        -:  144:  RANDOM_SOURCE_OPTION = CHAR_MAX + 1
+        -:  145:};
+        -:  146:
+        -:  147:static struct option const long_opts[] =
+        -:  148:{
+        -:  149:  {"exact", no_argument, nullptr, 'x'},
+        -:  150:  {"force", no_argument, nullptr, 'f'},
+        -:  151:  {"iterations", required_argument, nullptr, 'n'},
+        -:  152:  {"size", required_argument, nullptr, 's'},
+        -:  153:  {"random-source", required_argument, nullptr, RANDOM_SOURCE_OPTION},
+        -:  154:  {"remove", optional_argument, nullptr, 'u'},
+        -:  155:  {"verbose", no_argument, nullptr, 'v'},
+        -:  156:  {"zero", no_argument, nullptr, 'z'},
+        -:  157:  {GETOPT_HELP_OPTION_DECL},
+        -:  158:  {GETOPT_VERSION_OPTION_DECL},
+        -:  159:  {nullptr, 0, nullptr, 0}
+        -:  160:};
+        -:  161:
+        -:  162:void
+function usage called 1 returned 0% blocks executed 21%
+        1:  163:usage (int status)
+        -:  164:{
+        1:  165:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  166:    emit_try_help ();
+call    0 returned 100%
+        -:  167:  else
+        -:  168:    {
+    #####:  169:      printf (_("Usage: %s [OPTION]... FILE...\n"), program_name);
+call    0 never executed
+    #####:  170:      fputs (_("\
+call    0 never executed
+        -:  171:Overwrite the specified FILE(s) repeatedly, in order to make it harder\n\
+        -:  172:for even very expensive hardware probing to recover the data.\n\
+        -:  173:"), stdout);
+    #####:  174:      fputs (_("\
+call    0 never executed
+        -:  175:\n\
+        -:  176:If FILE is -, shred standard output.\n\
+        -:  177:"), stdout);
+        -:  178:
+    #####:  179:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  180:
+    #####:  181:      printf (_("\
+call    0 never executed
+        -:  182:  -f, --force    change permissions to allow writing if necessary\n\
+        -:  183:  -n, --iterations=N  overwrite N times instead of the default (%d)\n\
+        -:  184:      --random-source=FILE  get random bytes from FILE\n\
+        -:  185:  -s, --size=N   shred this many bytes (suffixes like K, M, G accepted)\n\
+        -:  186:"), DEFAULT_PASSES);
+    #####:  187:      fputs (_("\
+call    0 never executed
+        -:  188:  -u             deallocate and remove file after overwriting\n\
+        -:  189:      --remove[=HOW]  like -u but give control on HOW to delete;  See below\n\
+        -:  190:  -v, --verbose  show progress\n\
+        -:  191:  -x, --exact    do not round file sizes up to the next full block;\n\
+        -:  192:                   this is the default for non-regular files\n\
+        -:  193:  -z, --zero     add a final overwrite with zeros to hide shredding\n\
+        -:  194:"), stdout);
+    #####:  195:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  196:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  197:      fputs (_("\
+call    0 never executed
+        -:  198:\n\
+        -:  199:Delete FILE(s) if --remove (-u) is specified.  The default is not to remove\n\
+        -:  200:the files because it is common to operate on device files like /dev/hda,\n\
+        -:  201:and those files usually should not be removed.\n\
+        -:  202:The optional HOW parameter indicates how to remove a directory entry:\n\
+        -:  203:'unlink' => use a standard unlink call.\n\
+        -:  204:'wipe' => also first obfuscate bytes in the name.\n\
+        -:  205:'wipesync' => also sync each obfuscated byte to the device.\n\
+        -:  206:The default mode is 'wipesync', but note it can be expensive.\n\
+        -:  207:\n\
+        -:  208:"), stdout);
+    #####:  209:      fputs (_("\
+call    0 never executed
+        -:  210:CAUTION: shred assumes the file system and hardware overwrite data in place.\n\
+        -:  211:Although this is common, many platforms operate otherwise.  Also, backups\n\
+        -:  212:and mirrors may contain unremovable copies that will let a shredded file\n\
+        -:  213:be recovered later.  See the GNU coreutils manual for details.\n\
+        -:  214:"), stdout);
+    #####:  215:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  216:    }
+        1:  217:  exit (status);
+        -:  218:}
+        -:  219:
+        -:  220:/*
+        -:  221: * Determine if pattern type is periodic or not.
+        -:  222: */
+        -:  223:static bool
+function periodic_pattern called 0 returned 0% blocks executed 0%
+    #####:  224:periodic_pattern (int type)
+        -:  225:{
+    #####:  226:  if (type <= 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  227:    return false;
+        -:  228:
+        -:  229:  unsigned char r[3];
+    #####:  230:  unsigned int bits = type & 0xfff;
+        -:  231:
+    #####:  232:  bits |= bits << 12;
+    #####:  233:  r[0] = (bits >> 4) & 255;
+    #####:  234:  r[1] = (bits >> 8) & 255;
+    #####:  235:  r[2] = bits & 255;
+        -:  236:
+    #####:  237:  return (r[0] != r[1]) || (r[0] != r[2]);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  238:}
+        -:  239:
+        -:  240:/*
+        -:  241: * Fill a buffer with a fixed pattern.
+        -:  242: *
+        -:  243: * The buffer must be at least 3 bytes long, even if
+        -:  244: * size is less.  Larger sizes are filled exactly.
+        -:  245: */
+        -:  246:static void
+function fillpattern called 0 returned 0% blocks executed 0%
+    #####:  247:fillpattern (int type, unsigned char *r, size_t size)
+        -:  248:{
+        -:  249:  size_t i;
+    #####:  250:  unsigned int bits = type & 0xfff;
+        -:  251:
+    #####:  252:  bits |= bits << 12;
+    #####:  253:  r[0] = (bits >> 4) & 255;
+    #####:  254:  r[1] = (bits >> 8) & 255;
+    #####:  255:  r[2] = bits & 255;
+    #####:  256:  for (i = 3; i <= size / 2; i *= 2)
+branch  0 never executed
+branch  1 never executed
+    #####:  257:    memcpy (r + i, r, i);
+    #####:  258:  if (i < size)
+branch  0 never executed
+branch  1 never executed
+    #####:  259:    memcpy (r + i, r, size - i);
+        -:  260:
+        -:  261:  /* Invert the first bit of every sector. */
+    #####:  262:  if (type & 0x1000)
+branch  0 never executed
+branch  1 never executed
+    #####:  263:    for (i = 0; i < size; i += SECTOR_SIZE)
+branch  0 never executed
+branch  1 never executed
+    #####:  264:      r[i] ^= 0x80;
+    #####:  265:}
+        -:  266:
+        -:  267:/*
+        -:  268: * Generate a 6-character (+ nul) pass name string
+        -:  269: * FIXME: allow translation of "random".
+        -:  270: */
+        -:  271:#define PASS_NAME_SIZE 7
+        -:  272:static void
+function passname called 0 returned 0% blocks executed 0%
+    #####:  273:passname (unsigned char const *data, char name[PASS_NAME_SIZE])
+        -:  274:{
+    #####:  275:  if (data)
+branch  0 never executed
+branch  1 never executed
+    #####:  276:    sprintf (name, "%02x%02x%02x", data[0], data[1], data[2]);
+        -:  277:  else
+    #####:  278:    memcpy (name, "random", PASS_NAME_SIZE);
+    #####:  279:}
+        -:  280:
+        -:  281:/* Return true when it's ok to ignore an fsync or fdatasync
+        -:  282:   failure that set errno to ERRNO_VAL.  */
+        -:  283:static bool
+function ignorable_sync_errno called 0 returned 0% blocks executed 0%
+    #####:  284:ignorable_sync_errno (int errno_val)
+        -:  285:{
+        -:  286:  return (errno_val == EINVAL
+    #####:  287:          || errno_val == EBADF
+branch  0 never executed
+branch  1 never executed
+        -:  288:          /* HP-UX does this */
+    #####:  289:          || errno_val == EISDIR);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  290:}
+        -:  291:
+        -:  292:/* Request that all data for FD be transferred to the corresponding
+        -:  293:   storage device.  QNAME is the file name (quoted for colons).
+        -:  294:   Report any errors found.  Return 0 on success, -1
+        -:  295:   (setting errno) on failure.  It is not an error if fdatasync and/or
+        -:  296:   fsync is not supported for this file, or if the file is not a
+        -:  297:   writable file descriptor.  */
+        -:  298:static int
+function dosync called 0 returned 0% blocks executed 0%
+    #####:  299:dosync (int fd, char const *qname)
+        -:  300:{
+        -:  301:  int err;
+        -:  302:
+        -:  303:#if HAVE_FDATASYNC
+    #####:  304:  if (fdatasync (fd) == 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  305:    return 0;
+    #####:  306:  err = errno;
+    #####:  307:  if ( ! ignorable_sync_errno (err))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  308:    {
+        -:  309:      error (0, err, _("%s: fdatasync failed"), qname);
+    #####:  310:      errno = err;
+    #####:  311:      return -1;
+        -:  312:    }
+        -:  313:#endif
+        -:  314:
+    #####:  315:  if (fsync (fd) == 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  316:    return 0;
+    #####:  317:  err = errno;
+    #####:  318:  if ( ! ignorable_sync_errno (err))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  319:    {
+        -:  320:      error (0, err, _("%s: fsync failed"), qname);
+    #####:  321:      errno = err;
+    #####:  322:      return -1;
+        -:  323:    }
+        -:  324:
+    #####:  325:  sync ();
+call    0 never executed
+    #####:  326:  return 0;
+        -:  327:}
+        -:  328:
+        -:  329:/* Turn on or off direct I/O mode for file descriptor FD, if possible.
+        -:  330:   Try to turn it on if ENABLE is true.  Otherwise, try to turn it off.  */
+        -:  331:static void
+function direct_mode called 0 returned 0% blocks executed 0%
+    #####:  332:direct_mode (int fd, bool enable)
+        -:  333:{
+        -:  334:  if (O_DIRECT)
+        -:  335:    {
+    #####:  336:      int fd_flags = fcntl (fd, F_GETFL);
+call    0 never executed
+    #####:  337:      if (0 < fd_flags)
+branch  0 never executed
+branch  1 never executed
+        -:  338:        {
+    #####:  339:          int new_flags = (enable
+        -:  340:                           ? (fd_flags | O_DIRECT)
+    #####:  341:                           : (fd_flags & ~O_DIRECT));
+branch  0 never executed
+branch  1 never executed
+    #####:  342:          if (new_flags != fd_flags)
+branch  0 never executed
+branch  1 never executed
+    #####:  343:            fcntl (fd, F_SETFL, new_flags);
+call    0 never executed
+        -:  344:        }
+        -:  345:    }
+        -:  346:
+        -:  347:#if HAVE_DIRECTIO && defined DIRECTIO_ON && defined DIRECTIO_OFF
+        -:  348:  /* This is Solaris-specific.  */
+        -:  349:  directio (fd, enable ? DIRECTIO_ON : DIRECTIO_OFF);
+        -:  350:#endif
+    #####:  351:}
+        -:  352:
+        -:  353:/* Rewind FD; its status is ST.  */
+        -:  354:static bool
+function dorewind called 0 returned 0% blocks executed 0%
+    #####:  355:dorewind (int fd, struct stat const *st)
+        -:  356:{
+    #####:  357:  if (S_ISCHR (st->st_mode))
+branch  0 never executed
+branch  1 never executed
+        -:  358:    {
+        -:  359:#if defined __linux__ && HAVE_SYS_MTIO_H
+        -:  360:      /* In the Linux kernel, lseek does not work on tape devices; it
+        -:  361:         returns a randomish value instead.  Try the low-level tape
+        -:  362:         rewind operation first.  */
+        -:  363:      struct mtop op;
+    #####:  364:      op.mt_op = MTREW;
+    #####:  365:      op.mt_count = 1;
+    #####:  366:      if (ioctl (fd, MTIOCTOP, &op) == 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  367:        return true;
+        -:  368:#endif
+        -:  369:    }
+    #####:  370:  off_t offset = lseek (fd, 0, SEEK_SET);
+call    0 never executed
+    #####:  371:  if (0 < offset)
+branch  0 never executed
+branch  1 never executed
+    #####:  372:    errno = EINVAL;
+    #####:  373:  return offset == 0;
+        -:  374:}
+        -:  375:
+        -:  376:/* By convention, negative sizes represent unknown values.  */
+        -:  377:
+        -:  378:static bool
+function known called 0 returned 0% blocks executed 0%
+    #####:  379:known (off_t size)
+        -:  380:{
+    #####:  381:  return 0 <= size;
+        -:  382:}
+        -:  383:
+        -:  384:/*
+        -:  385: * Do pass number K of N, writing *SIZEP bytes of the given pattern TYPE
+        -:  386: * to the file descriptor FD.  K and N are passed in only for verbose
+        -:  387: * progress message purposes.  If N == 0, no progress messages are printed.
+        -:  388: *
+        -:  389: * If *SIZEP == -1, the size is unknown, and it will be filled in as soon
+        -:  390: * as writing fails with ENOSPC.
+        -:  391: *
+        -:  392: * Return 1 on write error, -1 on other error, 0 on success.
+        -:  393: */
+        -:  394:static int
+function dopass called 0 returned 0% blocks executed 0%
+    #####:  395:dopass (int fd, struct stat const *st, char const *qname, off_t *sizep,
+        -:  396:        int type, struct randread_source *s,
+        -:  397:        unsigned long int k, unsigned long int n)
+        -:  398:{
+    #####:  399:  off_t size = *sizep;
+        -:  400:  off_t offset;			/* Current file position */
+        -:  401:  time_t thresh IF_LINT ( = 0);	/* Time to maybe print next status update */
+    #####:  402:  time_t now = 0;		/* Current time */
+        -:  403:  size_t lim;			/* Amount of data to try writing */
+        -:  404:  size_t soff;			/* Offset into buffer for next write */
+        -:  405:  ssize_t ssize;		/* Return value from write */
+        -:  406:
+        -:  407:  /* Fill pattern buffer.  Aligning it to a page so we can do direct I/O.  */
+    #####:  408:  size_t page_size = getpagesize ();
+        -:  409:#define PERIODIC_OUTPUT_SIZE (60 * 1024)
+        -:  410:#define NONPERIODIC_OUTPUT_SIZE (64 * 1024)
+        -:  411:  static_assert (PERIODIC_OUTPUT_SIZE % 3 == 0);
+    #####:  412:  size_t output_size = periodic_pattern (type)
+call    0 never executed
+    #####:  413:                       ? PERIODIC_OUTPUT_SIZE : NONPERIODIC_OUTPUT_SIZE;
+branch  0 never executed
+branch  1 never executed
+        -:  414:#define FILLPATTERN_SIZE (((output_size + 2) / 3) * 3) /* Multiple of 3 */
+    #####:  415:  unsigned char *pbuf = xalignalloc (page_size, FILLPATTERN_SIZE);
+call    0 never executed
+        -:  416:
+        -:  417:  char pass_string[PASS_NAME_SIZE];	/* Name of current pass */
+    #####:  418:  bool write_error = false;
+    #####:  419:  bool other_error = false;
+        -:  420:
+        -:  421:  /* Printable previous offset into the file */
+        -:  422:  char previous_offset_buf[LONGEST_HUMAN_READABLE + 1];
+        -:  423:  char const *previous_human_offset;
+        -:  424:
+        -:  425:  /* As a performance tweak, avoid direct I/O for small sizes,
+        -:  426:     as it's just a performance rather then security consideration,
+        -:  427:     and direct I/O can often be unsupported for small non aligned sizes.  */
+    #####:  428:  bool try_without_directio = 0 < size && size < output_size;
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  429:  if (! try_without_directio)
+branch  0 never executed
+branch  1 never executed
+    #####:  430:    direct_mode (fd, true);
+call    0 never executed
+        -:  431:
+    #####:  432:  if (! dorewind (fd, st))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  433:    {
+    #####:  434:      error (0, errno, _("%s: cannot rewind"), qname);
+    #####:  435:      other_error = true;
+    #####:  436:      goto free_pattern_mem;
+        -:  437:    }
+        -:  438:
+        -:  439:  /* Constant fill patterns need only be set up once. */
+    #####:  440:  if (type >= 0)
+branch  0 never executed
+branch  1 never executed
+        -:  441:    {
+    #####:  442:      lim = known (size) && size < FILLPATTERN_SIZE ? size : FILLPATTERN_SIZE;
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  443:      fillpattern (type, pbuf, lim);
+call    0 never executed
+    #####:  444:      passname (pbuf, pass_string);
+call    0 never executed
+        -:  445:    }
+        -:  446:  else
+        -:  447:    {
+    #####:  448:      passname (0, pass_string);
+call    0 never executed
+        -:  449:    }
+        -:  450:
+        -:  451:  /* Set position if first status update */
+    #####:  452:  if (n)
+branch  0 never executed
+branch  1 never executed
+        -:  453:    {
+        -:  454:      error (0, 0, _("%s: pass %lu/%lu (%s)..."), qname, k, n, pass_string);
+    #####:  455:      thresh = time (nullptr) + VERBOSE_UPDATE;
+call    0 never executed
+    #####:  456:      previous_human_offset = "";
+        -:  457:    }
+        -:  458:
+    #####:  459:  offset = 0;
+        -:  460:  while (true)
+    #####:  461:    {
+        -:  462:      /* How much to write this time? */
+    #####:  463:      lim = output_size;
+    #####:  464:      if (known (size) && size - offset < output_size)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  465:        {
+    #####:  466:          if (size < offset)
+branch  0 never executed
+branch  1 never executed
+    #####:  467:            break;
+    #####:  468:          lim = size - offset;
+    #####:  469:          if (!lim)
+branch  0 never executed
+branch  1 never executed
+    #####:  470:            break;
+        -:  471:        }
+    #####:  472:      if (type < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  473:        randread (s, pbuf, lim);
+call    0 never executed
+        -:  474:      /* Loop to retry partial writes. */
+    #####:  475:      for (soff = 0; soff < lim; soff += ssize)
+branch  0 never executed
+branch  1 never executed
+        -:  476:        {
+    #####:  477:          ssize = write (fd, pbuf + soff, lim - soff);
+call    0 never executed
+    #####:  478:          if (ssize <= 0)
+branch  0 never executed
+branch  1 never executed
+        -:  479:            {
+    #####:  480:              if (! known (size) && (ssize == 0 || errno == ENOSPC))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+        -:  481:                {
+        -:  482:                  /* We have found the end of the file.  */
+    #####:  483:                  if (soff <= OFF_T_MAX - offset)
+branch  0 never executed
+branch  1 never executed
+    #####:  484:                    *sizep = size = offset + soff;
+    #####:  485:                  break;
+        -:  486:                }
+        -:  487:              else
+        -:  488:                {
+    #####:  489:                  int errnum = errno;
+        -:  490:                  char buf[INT_BUFSIZE_BOUND (uintmax_t)];
+        -:  491:
+        -:  492:                  /* Retry without direct I/O since this may not be supported
+        -:  493:                     at all on some (file) systems, or with the current size.
+        -:  494:                     I.e., a specified --size that is not aligned, or when
+        -:  495:                     dealing with slop at the end of a file with --exact.  */
+    #####:  496:                  if (! try_without_directio && errno == EINVAL)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  497:                    {
+    #####:  498:                      direct_mode (fd, false);
+call    0 never executed
+    #####:  499:                      ssize = 0;
+    #####:  500:                      try_without_directio = true;
+    #####:  501:                      continue;
+        -:  502:                    }
+    #####:  503:                  error (0, errnum, _("%s: error writing at offset %s"),
+call    0 never executed
+        -:  504:                         qname, umaxtostr (offset + soff, buf));
+        -:  505:
+        -:  506:                  /* 'shred' is often used on bad media, before throwing it
+        -:  507:                     out.  Thus, it shouldn't give up on bad blocks.  This
+        -:  508:                     code works because lim is always a multiple of
+        -:  509:                     SECTOR_SIZE, except at the end.  This size constraint
+        -:  510:                     also enables direct I/O on some (file) systems.  */
+        -:  511:                  static_assert (PERIODIC_OUTPUT_SIZE % SECTOR_SIZE == 0);
+        -:  512:                  static_assert (NONPERIODIC_OUTPUT_SIZE % SECTOR_SIZE == 0);
+    #####:  513:                  if (errnum == EIO && known (size)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  514:                      && (soff | SECTOR_MASK) < lim)
+branch  0 never executed
+branch  1 never executed
+        -:  515:                    {
+    #####:  516:                      size_t soff1 = (soff | SECTOR_MASK) + 1;
+    #####:  517:                      if (lseek (fd, offset + soff1, SEEK_SET) != -1)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  518:                        {
+        -:  519:                          /* Arrange to skip this block. */
+    #####:  520:                          ssize = soff1 - soff;
+    #####:  521:                          write_error = true;
+    #####:  522:                          continue;
+        -:  523:                        }
+    #####:  524:                      error (0, errno, _("%s: lseek failed"), qname);
+        -:  525:                    }
+    #####:  526:                  other_error = true;
+    #####:  527:                  goto free_pattern_mem;
+        -:  528:                }
+        -:  529:            }
+        -:  530:        }
+        -:  531:
+        -:  532:      /* Okay, we have written "soff" bytes. */
+        -:  533:
+    #####:  534:      if (OFF_T_MAX - offset < soff)
+branch  0 never executed
+branch  1 never executed
+        -:  535:        {
+        -:  536:          error (0, 0, _("%s: file too large"), qname);
+    #####:  537:          other_error = true;
+    #####:  538:          goto free_pattern_mem;
+        -:  539:        }
+        -:  540:
+    #####:  541:      offset += soff;
+        -:  542:
+    #####:  543:      bool done = offset == size;
+        -:  544:
+        -:  545:      /* Time to print progress? */
+    #####:  546:      if (n && ((done && *previous_human_offset)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  547:                || thresh <= (now = time (nullptr))))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  548:        {
+        -:  549:          char offset_buf[LONGEST_HUMAN_READABLE + 1];
+        -:  550:          char size_buf[LONGEST_HUMAN_READABLE + 1];
+    #####:  551:          int human_progress_opts = (human_autoscale | human_SI
+        -:  552:                                     | human_base_1024 | human_B);
+        -:  553:          char const *human_offset
+    #####:  554:            = human_readable (offset, offset_buf,
+call    0 never executed
+        -:  555:                              human_floor | human_progress_opts, 1, 1);
+        -:  556:
+    #####:  557:          if (done || !STREQ (previous_human_offset, human_offset))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  558:            {
+    #####:  559:              if (! known (size))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  560:                error (0, 0, _("%s: pass %lu/%lu (%s)...%s"),
+        -:  561:                       qname, k, n, pass_string, human_offset);
+        -:  562:              else
+        -:  563:                {
+    #####:  564:                  uintmax_t off = offset;
+    #####:  565:                  int percent = (size == 0
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  566:                                 ? 100
+        -:  567:                                 : (off <= TYPE_MAXIMUM (uintmax_t) / 100
+    #####:  568:                                    ? off * 100 / size
+    #####:  569:                                    : off / (size / 100)));
+        -:  570:                  char const *human_size
+    #####:  571:                    = human_readable (size, size_buf,
+call    0 never executed
+        -:  572:                                      human_ceiling | human_progress_opts,
+        -:  573:                                      1, 1);
+    #####:  574:                  if (done)
+branch  0 never executed
+branch  1 never executed
+    #####:  575:                    human_offset = human_size;
+        -:  576:                  error (0, 0, _("%s: pass %lu/%lu (%s)...%s/%s %d%%"),
+        -:  577:                         qname, k, n, pass_string, human_offset, human_size,
+        -:  578:                         percent);
+        -:  579:                }
+        -:  580:
+    #####:  581:              strcpy (previous_offset_buf, human_offset);
+    #####:  582:              previous_human_offset = previous_offset_buf;
+    #####:  583:              thresh = now + VERBOSE_UPDATE;
+        -:  584:
+        -:  585:              /*
+        -:  586:               * Force periodic syncs to keep displayed progress accurate
+        -:  587:               * FIXME: Should these be present even if -v is not enabled,
+        -:  588:               * to keep the buffer cache from filling with dirty pages?
+        -:  589:               * It's a common problem with programs that do lots of writes,
+        -:  590:               * like mkfs.
+        -:  591:               */
+    #####:  592:              if (dosync (fd, qname) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  593:                {
+    #####:  594:                  if (errno != EIO)
+branch  0 never executed
+branch  1 never executed
+        -:  595:                    {
+    #####:  596:                      other_error = true;
+    #####:  597:                      goto free_pattern_mem;
+        -:  598:                    }
+    #####:  599:                  write_error = true;
+        -:  600:                }
+        -:  601:            }
+        -:  602:        }
+        -:  603:    }
+        -:  604:
+        -:  605:  /* Force what we just wrote to hit the media. */
+    #####:  606:  if (dosync (fd, qname) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  607:    {
+    #####:  608:      if (errno != EIO)
+branch  0 never executed
+branch  1 never executed
+        -:  609:        {
+    #####:  610:          other_error = true;
+    #####:  611:          goto free_pattern_mem;
+        -:  612:        }
+    #####:  613:      write_error = true;
+        -:  614:    }
+        -:  615:
+    #####:  616:free_pattern_mem:
+    #####:  617:  alignfree (pbuf);
+call    0 never executed
+        -:  618:
+    #####:  619:  return other_error ? -1 : write_error;
+branch  0 never executed
+branch  1 never executed
+        -:  620:}
+        -:  621:
+        -:  622:/*
+        -:  623: * The passes start and end with a random pass, and the passes in between
+        -:  624: * are done in random order.  The idea is to deprive someone trying to
+        -:  625: * reverse the process of knowledge of the overwrite patterns, so they
+        -:  626: * have the additional step of figuring out what was done to the device
+        -:  627: * before they can try to reverse or cancel it.
+        -:  628: *
+        -:  629: * First, all possible 1-bit patterns.  There are two of them.
+        -:  630: * Then, all possible 2-bit patterns.  There are four, but the two
+        -:  631: * which are also 1-bit patterns can be omitted.
+        -:  632: * Then, all possible 3-bit patterns.  Likewise, 8-2 = 6.
+        -:  633: * Then, all possible 4-bit patterns.  16-4 = 12.
+        -:  634: *
+        -:  635: * The basic passes are:
+        -:  636: * 1-bit: 0x000, 0xFFF
+        -:  637: * 2-bit: 0x555, 0xAAA
+        -:  638: * 3-bit: 0x249, 0x492, 0x924, 0x6DB, 0xB6D, 0xDB6 (+ 1-bit)
+        -:  639: *        100100100100         110110110110
+        -:  640: *           9   2   4            D   B   6
+        -:  641: * 4-bit: 0x111, 0x222, 0x333, 0x444, 0x666, 0x777,
+        -:  642: *        0x888, 0x999, 0xBBB, 0xCCC, 0xDDD, 0xEEE (+ 1-bit, 2-bit)
+        -:  643: * Adding three random passes at the beginning, middle and end
+        -:  644: * produces the default 25-pass structure.
+        -:  645: *
+        -:  646: * The next extension would be to 5-bit and 6-bit patterns.
+        -:  647: * There are 30 uncovered 5-bit patterns and 64-8-2 = 46 uncovered
+        -:  648: * 6-bit patterns, so they would increase the time required
+        -:  649: * significantly.  4-bit patterns are enough for most purposes.
+        -:  650: *
+        -:  651: * The main gotcha is that this would require a trickier encoding,
+        -:  652: * since lcm(2,3,4) = 12 bits is easy to fit into an int, but
+        -:  653: * lcm(2,3,4,5) = 60 bits is not.
+        -:  654: *
+        -:  655: * One extension that is included is to complement the first bit in each
+        -:  656: * 512-byte block, to alter the phase of the encoded data in the more
+        -:  657: * complex encodings.  This doesn't apply to MFM, so the 1-bit patterns
+        -:  658: * are considered part of the 3-bit ones and the 2-bit patterns are
+        -:  659: * considered part of the 4-bit patterns.
+        -:  660: *
+        -:  661: *
+        -:  662: * How does the generalization to variable numbers of passes work?
+        -:  663: *
+        -:  664: * Here's how...
+        -:  665: * Have an ordered list of groups of passes.  Each group is a set.
+        -:  666: * Take as many groups as will fit, plus a random subset of the
+        -:  667: * last partial group, and place them into the passes list.
+        -:  668: * Then shuffle the passes list into random order and use that.
+        -:  669: *
+        -:  670: * One extra detail: if we can't include a large enough fraction of the
+        -:  671: * last group to be interesting, then just substitute random passes.
+        -:  672: *
+        -:  673: * If you want more passes than the entire list of groups can
+        -:  674: * provide, just start repeating from the beginning of the list.
+        -:  675: */
+        -:  676:static int const
+        -:  677:  patterns[] =
+        -:  678:{
+        -:  679:  -2,				/* 2 random passes */
+        -:  680:  2, 0x000, 0xFFF,		/* 1-bit */
+        -:  681:  2, 0x555, 0xAAA,		/* 2-bit */
+        -:  682:  -1,				/* 1 random pass */
+        -:  683:  6, 0x249, 0x492, 0x6DB, 0x924, 0xB6D, 0xDB6,	/* 3-bit */
+        -:  684:  12, 0x111, 0x222, 0x333, 0x444, 0x666, 0x777,
+        -:  685:  0x888, 0x999, 0xBBB, 0xCCC, 0xDDD, 0xEEE,	/* 4-bit */
+        -:  686:  -1,				/* 1 random pass */
+        -:  687:        /* The following patterns have the first bit per block flipped */
+        -:  688:  8, 0x1000, 0x1249, 0x1492, 0x16DB, 0x1924, 0x1B6D, 0x1DB6, 0x1FFF,
+        -:  689:  14, 0x1111, 0x1222, 0x1333, 0x1444, 0x1555, 0x1666, 0x1777,
+        -:  690:  0x1888, 0x1999, 0x1AAA, 0x1BBB, 0x1CCC, 0x1DDD, 0x1EEE,
+        -:  691:  -1,				/* 1 random pass */
+        -:  692:  0				/* End */
+        -:  693:};
+        -:  694:
+        -:  695:/*
+        -:  696: * Generate a random wiping pass pattern with num passes.
+        -:  697: * This is a two-stage process.  First, the passes to include
+        -:  698: * are chosen, and then they are shuffled into the desired
+        -:  699: * order.
+        -:  700: */
+        -:  701:static void
+function genpattern called 0 returned 0% blocks executed 0%
+    #####:  702:genpattern (int *dest, size_t num, struct randint_source *s)
+        -:  703:{
+        -:  704:  size_t randpasses;
+        -:  705:  int const *p;
+        -:  706:  int *d;
+        -:  707:  size_t n;
+        -:  708:  size_t accum, top, swap;
+        -:  709:  int k;
+        -:  710:
+    #####:  711:  if (!num)
+branch  0 never executed
+branch  1 never executed
+    #####:  712:    return;
+        -:  713:
+        -:  714:  /* Stage 1: choose the passes to use */
+    #####:  715:  p = patterns;
+    #####:  716:  randpasses = 0;
+    #####:  717:  d = dest;			/* Destination for generated pass list */
+    #####:  718:  n = num;			/* Passes remaining to fill */
+        -:  719:
+        -:  720:  while (true)
+        -:  721:    {
+    #####:  722:      k = *p++;			/* Block descriptor word */
+    #####:  723:      if (!k)
+branch  0 never executed
+branch  1 never executed
+        -:  724:        {			/* Loop back to the beginning */
+    #####:  725:          p = patterns;
+        -:  726:        }
+    #####:  727:      else if (k < 0)
+branch  0 never executed
+branch  1 never executed
+        -:  728:        {			/* -k random passes */
+    #####:  729:          k = -k;
+    #####:  730:          if ((size_t) k >= n)
+branch  0 never executed
+branch  1 never executed
+        -:  731:            {
+    #####:  732:              randpasses += n;
+    #####:  733:              break;
+        -:  734:            }
+    #####:  735:          randpasses += k;
+    #####:  736:          n -= k;
+        -:  737:        }
+    #####:  738:      else if ((size_t) k <= n)
+branch  0 never executed
+branch  1 never executed
+        -:  739:        {			/* Full block of patterns */
+    #####:  740:          memcpy (d, p, k * sizeof (int));
+    #####:  741:          p += k;
+    #####:  742:          d += k;
+    #####:  743:          n -= k;
+        -:  744:        }
+    #####:  745:      else if (n < 2 || 3 * n < (size_t) k)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  746:        {			/* Finish with random */
+    #####:  747:          randpasses += n;
+    #####:  748:          break;
+        -:  749:        }
+        -:  750:      else
+        -:  751:        {			/* Pad out with n of the k available */
+        -:  752:          do
+        -:  753:            {
+    #####:  754:              if (n == (size_t) k || randint_choose (s, k) < n)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  755:                {
+    #####:  756:                  *d++ = *p;
+    #####:  757:                  n--;
+        -:  758:                }
+    #####:  759:              p++;
+    #####:  760:              k--;
+        -:  761:            }
+    #####:  762:          while (n);
+branch  0 never executed
+branch  1 never executed
+    #####:  763:          break;
+        -:  764:        }
+        -:  765:    }
+    #####:  766:  top = num - randpasses;	/* Top of initialized data */
+        -:  767:  /* affirm (d == dest + top); */
+        -:  768:
+        -:  769:  /*
+        -:  770:   * We now have fixed patterns in the dest buffer up to
+        -:  771:   * "top", and we need to scramble them, with "randpasses"
+        -:  772:   * random passes evenly spaced among them.
+        -:  773:   *
+        -:  774:   * We want one at the beginning, one at the end, and
+        -:  775:   * evenly spaced in between.  To do this, we basically
+        -:  776:   * use Bresenham's line draw (a.k.a DDA) algorithm
+        -:  777:   * to draw a line with slope (randpasses-1)/(num-1).
+        -:  778:   * (We use a positive accumulator and count down to
+        -:  779:   * do this.)
+        -:  780:   *
+        -:  781:   * So for each desired output value, we do the following:
+        -:  782:   * - If it should be a random pass, copy the pass type
+        -:  783:   *   to top++, out of the way of the other passes, and
+        -:  784:   *   set the current pass to -1 (random).
+        -:  785:   * - If it should be a normal pattern pass, choose an
+        -:  786:   *   entry at random between here and top-1 (inclusive)
+        -:  787:   *   and swap the current entry with that one.
+        -:  788:   */
+    #####:  789:  randpasses--;			/* To speed up later math */
+    #####:  790:  accum = randpasses;		/* Bresenham DDA accumulator */
+    #####:  791:  for (n = 0; n < num; n++)
+branch  0 never executed
+branch  1 never executed
+        -:  792:    {
+    #####:  793:      if (accum <= randpasses)
+branch  0 never executed
+branch  1 never executed
+        -:  794:        {
+    #####:  795:          accum += num - 1;
+    #####:  796:          dest[top++] = dest[n];
+    #####:  797:          dest[n] = -1;
+        -:  798:        }
+        -:  799:      else
+        -:  800:        {
+    #####:  801:          swap = n + randint_choose (s, top - n);
+call    0 never executed
+    #####:  802:          k = dest[n];
+    #####:  803:          dest[n] = dest[swap];
+    #####:  804:          dest[swap] = k;
+        -:  805:        }
+    #####:  806:      accum -= randpasses;
+        -:  807:    }
+        -:  808:  /* affirm (top == num); */
+        -:  809:}
+        -:  810:
+        -:  811:/*
+        -:  812: * The core routine to actually do the work.  This overwrites the first
+        -:  813: * size bytes of the given fd.  Return true if successful.
+        -:  814: */
+        -:  815:static bool
+function do_wipefd called 0 returned 0% blocks executed 0%
+    #####:  816:do_wipefd (int fd, char const *qname, struct randint_source *s,
+        -:  817:           struct Options const *flags)
+        -:  818:{
+        -:  819:  size_t i;
+        -:  820:  struct stat st;
+        -:  821:  off_t size;		/* Size to write, size to read */
+    #####:  822:  off_t i_size = 0;	/* For small files, initial size to overwrite inode */
+        -:  823:  unsigned long int n;	/* Number of passes for printing purposes */
+        -:  824:  int *passarray;
+    #####:  825:  bool ok = true;
+        -:  826:  struct randread_source *rs;
+        -:  827:
+    #####:  828:  n = 0;		/* dopass takes n == 0 to mean "don't print progress" */
+    #####:  829:  if (flags->verbose)
+branch  0 never executed
+branch  1 never executed
+    #####:  830:    n = flags->n_iterations + flags->zero_fill;
+        -:  831:
+    #####:  832:  if (fstat (fd, &st))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  833:    {
+    #####:  834:      error (0, errno, _("%s: fstat failed"), qname);
+    #####:  835:      return false;
+        -:  836:    }
+        -:  837:
+        -:  838:  /* If we know that we can't possibly shred the file, give up now.
+        -:  839:     Otherwise, we may go into an infinite loop writing data before we
+        -:  840:     find that we can't rewind the device.  */
+    #####:  841:  if ((S_ISCHR (st.st_mode) && isatty (fd))
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  842:      || S_ISFIFO (st.st_mode)
+branch  0 never executed
+branch  1 never executed
+    #####:  843:      || S_ISSOCK (st.st_mode))
+branch  0 never executed
+branch  1 never executed
+        -:  844:    {
+        -:  845:      error (0, 0, _("%s: invalid file type"), qname);
+    #####:  846:      return false;
+        -:  847:    }
+    #####:  848:  else if (S_ISREG (st.st_mode) && st.st_size < 0)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  849:    {
+        -:  850:      error (0, 0, _("%s: file has negative size"), qname);
+    #####:  851:      return false;
+        -:  852:    }
+        -:  853:
+        -:  854:  /* Allocate pass array */
+    #####:  855:  passarray = xnmalloc (flags->n_iterations, sizeof *passarray);
+call    0 never executed
+        -:  856:
+    #####:  857:  size = flags->size;
+    #####:  858:  if (size == -1)
+branch  0 never executed
+branch  1 never executed
+        -:  859:    {
+    #####:  860:      if (S_ISREG (st.st_mode))
+branch  0 never executed
+branch  1 never executed
+        -:  861:        {
+    #####:  862:          size = st.st_size;
+        -:  863:
+    #####:  864:          if (! flags->exact)
+branch  0 never executed
+branch  1 never executed
+        -:  865:            {
+        -:  866:              /* Round up to the nearest block size to clear slack space.  */
+    #####:  867:              off_t remainder = size % ST_BLKSIZE (st);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  868:              if (size && size < ST_BLKSIZE (st))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+    #####:  869:                i_size = size;
+    #####:  870:              if (remainder != 0)
+branch  0 never executed
+branch  1 never executed
+        -:  871:                {
+    #####:  872:                  off_t size_incr = ST_BLKSIZE (st) - remainder;
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  873:                  size += MIN (size_incr, OFF_T_MAX - size);
+        -:  874:                }
+        -:  875:            }
+        -:  876:        }
+        -:  877:      else
+        -:  878:        {
+        -:  879:          /* The behavior of lseek is unspecified, but in practice if
+        -:  880:             it returns a positive number that's the size of this
+        -:  881:             device.  */
+    #####:  882:          size = lseek (fd, 0, SEEK_END);
+call    0 never executed
+    #####:  883:          if (size <= 0)
+branch  0 never executed
+branch  1 never executed
+        -:  884:            {
+        -:  885:              /* We are unable to determine the length, up front.
+        -:  886:                 Let dopass do that as part of its first iteration.  */
+    #####:  887:              size = -1;
+        -:  888:            }
+        -:  889:        }
+        -:  890:    }
+    #####:  891:  else if (S_ISREG (st.st_mode)
+branch  0 never executed
+branch  1 never executed
+    #####:  892:           && st.st_size < MIN (ST_BLKSIZE (st), size))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  893:    i_size = st.st_size;
+        -:  894:
+        -:  895:  /* Schedule the passes in random order. */
+    #####:  896:  genpattern (passarray, flags->n_iterations, s);
+call    0 never executed
+        -:  897:
+    #####:  898:  rs = randint_get_source (s);
+        -:  899:
+        -:  900:  while (true)
+    #####:  901:    {
+        -:  902:      off_t pass_size;
+    #####:  903:      unsigned long int pn = n;
+        -:  904:
+    #####:  905:      if (i_size)
+branch  0 never executed
+branch  1 never executed
+        -:  906:        {
+    #####:  907:          pass_size = i_size;
+    #####:  908:          i_size = 0;
+    #####:  909:          pn = 0;
+        -:  910:        }
+    #####:  911:      else if (size)
+branch  0 never executed
+branch  1 never executed
+        -:  912:        {
+    #####:  913:          pass_size = size;
+    #####:  914:          size = 0;
+        -:  915:        }
+        -:  916:      /* TODO: consider handling tail packing by
+        -:  917:         writing the tail padding as a separate pass,
+        -:  918:         (that would not rewind).  */
+        -:  919:      else
+    #####:  920:        break;
+        -:  921:
+    #####:  922:      for (i = 0; i < flags->n_iterations + flags->zero_fill; i++)
+branch  0 never executed
+branch  1 never executed
+        -:  923:        {
+    #####:  924:          int err = 0;
+    #####:  925:          int type = i < flags->n_iterations ? passarray[i] : 0;
+branch  0 never executed
+branch  1 never executed
+        -:  926:
+    #####:  927:          err = dopass (fd, &st, qname, &pass_size, type, rs, i + 1, pn);
+call    0 never executed
+        -:  928:
+    #####:  929:          if (err)
+branch  0 never executed
+branch  1 never executed
+        -:  930:            {
+    #####:  931:              ok = false;
+    #####:  932:              if (err < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  933:                goto wipefd_out;
+        -:  934:            }
+        -:  935:        }
+        -:  936:    }
+        -:  937:
+        -:  938:  /* Now deallocate the data.  The effect of ftruncate is specified
+        -:  939:     on regular files and shared memory objects (also directories, but
+        -:  940:     they are not possible here); don't worry about errors reported
+        -:  941:     for other file types.  */
+        -:  942:
+    #####:  943:  if (flags->remove_file && ftruncate (fd, 0) != 0
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  944:      && (S_ISREG (st.st_mode) || S_TYPEISSHM (&st)))
+branch  0 never executed
+branch  1 never executed
+        -:  945:    {
+    #####:  946:      error (0, errno, _("%s: error truncating"), qname);
+    #####:  947:      ok = false;
+    #####:  948:      goto wipefd_out;
+        -:  949:    }
+        -:  950:
+    #####:  951:wipefd_out:
+    #####:  952:  free (passarray);
+    #####:  953:  return ok;
+        -:  954:}
+        -:  955:
+        -:  956:/* A wrapper with a little more checking for fds on the command line */
+        -:  957:static bool
+function wipefd called 0 returned 0% blocks executed 0%
+    #####:  958:wipefd (int fd, char const *qname, struct randint_source *s,
+        -:  959:        struct Options const *flags)
+        -:  960:{
+    #####:  961:  int fd_flags = fcntl (fd, F_GETFL);
+call    0 never executed
+        -:  962:
+    #####:  963:  if (fd_flags < 0)
+branch  0 never executed
+branch  1 never executed
+        -:  964:    {
+    #####:  965:      error (0, errno, _("%s: fcntl failed"), qname);
+    #####:  966:      return false;
+        -:  967:    }
+    #####:  968:  if (fd_flags & O_APPEND)
+branch  0 never executed
+branch  1 never executed
+        -:  969:    {
+        -:  970:      error (0, 0, _("%s: cannot shred append-only file descriptor"), qname);
+    #####:  971:      return false;
+        -:  972:    }
+    #####:  973:  return do_wipefd (fd, qname, s, flags);
+call    0 never executed
+        -:  974:}
+        -:  975:
+        -:  976:/* --- Name-wiping code --- */
+        -:  977:
+        -:  978:/* Characters allowed in a file name - a safe universal set.  */
+        -:  979:static char const nameset[] =
+        -:  980:"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_.";
+        -:  981:
+        -:  982:/* Increment NAME (with LEN bytes).  NAME must be a big-endian base N
+        -:  983:   number with the digits taken from nameset.  Return true if successful.
+        -:  984:   Otherwise, (because NAME already has the greatest possible value)
+        -:  985:   return false.  */
+        -:  986:
+        -:  987:static bool
+function incname called 0 returned 0% blocks executed 0%
+    #####:  988:incname (char *name, size_t len)
+        -:  989:{
+    #####:  990:  while (len--)
+branch  0 never executed
+branch  1 never executed
+        -:  991:    {
+    #####:  992:      char const *p = strchr (nameset, name[len]);
+        -:  993:
+        -:  994:      /* Given that NAME is composed of bytes from NAMESET,
+        -:  995:         P will never be null here.  */
+        -:  996:
+        -:  997:      /* If this character has a successor, use it.  */
+    #####:  998:      if (p[1])
+branch  0 never executed
+branch  1 never executed
+        -:  999:        {
+    #####: 1000:          name[len] = p[1];
+    #####: 1001:          return true;
+        -: 1002:        }
+        -: 1003:
+        -: 1004:      /* Otherwise, set this digit to 0 and increment the prefix.  */
+    #####: 1005:      name[len] = nameset[0];
+        -: 1006:    }
+        -: 1007:
+    #####: 1008:  return false;
+        -: 1009:}
+        -: 1010:
+        -: 1011:/*
+        -: 1012: * Repeatedly rename a file with shorter and shorter names,
+        -: 1013: * to obliterate all traces of the file name (and length) on any system
+        -: 1014: * that adds a trailing delimiter to on-device file names and reuses
+        -: 1015: * the same directory slot.  Finally, unlink it.
+        -: 1016: * The passed-in filename is modified in place to the new filename.
+        -: 1017: * (Which is unlinked if this function succeeds, but is still present if
+        -: 1018: * it fails for some reason.)
+        -: 1019: *
+        -: 1020: * The main loop is written carefully to not get stuck if all possible
+        -: 1021: * names of a given length are occupied.  It counts down the length from
+        -: 1022: * the original to 0.  While the length is non-zero, it tries to find an
+        -: 1023: * unused file name of the given length.  It continues until either the
+        -: 1024: * name is available and the rename succeeds, or it runs out of names
+        -: 1025: * to try (incname wraps and returns 1).  Finally, it unlinks the file.
+        -: 1026: *
+        -: 1027: * The unlink is Unix-specific, as ANSI-standard remove has more
+        -: 1028: * portability problems with C libraries making it "safe".  rename
+        -: 1029: * is ANSI-standard.
+        -: 1030: *
+        -: 1031: * To force the directory data out, we try to open the directory and
+        -: 1032: * invoke fdatasync and/or fsync on it.  This is non-standard, so don't
+        -: 1033: * insist that it works: just fall back to a global sync in that case.
+        -: 1034: * This is fairly significantly Unix-specific.  Of course, on any
+        -: 1035: * file system with synchronous metadata updates, this is unnecessary.
+        -: 1036: */
+        -: 1037:static bool
+function wipename called 0 returned 0% blocks executed 0%
+    #####: 1038:wipename (char *oldname, char const *qoldname, struct Options const *flags)
+        -: 1039:{
+    #####: 1040:  char *newname = xstrdup (oldname);
+call    0 never executed
+    #####: 1041:  char *base = last_component (newname);
+    #####: 1042:  char *dir = dir_name (newname);
+call    0 never executed
+    #####: 1043:  char *qdir = xstrdup (quotef (dir));
+call    0 never executed
+call    1 never executed
+    #####: 1044:  bool first = true;
+    #####: 1045:  bool ok = true;
+    #####: 1046:  int dir_fd = -1;
+        -: 1047:
+    #####: 1048:  if (flags->remove_file == remove_wipesync)
+branch  0 never executed
+branch  1 never executed
+    #####: 1049:    dir_fd = open (dir, O_RDONLY | O_DIRECTORY | O_NOCTTY | O_NONBLOCK);
+call    0 never executed
+        -: 1050:
+    #####: 1051:  if (flags->verbose)
+branch  0 never executed
+branch  1 never executed
+        -: 1052:    error (0, 0, _("%s: removing"), qoldname);
+        -: 1053:
+    #####: 1054:  if (flags->remove_file != remove_unlink)
+branch  0 never executed
+branch  1 never executed
+    #####: 1055:    for (size_t len = base_len (base); len != 0; len--)
+branch  0 never executed
+branch  1 never executed
+    #####: 1056:      {
+    #####: 1057:        memset (base, nameset[0], len);
+    #####: 1058:        base[len] = 0;
+        -: 1059:        bool rename_ok;
+    #####: 1060:        while (! (rename_ok = (renameatu (AT_FDCWD, oldname, AT_FDCWD, newname,
+call    0 never executed
+        -: 1061:                                          RENAME_NOREPLACE)
+        -: 1062:                               == 0))
+    #####: 1063:               && errno == EEXIST && incname (base, len))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+branch  5 never executed
+branch  6 never executed
+    #####: 1064:          continue;
+    #####: 1065:        if (rename_ok)
+branch  0 never executed
+branch  1 never executed
+        -: 1066:          {
+    #####: 1067:            if (0 <= dir_fd && dosync (dir_fd, qdir) != 0)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####: 1068:              ok = false;
+    #####: 1069:            if (flags->verbose)
+branch  0 never executed
+branch  1 never executed
+        -: 1070:              {
+        -: 1071:                /* People seem to understand this better than talking
+        -: 1072:                   about renaming OLDNAME.  NEWNAME doesn't need
+        -: 1073:                   quoting because we picked it.  OLDNAME needs to be
+        -: 1074:                   quoted only the first time.  */
+    #####: 1075:                char const *old = first ? qoldname : oldname;
+branch  0 never executed
+branch  1 never executed
+        -: 1076:                error (0, 0,
+        -: 1077:                       _("%s: renamed to %s"), old, newname);
+    #####: 1078:                first = false;
+        -: 1079:              }
+    #####: 1080:            memcpy (oldname + (base - newname), base, len + 1);
+        -: 1081:          }
+        -: 1082:      }
+        -: 1083:
+    #####: 1084:  if (unlink (oldname) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1085:    {
+    #####: 1086:      error (0, errno, _("%s: failed to remove"), qoldname);
+    #####: 1087:      ok = false;
+        -: 1088:    }
+    #####: 1089:  else if (flags->verbose)
+branch  0 never executed
+branch  1 never executed
+        -: 1090:    error (0, 0, _("%s: removed"), qoldname);
+    #####: 1091:  if (0 <= dir_fd)
+branch  0 never executed
+branch  1 never executed
+        -: 1092:    {
+    #####: 1093:      if (dosync (dir_fd, qdir) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1094:        ok = false;
+    #####: 1095:      if (close (dir_fd) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1096:        {
+    #####: 1097:          error (0, errno, _("%s: failed to close"), qdir);
+    #####: 1098:          ok = false;
+        -: 1099:        }
+        -: 1100:    }
+    #####: 1101:  free (newname);
+    #####: 1102:  free (dir);
+    #####: 1103:  free (qdir);
+    #####: 1104:  return ok;
+        -: 1105:}
+        -: 1106:
+        -: 1107:/*
+        -: 1108: * Finally, the function that actually takes a filename and grinds
+        -: 1109: * it into hamburger.
+        -: 1110: *
+        -: 1111: * FIXME
+        -: 1112: * Detail to note: since we do not restore errno to EACCES after
+        -: 1113: * a failed chmod, we end up printing the error code from the chmod.
+        -: 1114: * This is actually the error that stopped us from proceeding, so
+        -: 1115: * it's arguably the right one, and in practice it'll be either EACCES
+        -: 1116: * again or EPERM, which both give similar error messages.
+        -: 1117: * Does anyone disagree?
+        -: 1118: */
+        -: 1119:static bool
+function wipefile called 0 returned 0% blocks executed 0%
+    #####: 1120:wipefile (char *name, char const *qname,
+        -: 1121:          struct randint_source *s, struct Options const *flags)
+        -: 1122:{
+        -: 1123:  bool ok;
+        -: 1124:  int fd;
+        -: 1125:
+    #####: 1126:  fd = open (name, O_WRONLY | O_NOCTTY | O_BINARY);
+call    0 never executed
+    #####: 1127:  if (fd < 0
+branch  0 never executed
+branch  1 never executed
+    #####: 1128:      && (errno == EACCES && flags->force)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1129:      && chmod (name, S_IWUSR) == 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1130:    fd = open (name, O_WRONLY | O_NOCTTY | O_BINARY);
+call    0 never executed
+    #####: 1131:  if (fd < 0)
+branch  0 never executed
+branch  1 never executed
+        -: 1132:    {
+    #####: 1133:      error (0, errno, _("%s: failed to open for writing"), qname);
+    #####: 1134:      return false;
+        -: 1135:    }
+        -: 1136:
+    #####: 1137:  ok = do_wipefd (fd, qname, s, flags);
+call    0 never executed
+    #####: 1138:  if (close (fd) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1139:    {
+    #####: 1140:      error (0, errno, _("%s: failed to close"), qname);
+    #####: 1141:      ok = false;
+        -: 1142:    }
+    #####: 1143:  if (ok && flags->remove_file)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1144:    ok = wipename (name, qname, flags);
+call    0 never executed
+    #####: 1145:  return ok;
+        -: 1146:}
+        -: 1147:
+        -: 1148:
+        -: 1149:/* Buffers for random data.  */
+        -: 1150:static struct randint_source *randint_source;
+        -: 1151:
+        -: 1152:/* Just on general principles, wipe buffers containing information
+        -: 1153:   that may be related to the possibly-pseudorandom values used during
+        -: 1154:   shredding.  */
+        -: 1155:static void
+function clear_random_data called 0 returned 0% blocks executed 0%
+    #####: 1156:clear_random_data (void)
+        -: 1157:{
+    #####: 1158:  randint_all_free (randint_source);
+call    0 never executed
+    #####: 1159:}
+        -: 1160:
+        -: 1161:
+        -: 1162:int
+function main called 1 returned 0% blocks executed 20%
+        1: 1163:main (int argc, char **argv)
+        -: 1164:{
+        1: 1165:  bool ok = true;
+        1: 1166:  struct Options flags = { 0, };
+        -: 1167:  char **file;
+        -: 1168:  int n_files;
+        -: 1169:  int c;
+        -: 1170:  int i;
+        1: 1171:  char const *random_source = nullptr;
+        -: 1172:
+        -: 1173:  initialize_main (&argc, &argv);
+        1: 1174:  set_program_name (argv[0]);
+call    0 returned 100%
+        1: 1175:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -: 1176:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -: 1177:  textdomain (PACKAGE);
+        -: 1178:
+        1: 1179:  atexit (close_stdout);
+call    0 returned 100%
+        -: 1180:
+        1: 1181:  flags.n_iterations = DEFAULT_PASSES;
+        1: 1182:  flags.size = -1;
+        -: 1183:
+        1: 1184:  while ((c = getopt_long (argc, argv, "fn:s:uvxz", long_opts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+        -: 1185:    {
+    #####: 1186:      switch (c)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+branch  8 never executed
+branch  9 never executed
+branch 10 never executed
+        -: 1187:        {
+    #####: 1188:        case 'f':
+    #####: 1189:          flags.force = true;
+    #####: 1190:          break;
+        -: 1191:
+    #####: 1192:        case 'n':
+    #####: 1193:          flags.n_iterations = xdectoumax (optarg, 0,
+call    0 never executed
+        -: 1194:                                           MIN (ULONG_MAX,
+        -: 1195:                                                SIZE_MAX / sizeof (int)), "",
+        -: 1196:                                           _("invalid number of passes"), 0);
+    #####: 1197:          break;
+        -: 1198:
+    #####: 1199:        case RANDOM_SOURCE_OPTION:
+    #####: 1200:          if (random_source && !STREQ (random_source, optarg))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1201:            error (EXIT_FAILURE, 0, _("multiple random sources specified"));
+call    0 never executed
+    #####: 1202:          random_source = optarg;
+    #####: 1203:          break;
+        -: 1204:
+    #####: 1205:        case 'u':
+    #####: 1206:          if (optarg == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####: 1207:            flags.remove_file = remove_wipesync;
+        -: 1208:          else
+    #####: 1209:            flags.remove_file = XARGMATCH ("--remove", optarg,
+call    0 never executed
+        -: 1210:                                           remove_args, remove_methods);
+    #####: 1211:          break;
+        -: 1212:
+    #####: 1213:        case 's':
+    #####: 1214:          flags.size = xnumtoumax (optarg, 0, 0, OFF_T_MAX, "cbBkKMGTPEZYRQ0",
+call    0 never executed
+        -: 1215:                                   _("invalid file size"), 0);
+    #####: 1216:          break;
+        -: 1217:
+    #####: 1218:        case 'v':
+    #####: 1219:          flags.verbose = true;
+    #####: 1220:          break;
+        -: 1221:
+    #####: 1222:        case 'x':
+    #####: 1223:          flags.exact = true;
+    #####: 1224:          break;
+        -: 1225:
+    #####: 1226:        case 'z':
+    #####: 1227:          flags.zero_fill = true;
+    #####: 1228:          break;
+        -: 1229:
+    #####: 1230:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -: 1231:
+    #####: 1232:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -: 1233:
+    #####: 1234:        default:
+    #####: 1235:          usage (EXIT_FAILURE);
+call    0 never executed
+        -: 1236:        }
+        -: 1237:    }
+        -: 1238:
+        1: 1239:  file = argv + optind;
+        1: 1240:  n_files = argc - optind;
+        -: 1241:
+        1: 1242:  if (n_files == 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -: 1243:    {
+        -: 1244:      error (0, 0, _("missing file operand"));
+        1: 1245:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -: 1246:    }
+        -: 1247:
+    #####: 1248:  randint_source = randint_all_new (random_source, SIZE_MAX);
+call    0 never executed
+    #####: 1249:  if (! randint_source)
+branch  0 never executed
+branch  1 never executed
+    #####: 1250:    error (EXIT_FAILURE, errno, "%s",
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+        -: 1251:           quotef (random_source ? random_source : "getrandom"));
+    #####: 1252:  atexit (clear_random_data);
+call    0 never executed
+        -: 1253:
+    #####: 1254:  for (i = 0; i < n_files; i++)
+branch  0 never executed
+branch  1 never executed
+        -: 1255:    {
+    #####: 1256:      char *qname = xstrdup (quotef (file[i]));
+call    0 never executed
+call    1 never executed
+    #####: 1257:      if (STREQ (file[i], "-"))
+branch  0 never executed
+branch  1 never executed
+        -: 1258:        {
+    #####: 1259:          ok &= wipefd (STDOUT_FILENO, qname, randint_source, &flags);
+call    0 never executed
+        -: 1260:        }
+        -: 1261:      else
+        -: 1262:        {
+        -: 1263:          /* Plain filename - Note that this overwrites *argv! */
+    #####: 1264:          ok &= wipefile (file[i], qname, randint_source, &flags);
+call    0 never executed
+        -: 1265:        }
+    #####: 1266:      free (qname);
+        -: 1267:    }
+        -: 1268:
+    #####: 1269:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -: 1270:}
+        -: 1271:/*
+        -: 1272: * vim:sw=2:sts=2:
+        -: 1273: */

@@ -1,0 +1,1077 @@
+        -:    0:Source:src/cat.c
+        -:    0:Graph:cat.gcno
+        -:    0:Data:cat.gcda
+        -:    0:Runs:6
+        -:    1:/* cat -- concatenate files and print on the standard output.
+        -:    2:   Copyright (C) 1988-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Differences from the Unix cat:
+        -:   18:   * Always unbuffered, -u is ignored.
+        -:   19:   * Usually much faster than other versions of cat, the difference
+        -:   20:   is especially apparent when using the -v option.
+        -:   21:
+        -:   22:   By tege@sics.se, Torbjörn Granlund, advised by rms, Richard Stallman.  */
+        -:   23:
+        -:   24:#include <config.h>
+        -:   25:
+        -:   26:#include <stdckdint.h>
+        -:   27:#include <stdio.h>
+        -:   28:#include <getopt.h>
+        -:   29:#include <sys/types.h>
+        -:   30:
+        -:   31:#if HAVE_STROPTS_H
+        -:   32:# include <stropts.h>
+        -:   33:#endif
+        -:   34:#include <sys/ioctl.h>
+        -:   35:
+        -:   36:#include "system.h"
+        -:   37:#include "alignalloc.h"
+        -:   38:#include "ioblksize.h"
+        -:   39:#include "fadvise.h"
+        -:   40:#include "full-write.h"
+        -:   41:#include "safe-read.h"
+        -:   42:#include "xbinary-io.h"
+        -:   43:
+        -:   44:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   45:#define PROGRAM_NAME "cat"
+        -:   46:
+        -:   47:#define AUTHORS \
+        -:   48:  proper_name_lite ("Torbjorn Granlund", "Torbj\303\266rn Granlund"), \
+        -:   49:  proper_name ("Richard M. Stallman")
+        -:   50:
+        -:   51:/* Name of input file.  May be "-".  */
+        -:   52:static char const *infile;
+        -:   53:
+        -:   54:/* Descriptor on which input file is open.  */
+        -:   55:static int input_desc;
+        -:   56:
+        -:   57:/* Buffer for line numbers.
+        -:   58:   An 11 digit counter may overflow within an hour on a P2/466,
+        -:   59:   an 18 digit counter needs about 1000y */
+        -:   60:#define LINE_COUNTER_BUF_LEN 20
+        -:   61:static char line_buf[LINE_COUNTER_BUF_LEN] =
+        -:   62:  {
+        -:   63:    ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+        -:   64:    ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '0',
+        -:   65:    '\t', '\0'
+        -:   66:  };
+        -:   67:
+        -:   68:/* Position in 'line_buf' where printing starts.  This will not change
+        -:   69:   unless the number of lines is larger than 999999.  */
+        -:   70:static char *line_num_print = line_buf + LINE_COUNTER_BUF_LEN - 8;
+        -:   71:
+        -:   72:/* Position of the first digit in 'line_buf'.  */
+        -:   73:static char *line_num_start = line_buf + LINE_COUNTER_BUF_LEN - 3;
+        -:   74:
+        -:   75:/* Position of the last digit in 'line_buf'.  */
+        -:   76:static char *line_num_end = line_buf + LINE_COUNTER_BUF_LEN - 3;
+        -:   77:
+        -:   78:/* Preserves the 'cat' function's local 'newlines' between invocations.  */
+        -:   79:static int newlines2 = 0;
+        -:   80:
+        -:   81:/* Whether there is a pending CR to process.  */
+        -:   82:static bool pending_cr = false;
+        -:   83:
+        -:   84:void
+function usage called 1 returned 0% blocks executed 25%
+        1:   85:usage (int status)
+        -:   86:{
+        1:   87:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:   88:    emit_try_help ();
+call    0 returned 100%
+        -:   89:  else
+        -:   90:    {
+    #####:   91:      printf (_("\
+call    0 never executed
+        -:   92:Usage: %s [OPTION]... [FILE]...\n\
+        -:   93:"),
+        -:   94:              program_name);
+    #####:   95:      fputs (_("\
+call    0 never executed
+        -:   96:Concatenate FILE(s) to standard output.\n\
+        -:   97:"), stdout);
+        -:   98:
+    #####:   99:      emit_stdin_note ();
+call    0 never executed
+        -:  100:
+    #####:  101:      fputs (_("\
+call    0 never executed
+        -:  102:\n\
+        -:  103:  -A, --show-all           equivalent to -vET\n\
+        -:  104:  -b, --number-nonblank    number nonempty output lines, overrides -n\n\
+        -:  105:  -e                       equivalent to -vE\n\
+        -:  106:  -E, --show-ends          display $ at end of each line\n\
+        -:  107:  -n, --number             number all output lines\n\
+        -:  108:  -s, --squeeze-blank      suppress repeated empty output lines\n\
+        -:  109:"), stdout);
+    #####:  110:      fputs (_("\
+call    0 never executed
+        -:  111:  -t                       equivalent to -vT\n\
+        -:  112:  -T, --show-tabs          display TAB characters as ^I\n\
+        -:  113:  -u                       (ignored)\n\
+        -:  114:  -v, --show-nonprinting   use ^ and M- notation, except for LFD and TAB\n\
+        -:  115:"), stdout);
+    #####:  116:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  117:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  118:      printf (_("\
+call    0 never executed
+        -:  119:\n\
+        -:  120:Examples:\n\
+        -:  121:  %s f - g  Output f's contents, then standard input, then g's contents.\n\
+        -:  122:  %s        Copy standard input to standard output.\n\
+        -:  123:"),
+        -:  124:              program_name, program_name);
+    #####:  125:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  126:    }
+        1:  127:  exit (status);
+        -:  128:}
+        -:  129:
+        -:  130:/* Compute the next line number.  */
+        -:  131:
+        -:  132:static void
+function next_line_num called 0 returned 0% blocks executed 0%
+    #####:  133:next_line_num (void)
+        -:  134:{
+    #####:  135:  char *endp = line_num_end;
+        -:  136:  do
+        -:  137:    {
+    #####:  138:      if ((*endp)++ < '9')
+branch  0 never executed
+branch  1 never executed
+    #####:  139:        return;
+    #####:  140:      *endp-- = '0';
+        -:  141:    }
+    #####:  142:  while (endp >= line_num_start);
+branch  0 never executed
+branch  1 never executed
+        -:  143:
+    #####:  144:  if (line_num_start > line_buf)
+branch  0 never executed
+branch  1 never executed
+    #####:  145:    *--line_num_start = '1';
+        -:  146:  else
+    #####:  147:    *line_buf = '>';
+    #####:  148:  if (line_num_start < line_num_print)
+branch  0 never executed
+branch  1 never executed
+    #####:  149:    line_num_print--;
+        -:  150:}
+        -:  151:
+        -:  152:/* Plain cat.  Copy the file behind 'input_desc' to STDOUT_FILENO.
+        -:  153:   BUF (of size BUFSIZE) is the I/O buffer, used by reads and writes.
+        -:  154:   Return true if successful.  */
+        -:  155:
+        -:  156:static bool
+function simple_cat called 0 returned 0% blocks executed 0%
+    #####:  157:simple_cat (char *buf, idx_t bufsize)
+        -:  158:{
+        -:  159:  /* Loop until the end of the file.  */
+        -:  160:
+        -:  161:  while (true)
+    #####:  162:    {
+        -:  163:      /* Read a block of input.  */
+        -:  164:
+    #####:  165:      size_t n_read = safe_read (input_desc, buf, bufsize);
+call    0 never executed
+    #####:  166:      if (n_read == SAFE_READ_ERROR)
+branch  0 never executed
+branch  1 never executed
+        -:  167:        {
+    #####:  168:          error (0, errno, "%s", quotef (infile));
+call    0 never executed
+    #####:  169:          return false;
+        -:  170:        }
+        -:  171:
+        -:  172:      /* End of this file?  */
+        -:  173:
+    #####:  174:      if (n_read == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  175:        return true;
+        -:  176:
+        -:  177:      /* Write this block out.  */
+        -:  178:
+    #####:  179:      if (full_write (STDOUT_FILENO, buf, n_read) != n_read)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  180:        write_error ();
+call    0 never executed
+        -:  181:    }
+        -:  182:}
+        -:  183:
+        -:  184:/* Write any pending output to STDOUT_FILENO.
+        -:  185:   Pending is defined to be the *BPOUT - OUTBUF bytes starting at OUTBUF.
+        -:  186:   Then set *BPOUT to OUTPUT if it's not already that value.  */
+        -:  187:
+        -:  188:static inline void
+function write_pending called 0 returned 0% blocks executed 0%
+    #####:  189:write_pending (char *outbuf, char **bpout)
+        -:  190:{
+    #####:  191:  idx_t n_write = *bpout - outbuf;
+    #####:  192:  if (0 < n_write)
+branch  0 never executed
+branch  1 never executed
+        -:  193:    {
+    #####:  194:      if (full_write (STDOUT_FILENO, outbuf, n_write) != n_write)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  195:        write_error ();
+call    0 never executed
+    #####:  196:      *bpout = outbuf;
+        -:  197:    }
+    #####:  198:}
+        -:  199:
+        -:  200:/* Copy the file behind 'input_desc' to STDOUT_FILENO.
+        -:  201:   Use INBUF and read INSIZE with each call,
+        -:  202:   and OUTBUF and write OUTSIZE with each call.
+        -:  203:   (The buffers are a bit larger than the I/O sizes.)
+        -:  204:   The remaining boolean args say what 'cat' options to use.
+        -:  205:
+        -:  206:   Return true if successful.
+        -:  207:   Called if any option more than -u was specified.
+        -:  208:
+        -:  209:   A newline character is always put at the end of the buffer, to make
+        -:  210:   an explicit test for buffer end unnecessary.  */
+        -:  211:
+        -:  212:static bool
+function cat called 0 returned 0% blocks executed 0%
+    #####:  213:cat (char *inbuf, idx_t insize, char *outbuf, idx_t outsize,
+        -:  214:     bool show_nonprinting, bool show_tabs, bool number, bool number_nonblank,
+        -:  215:     bool show_ends, bool squeeze_blank)
+        -:  216:{
+        -:  217:  /* Last character read from the input buffer.  */
+        -:  218:  unsigned char ch;
+        -:  219:
+        -:  220:  /* Determines how many consecutive newlines there have been in the
+        -:  221:     input.  0 newlines makes NEWLINES -1, 1 newline makes NEWLINES 1,
+        -:  222:     etc.  Initially 0 to indicate that we are at the beginning of a
+        -:  223:     new line.  The "state" of the procedure is determined by
+        -:  224:     NEWLINES.  */
+    #####:  225:  int newlines = newlines2;
+        -:  226:
+        -:  227:#ifdef FIONREAD
+        -:  228:  /* If nonzero, use the FIONREAD ioctl, as an optimization.
+        -:  229:     (On Ultrix, it is not supported on NFS file systems.)  */
+    #####:  230:  bool use_fionread = true;
+        -:  231:#endif
+        -:  232:
+        -:  233:  /* The inbuf pointers are initialized so that BPIN > EOB, and thereby input
+        -:  234:     is read immediately.  */
+        -:  235:
+        -:  236:  /* Pointer to the first non-valid byte in the input buffer, i.e., the
+        -:  237:     current end of the buffer.  */
+    #####:  238:  char *eob = inbuf;
+        -:  239:
+        -:  240:  /* Pointer to the next character in the input buffer.  */
+    #####:  241:  char *bpin = eob + 1;
+        -:  242:
+        -:  243:  /* Pointer to the position where the next character shall be written.  */
+    #####:  244:  char *bpout = outbuf;
+        -:  245:
+    #####:  246:  while (true)
+        -:  247:    {
+        -:  248:      do
+        -:  249:        {
+        -:  250:          /* Write if there are at least OUTSIZE bytes in OUTBUF.  */
+        -:  251:
+    #####:  252:          if (outbuf + outsize <= bpout)
+branch  0 never executed
+branch  1 never executed
+        -:  253:            {
+    #####:  254:              char *wp = outbuf;
+        -:  255:              idx_t remaining_bytes;
+        -:  256:              do
+        -:  257:                {
+    #####:  258:                  if (full_write (STDOUT_FILENO, wp, outsize) != outsize)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  259:                    write_error ();
+call    0 never executed
+    #####:  260:                  wp += outsize;
+    #####:  261:                  remaining_bytes = bpout - wp;
+        -:  262:                }
+    #####:  263:              while (outsize <= remaining_bytes);
+branch  0 never executed
+branch  1 never executed
+        -:  264:
+        -:  265:              /* Move the remaining bytes to the beginning of the
+        -:  266:                 buffer.  */
+        -:  267:
+    #####:  268:              memmove (outbuf, wp, remaining_bytes);
+    #####:  269:              bpout = outbuf + remaining_bytes;
+        -:  270:            }
+        -:  271:
+        -:  272:          /* Is INBUF empty?  */
+        -:  273:
+    #####:  274:          if (bpin > eob)
+branch  0 never executed
+branch  1 never executed
+        -:  275:            {
+    #####:  276:              bool input_pending = false;
+        -:  277:#ifdef FIONREAD
+    #####:  278:              int n_to_read = 0;
+        -:  279:
+        -:  280:              /* Is there any input to read immediately?
+        -:  281:                 If not, we are about to wait,
+        -:  282:                 so write all buffered output before waiting.  */
+        -:  283:
+    #####:  284:              if (use_fionread
+branch  0 never executed
+branch  1 never executed
+    #####:  285:                  && ioctl (input_desc, FIONREAD, &n_to_read) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  286:                {
+        -:  287:                  /* Ultrix returns EOPNOTSUPP on NFS;
+        -:  288:                     HP-UX returns ENOTTY on pipes.
+        -:  289:                     SunOS returns EINVAL and
+        -:  290:                     More/BSD returns ENODEV on special files
+        -:  291:                     like /dev/null.
+        -:  292:                     Irix-5 returns ENOSYS on pipes.  */
+    #####:  293:                  if (errno == EOPNOTSUPP || errno == ENOTTY
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  294:                      || errno == EINVAL || errno == ENODEV
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  295:                      || errno == ENOSYS)
+branch  0 never executed
+branch  1 never executed
+    #####:  296:                    use_fionread = false;
+        -:  297:                  else
+        -:  298:                    {
+    #####:  299:                      error (0, errno, _("cannot do ioctl on %s"),
+call    0 never executed
+        -:  300:                             quoteaf (infile));
+    #####:  301:                      newlines2 = newlines;
+    #####:  302:                      return false;
+        -:  303:                    }
+        -:  304:                }
+    #####:  305:              if (n_to_read != 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  306:                input_pending = true;
+        -:  307:#endif
+        -:  308:
+    #####:  309:              if (!input_pending)
+branch  0 never executed
+branch  1 never executed
+    #####:  310:                write_pending (outbuf, &bpout);
+call    0 never executed
+        -:  311:
+        -:  312:              /* Read more input into INBUF.  */
+        -:  313:
+    #####:  314:              size_t n_read = safe_read (input_desc, inbuf, insize);
+call    0 never executed
+    #####:  315:              if (n_read == SAFE_READ_ERROR)
+branch  0 never executed
+branch  1 never executed
+        -:  316:                {
+    #####:  317:                  error (0, errno, "%s", quotef (infile));
+call    0 never executed
+    #####:  318:                  write_pending (outbuf, &bpout);
+call    0 never executed
+    #####:  319:                  newlines2 = newlines;
+    #####:  320:                  return false;
+        -:  321:                }
+    #####:  322:              if (n_read == 0)
+branch  0 never executed
+branch  1 never executed
+        -:  323:                {
+    #####:  324:                  write_pending (outbuf, &bpout);
+call    0 never executed
+    #####:  325:                  newlines2 = newlines;
+    #####:  326:                  return true;
+        -:  327:                }
+        -:  328:
+        -:  329:              /* Update the pointers and insert a sentinel at the buffer
+        -:  330:                 end.  */
+        -:  331:
+    #####:  332:              bpin = inbuf;
+    #####:  333:              eob = bpin + n_read;
+    #####:  334:              *eob = '\n';
+        -:  335:            }
+        -:  336:          else
+        -:  337:            {
+        -:  338:              /* It was a real (not a sentinel) newline.  */
+        -:  339:
+        -:  340:              /* Was the last line empty?
+        -:  341:                 (i.e., have two or more consecutive newlines been read?)  */
+        -:  342:
+    #####:  343:              if (++newlines > 0)
+branch  0 never executed
+branch  1 never executed
+        -:  344:                {
+    #####:  345:                  if (newlines >= 2)
+branch  0 never executed
+branch  1 never executed
+        -:  346:                    {
+        -:  347:                      /* Limit this to 2 here.  Otherwise, with lots of
+        -:  348:                         consecutive newlines, the counter could wrap
+        -:  349:                         around at INT_MAX.  */
+    #####:  350:                      newlines = 2;
+        -:  351:
+        -:  352:                      /* Are multiple adjacent empty lines to be substituted
+        -:  353:                         by single ditto (-s), and this was the second empty
+        -:  354:                         line?  */
+    #####:  355:                      if (squeeze_blank)
+branch  0 never executed
+branch  1 never executed
+        -:  356:                        {
+    #####:  357:                          ch = *bpin++;
+    #####:  358:                          continue;
+        -:  359:                        }
+        -:  360:                    }
+        -:  361:
+        -:  362:                  /* Are line numbers to be written at empty lines (-n)?  */
+        -:  363:
+    #####:  364:                  if (number && !number_nonblank)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  365:                    {
+    #####:  366:                      next_line_num ();
+call    0 never executed
+    #####:  367:                      bpout = stpcpy (bpout, line_num_print);
+        -:  368:                    }
+        -:  369:                }
+        -:  370:
+        -:  371:              /* Output a currency symbol if requested (-e).  */
+    #####:  372:              if (show_ends)
+branch  0 never executed
+branch  1 never executed
+        -:  373:                {
+    #####:  374:                  if (pending_cr)
+branch  0 never executed
+branch  1 never executed
+        -:  375:                    {
+    #####:  376:                      *bpout++ = '^';
+    #####:  377:                      *bpout++ = 'M';
+    #####:  378:                      pending_cr = false;
+        -:  379:                    }
+    #####:  380:                  *bpout++ = '$';
+        -:  381:                }
+        -:  382:
+        -:  383:              /* Output the newline.  */
+        -:  384:
+    #####:  385:              *bpout++ = '\n';
+        -:  386:            }
+    #####:  387:          ch = *bpin++;
+        -:  388:        }
+    #####:  389:      while (ch == '\n');
+branch  0 never executed
+branch  1 never executed
+        -:  390:
+        -:  391:      /* Here CH cannot contain a newline character.  */
+        -:  392:
+    #####:  393:      if (pending_cr)
+branch  0 never executed
+branch  1 never executed
+        -:  394:        {
+    #####:  395:          *bpout++ = '\r';
+    #####:  396:          pending_cr = false;
+        -:  397:        }
+        -:  398:
+        -:  399:      /* Are we at the beginning of a line, and line numbers are requested?  */
+        -:  400:
+    #####:  401:      if (newlines >= 0 && number)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  402:        {
+    #####:  403:          next_line_num ();
+call    0 never executed
+    #####:  404:          bpout = stpcpy (bpout, line_num_print);
+        -:  405:        }
+        -:  406:
+        -:  407:      /* The loops below continue until a newline character is found,
+        -:  408:         which means that the buffer is empty or that a proper newline
+        -:  409:         has been found.  */
+        -:  410:
+        -:  411:      /* If quoting, i.e., at least one of -v, -e, or -t specified,
+        -:  412:         scan for chars that need conversion.  */
+    #####:  413:      if (show_nonprinting)
+branch  0 never executed
+branch  1 never executed
+        -:  414:        {
+        -:  415:          while (true)
+        -:  416:            {
+    #####:  417:              if (ch >= 32)
+branch  0 never executed
+branch  1 never executed
+        -:  418:                {
+    #####:  419:                  if (ch < 127)
+branch  0 never executed
+branch  1 never executed
+    #####:  420:                    *bpout++ = ch;
+    #####:  421:                  else if (ch == 127)
+branch  0 never executed
+branch  1 never executed
+        -:  422:                    {
+    #####:  423:                      *bpout++ = '^';
+    #####:  424:                      *bpout++ = '?';
+        -:  425:                    }
+        -:  426:                  else
+        -:  427:                    {
+    #####:  428:                      *bpout++ = 'M';
+    #####:  429:                      *bpout++ = '-';
+    #####:  430:                      if (ch >= 128 + 32)
+branch  0 never executed
+branch  1 never executed
+        -:  431:                        {
+    #####:  432:                          if (ch < 128 + 127)
+branch  0 never executed
+branch  1 never executed
+    #####:  433:                            *bpout++ = ch - 128;
+        -:  434:                          else
+        -:  435:                            {
+    #####:  436:                              *bpout++ = '^';
+    #####:  437:                              *bpout++ = '?';
+        -:  438:                            }
+        -:  439:                        }
+        -:  440:                      else
+        -:  441:                        {
+    #####:  442:                          *bpout++ = '^';
+    #####:  443:                          *bpout++ = ch - 128 + 64;
+        -:  444:                        }
+        -:  445:                    }
+        -:  446:                }
+    #####:  447:              else if (ch == '\t' && !show_tabs)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  448:                *bpout++ = '\t';
+    #####:  449:              else if (ch == '\n')
+branch  0 never executed
+branch  1 never executed
+        -:  450:                {
+    #####:  451:                  newlines = -1;
+    #####:  452:                  break;
+        -:  453:                }
+        -:  454:              else
+        -:  455:                {
+    #####:  456:                  *bpout++ = '^';
+    #####:  457:                  *bpout++ = ch + 64;
+        -:  458:                }
+        -:  459:
+    #####:  460:              ch = *bpin++;
+        -:  461:            }
+        -:  462:        }
+        -:  463:      else
+        -:  464:        {
+        -:  465:          /* Not quoting, neither of -v, -e, or -t specified.  */
+        -:  466:          while (true)
+        -:  467:            {
+    #####:  468:              if (ch == '\t' && show_tabs)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  469:                {
+    #####:  470:                  *bpout++ = '^';
+    #####:  471:                  *bpout++ = ch + 64;
+        -:  472:                }
+    #####:  473:              else if (ch != '\n')
+branch  0 never executed
+branch  1 never executed
+        -:  474:                {
+    #####:  475:                  if (ch == '\r' && *bpin == '\n' && show_ends)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  476:                    {
+    #####:  477:                      if (bpin == eob)
+branch  0 never executed
+branch  1 never executed
+    #####:  478:                        pending_cr = true;
+        -:  479:                      else
+        -:  480:                        {
+    #####:  481:                          *bpout++ = '^';
+    #####:  482:                          *bpout++ = 'M';
+        -:  483:                        }
+        -:  484:                    }
+        -:  485:                  else
+    #####:  486:                    *bpout++ = ch;
+        -:  487:                }
+        -:  488:              else
+        -:  489:                {
+    #####:  490:                  newlines = -1;
+    #####:  491:                  break;
+        -:  492:                }
+        -:  493:
+    #####:  494:              ch = *bpin++;
+        -:  495:            }
+        -:  496:        }
+        -:  497:    }
+        -:  498:}
+        -:  499:
+        -:  500:/* Copy data from input to output using copy_file_range if possible.
+        -:  501:   Return 1 if successful, 0 if ordinary read+write should be tried,
+        -:  502:   -1 if a serious problem has been diagnosed.  */
+        -:  503:
+        -:  504:static int
+function copy_cat called 1 returned 100% blocks executed 30%
+        1:  505:copy_cat (void)
+        -:  506:{
+        -:  507:  /* Copy at most COPY_MAX bytes at a time; this is min
+        -:  508:     (SSIZE_MAX, SIZE_MAX) truncated to a value that is
+        -:  509:     surely aligned well.  */
+        1:  510:  ssize_t copy_max = MIN (SSIZE_MAX, SIZE_MAX) >> 30 << 30;
+        -:  511:
+        -:  512:  /* copy_file_range does not support some cases, and it
+        -:  513:     incorrectly returns 0 when reading from the proc file
+        -:  514:     system on the Linux kernel through at least 5.6.19 (2020),
+        -:  515:     so fall back on read+write if the copy_file_range is
+        -:  516:     unsupported or the input file seems empty.  */
+        -:  517:
+        2:  518:  for (bool some_copied = false; ; some_copied = true)
+        2:  519:    switch (copy_file_range (input_desc, nullptr, STDOUT_FILENO, nullptr,
+call    0 returned 100%
+branch  1 taken 50%
+branch  2 taken 0%
+branch  3 taken 50%
+        -:  520:                             copy_max, 0))
+        -:  521:      {
+        1:  522:      case 0:
+        1:  523:        return some_copied;
+        -:  524:
+    #####:  525:      case -1:
+    #####:  526:        if (errno == ENOSYS || is_ENOTSUP (errno) || errno == EINVAL
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+    #####:  527:            || errno == EBADF || errno == EXDEV || errno == ETXTBSY
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  528:            || errno == EPERM)
+branch  0 never executed
+branch  1 never executed
+    #####:  529:          return 0;
+    #####:  530:        error (0, errno, "%s", quotef (infile));
+call    0 never executed
+    #####:  531:        return -1;
+        -:  532:      }
+        -:  533:}
+        -:  534:
+        -:  535:
+        -:  536:int
+function main called 6 returned 83% blocks executed 48%
+        6:  537:main (int argc, char **argv)
+        -:  538:{
+        -:  539:  /* Nonzero if we have ever read standard input.  */
+        6:  540:  bool have_read_stdin = false;
+        -:  541:
+        -:  542:  struct stat stat_buf;
+        -:  543:
+        -:  544:  /* Variables that are set according to the specified options.  */
+        6:  545:  bool number = false;
+        6:  546:  bool number_nonblank = false;
+        6:  547:  bool squeeze_blank = false;
+        6:  548:  bool show_ends = false;
+        6:  549:  bool show_nonprinting = false;
+        6:  550:  bool show_tabs = false;
+        6:  551:  int file_open_mode = O_RDONLY;
+        -:  552:
+        -:  553:  static struct option const long_options[] =
+        -:  554:  {
+        -:  555:    {"number-nonblank", no_argument, nullptr, 'b'},
+        -:  556:    {"number", no_argument, nullptr, 'n'},
+        -:  557:    {"squeeze-blank", no_argument, nullptr, 's'},
+        -:  558:    {"show-nonprinting", no_argument, nullptr, 'v'},
+        -:  559:    {"show-ends", no_argument, nullptr, 'E'},
+        -:  560:    {"show-tabs", no_argument, nullptr, 'T'},
+        -:  561:    {"show-all", no_argument, nullptr, 'A'},
+        -:  562:    {GETOPT_HELP_OPTION_DECL},
+        -:  563:    {GETOPT_VERSION_OPTION_DECL},
+        -:  564:    {nullptr, 0, nullptr, 0}
+        -:  565:  };
+        -:  566:
+        -:  567:  initialize_main (&argc, &argv);
+        6:  568:  set_program_name (argv[0]);
+call    0 returned 100%
+        6:  569:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  570:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  571:  textdomain (PACKAGE);
+        -:  572:
+        -:  573:  /* Arrange to close stdout if we exit via the
+        -:  574:     case_GETOPT_HELP_CHAR or case_GETOPT_VERSION_CHAR code.
+        -:  575:     Normally STDOUT_FILENO is used rather than stdout, so
+        -:  576:     close_stdout does nothing.  */
+        6:  577:  atexit (close_stdout);
+call    0 returned 100%
+        -:  578:
+        -:  579:  /* Parse command line options.  */
+        -:  580:
+        -:  581:  int c;
+        6:  582:  while ((c = getopt_long (argc, argv, "benstuvAET", long_options, nullptr))
+call    0 returned 100%
+        6:  583:         != -1)
+branch  0 taken 17%
+branch  1 taken 83% (fallthrough)
+        -:  584:    {
+        1:  585:      switch (c)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 100%
+        -:  586:        {
+    #####:  587:        case 'b':
+    #####:  588:          number = true;
+    #####:  589:          number_nonblank = true;
+    #####:  590:          break;
+        -:  591:
+    #####:  592:        case 'e':
+    #####:  593:          show_ends = true;
+    #####:  594:          show_nonprinting = true;
+    #####:  595:          break;
+        -:  596:
+    #####:  597:        case 'n':
+    #####:  598:          number = true;
+    #####:  599:          break;
+        -:  600:
+    #####:  601:        case 's':
+    #####:  602:          squeeze_blank = true;
+    #####:  603:          break;
+        -:  604:
+    #####:  605:        case 't':
+    #####:  606:          show_tabs = true;
+    #####:  607:          show_nonprinting = true;
+    #####:  608:          break;
+        -:  609:
+    #####:  610:        case 'u':
+        -:  611:          /* We provide the -u feature unconditionally.  */
+    #####:  612:          break;
+        -:  613:
+    #####:  614:        case 'v':
+    #####:  615:          show_nonprinting = true;
+    #####:  616:          break;
+        -:  617:
+    #####:  618:        case 'A':
+    #####:  619:          show_nonprinting = true;
+    #####:  620:          show_ends = true;
+    #####:  621:          show_tabs = true;
+    #####:  622:          break;
+        -:  623:
+    #####:  624:        case 'E':
+    #####:  625:          show_ends = true;
+    #####:  626:          break;
+        -:  627:
+    #####:  628:        case 'T':
+    #####:  629:          show_tabs = true;
+    #####:  630:          break;
+        -:  631:
+    #####:  632:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  633:
+    #####:  634:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+        -:  635:
+        1:  636:        default:
+        1:  637:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  638:        }
+        -:  639:    }
+        -:  640:
+        -:  641:  /* Get device, i-node number, and optimal blocksize of output.  */
+        -:  642:
+        5:  643:  if (fstat (STDOUT_FILENO, &stat_buf) < 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  644:    error (EXIT_FAILURE, errno, _("standard output"));
+call    0 never executed
+        -:  645:
+        -:  646:  /* Optimal size of i/o operations of output.  */
+        5:  647:  idx_t outsize = io_blksize (stat_buf);
+call    0 returned 100%
+        -:  648:
+        -:  649:  /* Device and I-node number of the output.  */
+        5:  650:  dev_t out_dev = stat_buf.st_dev;
+        5:  651:  ino_t out_ino = stat_buf.st_ino;
+        -:  652:
+        -:  653:  /* True if the output is a regular file.  */
+        5:  654:  bool out_isreg = S_ISREG (stat_buf.st_mode) != 0;
+        -:  655:
+        5:  656:  if (! (number || show_ends || squeeze_blank))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+        -:  657:    {
+        5:  658:      file_open_mode |= O_BINARY;
+        5:  659:      xset_binary_mode (STDOUT_FILENO, O_BINARY);
+call    0 returned 100%
+        -:  660:    }
+        -:  661:
+        -:  662:  /* Main loop.  */
+        -:  663:
+        5:  664:  infile = "-";
+        5:  665:  int argind = optind;
+        5:  666:  bool ok = true;
+        5:  667:  idx_t page_size = getpagesize ();
+        -:  668:
+        -:  669:  do
+        -:  670:    {
+        9:  671:      if (argind < argc)
+branch  0 taken 89% (fallthrough)
+branch  1 taken 11%
+        8:  672:        infile = argv[argind];
+        -:  673:
+        9:  674:      bool reading_stdin = STREQ (infile, "-");
+        9:  675:      if (reading_stdin)
+branch  0 taken 11% (fallthrough)
+branch  1 taken 89%
+        -:  676:        {
+        1:  677:          have_read_stdin = true;
+        1:  678:          input_desc = STDIN_FILENO;
+        -:  679:          if (file_open_mode & O_BINARY)
+        -:  680:            xset_binary_mode (STDIN_FILENO, O_BINARY);
+        -:  681:        }
+        -:  682:      else
+        -:  683:        {
+        8:  684:          input_desc = open (infile, file_open_mode);
+call    0 returned 100%
+        8:  685:          if (input_desc < 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  686:            {
+        8:  687:              error (0, errno, "%s", quotef (infile));
+call    0 returned 100%
+        8:  688:              ok = false;
+        8:  689:              continue;
+        -:  690:            }
+        -:  691:        }
+        -:  692:
+        1:  693:      if (fstat (input_desc, &stat_buf) < 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+        -:  694:        {
+    #####:  695:          error (0, errno, "%s", quotef (infile));
+call    0 never executed
+    #####:  696:          ok = false;
+    #####:  697:          goto contin;
+        -:  698:        }
+        -:  699:
+        -:  700:      /* Optimal size of i/o operations of input.  */
+        1:  701:      idx_t insize = io_blksize (stat_buf);
+call    0 returned 100%
+        -:  702:
+        1:  703:      fdadvise (input_desc, 0, 0, FADVISE_SEQUENTIAL);
+call    0 returned 100%
+        -:  704:
+        -:  705:      /* Don't copy a nonempty regular file to itself, as that would
+        -:  706:         merely exhaust the output device.  It's better to catch this
+        -:  707:         error earlier rather than later.  */
+        -:  708:
+        1:  709:      if (out_isreg
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  710:          && stat_buf.st_dev == out_dev && stat_buf.st_ino == out_ino
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+    #####:  711:          && lseek (input_desc, 0, SEEK_CUR) < stat_buf.st_size)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  712:        {
+    #####:  713:          error (0, 0, _("%s: input file is output file"), quotef (infile));
+call    0 never executed
+    #####:  714:          ok = false;
+    #####:  715:          goto contin;
+        -:  716:        }
+        -:  717:
+        -:  718:      /* Pointer to the input buffer.  */
+        -:  719:      char *inbuf;
+        -:  720:
+        -:  721:      /* Select which version of 'cat' to use.  If any format-oriented
+        -:  722:         options were given use 'cat'; if not, use 'copy_cat' if it
+        -:  723:         works, 'simple_cat' otherwise.  */
+        -:  724:
+        1:  725:      if (! (number || show_ends || show_nonprinting
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+        1:  726:             || show_tabs || squeeze_blank))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        1:  727:        {
+        1:  728:          int copy_cat_status =
+       1*:  729:            out_isreg && S_ISREG (stat_buf.st_mode) ? copy_cat () : 0;
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+call    4 returned 100%
+        1:  730:          if (copy_cat_status != 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  731:            {
+        1:  732:              inbuf = nullptr;
+        1:  733:              ok &= 0 < copy_cat_status;
+        -:  734:            }
+        -:  735:          else
+        -:  736:            {
+    #####:  737:              insize = MAX (insize, outsize);
+    #####:  738:              inbuf = xalignalloc (page_size, insize);
+call    0 never executed
+    #####:  739:              ok &= simple_cat (inbuf, insize);
+call    0 never executed
+        -:  740:            }
+        -:  741:        }
+        -:  742:      else
+        -:  743:        {
+        -:  744:          /* Allocate, with an extra byte for a newline sentinel.  */
+    #####:  745:          inbuf = xalignalloc (page_size, insize + 1);
+call    0 never executed
+        -:  746:
+        -:  747:          /* Why are
+        -:  748:             (OUTSIZE - 1 + INSIZE * 4 + LINE_COUNTER_BUF_LEN)
+        -:  749:             bytes allocated for the output buffer?
+        -:  750:
+        -:  751:             A test whether output needs to be written is done when the input
+        -:  752:             buffer empties or when a newline appears in the input.  After
+        -:  753:             output is written, at most (OUTSIZE - 1) bytes will remain in the
+        -:  754:             buffer.  Now INSIZE bytes of input is read.  Each input character
+        -:  755:             may grow by a factor of 4 (by the prepending of M-^).  If all
+        -:  756:             characters do, and no newlines appear in this block of input, we
+        -:  757:             will have at most (OUTSIZE - 1 + INSIZE * 4) bytes in the buffer.
+        -:  758:             If the last character in the preceding block of input was a
+        -:  759:             newline, a line number may be written (according to the given
+        -:  760:             options) as the first thing in the output buffer. (Done after the
+        -:  761:             new input is read, but before processing of the input begins.)
+        -:  762:             A line number requires seldom more than LINE_COUNTER_BUF_LEN
+        -:  763:             positions.
+        -:  764:
+        -:  765:             Align the output buffer to a page size boundary, for efficiency
+        -:  766:             on some paging implementations.  */
+        -:  767:
+        -:  768:          idx_t bufsize;
+    #####:  769:          if (ckd_mul (&bufsize, insize, 4)
+branch  0 never executed
+branch  1 never executed
+    #####:  770:              || ckd_add (&bufsize, bufsize, outsize)
+branch  0 never executed
+branch  1 never executed
+    #####:  771:              || ckd_add (&bufsize, bufsize, LINE_COUNTER_BUF_LEN - 1))
+branch  0 never executed
+branch  1 never executed
+    #####:  772:            xalloc_die ();
+call    0 never executed
+    #####:  773:          char *outbuf = xalignalloc (page_size, bufsize);
+call    0 never executed
+        -:  774:
+    #####:  775:          ok &= cat (inbuf, insize, outbuf, outsize, show_nonprinting,
+call    0 never executed
+        -:  776:                     show_tabs, number, number_nonblank, show_ends,
+        -:  777:                     squeeze_blank);
+        -:  778:
+    #####:  779:          alignfree (outbuf);
+call    0 never executed
+        -:  780:        }
+        -:  781:
+        1:  782:      alignfree (inbuf);
+call    0 returned 100%
+        -:  783:
+        1:  784:    contin:
+       1*:  785:      if (!reading_stdin && close (input_desc) < 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  786:        {
+    #####:  787:          error (0, errno, "%s", quotef (infile));
+call    0 never executed
+    #####:  788:          ok = false;
+        -:  789:        }
+        -:  790:    }
+        9:  791:  while (++argind < argc);
+branch  0 taken 44%
+branch  1 taken 56% (fallthrough)
+        -:  792:
+        5:  793:  if (pending_cr)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  794:    {
+    #####:  795:      if (full_write (STDOUT_FILENO, "\r", 1) != 1)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  796:        write_error ();
+call    0 never executed
+        -:  797:    }
+        -:  798:
+        5:  799:  if (have_read_stdin && close (STDIN_FILENO) < 0)
+branch  0 taken 20% (fallthrough)
+branch  1 taken 80%
+call    2 returned 100%
+branch  3 taken 0% (fallthrough)
+branch  4 taken 100%
+    #####:  800:    error (EXIT_FAILURE, errno, _("closing standard input"));
+call    0 never executed
+        -:  801:
+        5:  802:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -:  803:}

@@ -1,0 +1,1076 @@
+        -:    0:Source:src/printf.c
+        -:    0:Graph:printf.gcno
+        -:    0:Data:printf.gcda
+        -:    0:Runs:21
+        -:    1:/* printf - format and print data
+        -:    2:   Copyright (C) 1990-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Usage: printf format [argument...]
+        -:   18:
+        -:   19:   A front end to the printf function that lets it be used from the shell.
+        -:   20:
+        -:   21:   Backslash escapes:
+        -:   22:
+        -:   23:   \" = double quote
+        -:   24:   \\ = backslash
+        -:   25:   \a = alert (bell)
+        -:   26:   \b = backspace
+        -:   27:   \c = produce no further output
+        -:   28:   \e = escape
+        -:   29:   \f = form feed
+        -:   30:   \n = new line
+        -:   31:   \r = carriage return
+        -:   32:   \t = horizontal tab
+        -:   33:   \v = vertical tab
+        -:   34:   \ooo = octal number (ooo is 1 to 3 digits)
+        -:   35:   \xhh = hexadecimal number (hhh is 1 to 2 digits)
+        -:   36:   \uhhhh = 16-bit Unicode character (hhhh is 4 digits)
+        -:   37:   \Uhhhhhhhh = 32-bit Unicode character (hhhhhhhh is 8 digits)
+        -:   38:
+        -:   39:   Additional directive:
+        -:   40:
+        -:   41:   %b = print an argument string, interpreting backslash escapes,
+        -:   42:     except that octal escapes are of the form \0 or \0ooo.
+        -:   43:
+        -:   44:   %q = print an argument string in a format that can be
+        -:   45:     reused as shell input.  Escaped characters used the proposed
+        -:   46:     POSIX $'' syntax supported by most shells.
+        -:   47:
+        -:   48:   The 'format' argument is re-used as many times as necessary
+        -:   49:   to convert all of the given arguments.
+        -:   50:
+        -:   51:   David MacKenzie <djm@gnu.ai.mit.edu> */
+        -:   52:
+        -:   53:#include <config.h>
+        -:   54:#include <stdio.h>
+        -:   55:#include <sys/types.h>
+        -:   56:#include <wchar.h>
+        -:   57:
+        -:   58:#include "system.h"
+        -:   59:#include "cl-strtod.h"
+        -:   60:#include "quote.h"
+        -:   61:#include "unicodeio.h"
+        -:   62:#include "xprintf.h"
+        -:   63:
+        -:   64:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   65:#define PROGRAM_NAME "printf"
+        -:   66:
+        -:   67:#define AUTHORS proper_name ("David MacKenzie")
+        -:   68:
+        -:   69:#define isodigit(c) ((c) >= '0' && (c) <= '7')
+        -:   70:#define hextobin(c) ((c) >= 'a' && (c) <= 'f' ? (c) - 'a' + 10 : \
+        -:   71:                     (c) >= 'A' && (c) <= 'F' ? (c) - 'A' + 10 : (c) - '0')
+        -:   72:#define octtobin(c) ((c) - '0')
+        -:   73:
+        -:   74:/* The value to return to the calling program.  */
+        -:   75:static int exit_status;
+        -:   76:
+        -:   77:/* True if the POSIXLY_CORRECT environment variable is set.  */
+        -:   78:static bool posixly_correct;
+        -:   79:
+        -:   80:/* This message appears in N_() here rather than just in _() below because
+        -:   81:   the sole use would have been in a #define.  */
+        -:   82:static char const *const cfcc_msg =
+        -:   83: N_("warning: %s: character(s) following character constant have been ignored");
+        -:   84:
+        -:   85:void
+function usage called 1 returned 0% blocks executed 23%
+        1:   86:usage (int status)
+        -:   87:{
+        1:   88:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:   89:    emit_try_help ();
+call    0 returned 100%
+        -:   90:  else
+        -:   91:    {
+    #####:   92:      printf (_("\
+call    0 never executed
+        -:   93:Usage: %s FORMAT [ARGUMENT]...\n\
+        -:   94:  or:  %s OPTION\n\
+        -:   95:"),
+        -:   96:              program_name, program_name);
+    #####:   97:      fputs (_("\
+call    0 never executed
+        -:   98:Print ARGUMENT(s) according to FORMAT, or execute according to OPTION:\n\
+        -:   99:\n\
+        -:  100:"), stdout);
+    #####:  101:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  102:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  103:      fputs (_("\
+call    0 never executed
+        -:  104:\n\
+        -:  105:FORMAT controls the output as in C printf.  Interpreted sequences are:\n\
+        -:  106:\n\
+        -:  107:  \\\"      double quote\n\
+        -:  108:"), stdout);
+    #####:  109:      fputs (_("\
+call    0 never executed
+        -:  110:  \\\\      backslash\n\
+        -:  111:  \\a      alert (BEL)\n\
+        -:  112:  \\b      backspace\n\
+        -:  113:  \\c      produce no further output\n\
+        -:  114:  \\e      escape\n\
+        -:  115:  \\f      form feed\n\
+        -:  116:  \\n      new line\n\
+        -:  117:  \\r      carriage return\n\
+        -:  118:  \\t      horizontal tab\n\
+        -:  119:  \\v      vertical tab\n\
+        -:  120:"), stdout);
+    #####:  121:      fputs (_("\
+call    0 never executed
+        -:  122:  \\NNN    byte with octal value NNN (1 to 3 digits)\n\
+        -:  123:  \\xHH    byte with hexadecimal value HH (1 to 2 digits)\n\
+        -:  124:  \\uHHHH  Unicode (ISO/IEC 10646) character with hex value HHHH (4 digits)\n\
+        -:  125:  \\UHHHHHHHH  Unicode character with hex value HHHHHHHH (8 digits)\n\
+        -:  126:"), stdout);
+    #####:  127:      fputs (_("\
+call    0 never executed
+        -:  128:  %%      a single %\n\
+        -:  129:  %b      ARGUMENT as a string with '\\' escapes interpreted,\n\
+        -:  130:          except that octal escapes are of the form \\0 or \\0NNN\n\
+        -:  131:  %q      ARGUMENT is printed in a format that can be reused as shell input,\n\
+        -:  132:          escaping non-printable characters with the proposed POSIX $'' syntax.\
+        -:  133:\n\n\
+        -:  134:and all C format specifications ending with one of diouxXfeEgGcs, with\n\
+        -:  135:ARGUMENTs converted to proper type first.  Variable widths are handled.\n\
+        -:  136:"), stdout);
+    #####:  137:      printf (USAGE_BUILTIN_WARNING, PROGRAM_NAME);
+call    0 never executed
+    #####:  138:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  139:    }
+        1:  140:  exit (status);
+        -:  141:}
+        -:  142:
+        -:  143:static void
+function verify_numeric called 0 returned 0% blocks executed 0%
+    #####:  144:verify_numeric (char const *s, char const *end)
+        -:  145:{
+    #####:  146:  if (errno)
+branch  0 never executed
+branch  1 never executed
+        -:  147:    {
+    #####:  148:      error (0, errno, "%s", quote (s));
+call    0 never executed
+    #####:  149:      exit_status = EXIT_FAILURE;
+        -:  150:    }
+    #####:  151:  else if (*end)
+branch  0 never executed
+branch  1 never executed
+        -:  152:    {
+    #####:  153:      if (s == end)
+branch  0 never executed
+branch  1 never executed
+    #####:  154:        error (0, 0, _("%s: expected a numeric value"), quote (s));
+call    0 never executed
+        -:  155:      else
+    #####:  156:        error (0, 0, _("%s: value not completely converted"), quote (s));
+call    0 never executed
+    #####:  157:      exit_status = EXIT_FAILURE;
+        -:  158:    }
+    #####:  159:}
+        -:  160:
+        -:  161:#define STRTOX(TYPE, FUNC_NAME, LIB_FUNC_EXPR)				 \
+        -:  162:static TYPE								 \
+        -:  163:FUNC_NAME (char const *s)						 \
+        -:  164:{									 \
+        -:  165:  char *end;								 \
+        -:  166:  TYPE val;								 \
+        -:  167:                                                                         \
+        -:  168:  if ((*s == '\"' || *s == '\'') && *(s + 1))				 \
+        -:  169:    {									 \
+        -:  170:      unsigned char ch = *++s;						 \
+        -:  171:      val = ch;								 \
+        -:  172:                                                                         \
+        -:  173:      if (MB_CUR_MAX > 1 && *(s + 1))					 \
+        -:  174:        {								 \
+        -:  175:          mbstate_t mbstate = { 0, };					 \
+        -:  176:          wchar_t wc;							 \
+        -:  177:          size_t slen = strlen (s);					 \
+        -:  178:          ssize_t bytes;						 \
+        -:  179:          bytes = mbrtowc (&wc, s, slen, &mbstate);			 \
+        -:  180:          if (0 < bytes)						 \
+        -:  181:            {								 \
+        -:  182:              val = wc;							 \
+        -:  183:              s += bytes - 1;						 \
+        -:  184:            }								 \
+        -:  185:        }								 \
+        -:  186:                                                                         \
+        -:  187:      /* If POSIXLY_CORRECT is not set, then give a warning that there	 \
+        -:  188:         are characters following the character constant and that GNU	 \
+        -:  189:         printf is ignoring those characters.  If POSIXLY_CORRECT *is*	 \
+        -:  190:         set, then don't give the warning.  */				 \
+        -:  191:      if (*++s != 0 && !posixly_correct)				 \
+        -:  192:        error (0, 0, _(cfcc_msg), s);					 \
+        -:  193:    }									 \
+        -:  194:  else									 \
+        -:  195:    {									 \
+        -:  196:      errno = 0;							 \
+        -:  197:      val = (LIB_FUNC_EXPR);						 \
+        -:  198:      verify_numeric (s, end);						 \
+        -:  199:    }									 \
+        -:  200:  return val;								 \
+        -:  201:}									 \
+        -:  202:
+function vstrtoimax called 0 returned 0% blocks executed 0%
+    #####:  203:STRTOX (intmax_t,    vstrtoimax, strtoimax (s, &end, 0))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+call    6 never executed
+branch  7 never executed
+branch  8 never executed
+branch  9 never executed
+branch 10 never executed
+call   11 never executed
+branch 12 never executed
+branch 13 never executed
+branch 14 never executed
+branch 15 never executed
+branch 16 never executed
+branch 17 never executed
+call   18 never executed
+call   19 never executed
+function vstrtoumax called 0 returned 0% blocks executed 0%
+    #####:  204:STRTOX (uintmax_t,   vstrtoumax, strtoumax (s, &end, 0))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+call    6 never executed
+branch  7 never executed
+branch  8 never executed
+branch  9 never executed
+branch 10 never executed
+call   11 never executed
+branch 12 never executed
+branch 13 never executed
+branch 14 never executed
+branch 15 never executed
+branch 16 never executed
+branch 17 never executed
+call   18 never executed
+call   19 never executed
+function vstrtold called 0 returned 0% blocks executed 0%
+    #####:  205:STRTOX (long double, vstrtold,   cl_strtold (s, &end))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+call    6 never executed
+branch  7 never executed
+branch  8 never executed
+branch  9 never executed
+branch 10 never executed
+call   11 never executed
+branch 12 never executed
+branch 13 never executed
+branch 14 never executed
+branch 15 never executed
+branch 16 never executed
+branch 17 never executed
+call   18 never executed
+call   19 never executed
+        -:  206:
+        -:  207:/* Output a single-character \ escape.  */
+        -:  208:
+        -:  209:static void
+function print_esc_char called 0 returned 0% blocks executed 0%
+    #####:  210:print_esc_char (char c)
+        -:  211:{
+    #####:  212:  switch (c)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+branch  8 never executed
+branch  9 never executed
+        -:  213:    {
+    #####:  214:    case 'a':			/* Alert. */
+    #####:  215:      putchar ('\a');
+call    0 never executed
+    #####:  216:      break;
+    #####:  217:    case 'b':			/* Backspace. */
+    #####:  218:      putchar ('\b');
+call    0 never executed
+    #####:  219:      break;
+    #####:  220:    case 'c':			/* Cancel the rest of the output. */
+    #####:  221:      exit (EXIT_SUCCESS);
+call    0 never executed
+        -:  222:      break;
+    #####:  223:    case 'e':			/* Escape. */
+    #####:  224:      putchar ('\x1B');
+call    0 never executed
+    #####:  225:      break;
+    #####:  226:    case 'f':			/* Form feed. */
+    #####:  227:      putchar ('\f');
+call    0 never executed
+    #####:  228:      break;
+    #####:  229:    case 'n':			/* New line. */
+    #####:  230:      putchar ('\n');
+call    0 never executed
+    #####:  231:      break;
+    #####:  232:    case 'r':			/* Carriage return. */
+    #####:  233:      putchar ('\r');
+call    0 never executed
+    #####:  234:      break;
+    #####:  235:    case 't':			/* Horizontal tab. */
+    #####:  236:      putchar ('\t');
+call    0 never executed
+    #####:  237:      break;
+    #####:  238:    case 'v':			/* Vertical tab. */
+    #####:  239:      putchar ('\v');
+call    0 never executed
+    #####:  240:      break;
+    #####:  241:    default:
+    #####:  242:      putchar (c);
+call    0 never executed
+    #####:  243:      break;
+        -:  244:    }
+    #####:  245:}
+        -:  246:
+        -:  247:/* Print a \ escape sequence starting at ESCSTART.
+        -:  248:   Return the number of characters in the escape sequence
+        -:  249:   besides the backslash.
+        -:  250:   If OCTAL_0 is nonzero, octal escapes are of the form \0ooo, where o
+        -:  251:   is an octal digit; otherwise they are of the form \ooo.  */
+        -:  252:
+        -:  253:static int
+function print_esc called 0 returned 0% blocks executed 0%
+    #####:  254:print_esc (char const *escstart, bool octal_0)
+        -:  255:{
+    #####:  256:  char const *p = escstart + 1;
+    #####:  257:  int esc_value = 0;		/* Value of \nnn escape. */
+        -:  258:  int esc_length;		/* Length of \nnn escape. */
+        -:  259:
+    #####:  260:  if (*p == 'x')
+branch  0 never executed
+branch  1 never executed
+        -:  261:    {
+        -:  262:      /* A hexadecimal \xhh escape sequence must have 1 or 2 hex. digits.  */
+    #####:  263:      for (esc_length = 0, ++p;
+    #####:  264:           esc_length < 2 && isxdigit (to_uchar (*p));
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  265:           ++esc_length, ++p)
+    #####:  266:        esc_value = esc_value * 16 + hextobin (*p);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+    #####:  267:      if (esc_length == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  268:        error (EXIT_FAILURE, 0, _("missing hexadecimal number in escape"));
+call    0 never executed
+    #####:  269:      putchar (esc_value);
+call    0 never executed
+        -:  270:    }
+    #####:  271:  else if (isodigit (*p))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  272:    {
+        -:  273:      /* Parse \0ooo (if octal_0 && *p == '0') or \ooo (otherwise).
+        -:  274:         Allow \ooo if octal_0 && *p != '0'; this is an undocumented
+        -:  275:         extension to POSIX that is compatible with Bash 2.05b.  */
+    #####:  276:      for (esc_length = 0, p += octal_0 && *p == '0';
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  277:           esc_length < 3 && isodigit (*p);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  278:           ++esc_length, ++p)
+    #####:  279:        esc_value = esc_value * 8 + octtobin (*p);
+    #####:  280:      putchar (esc_value);
+call    0 never executed
+        -:  281:    }
+    #####:  282:  else if (*p && strchr ("\"\\abcefnrtv", *p))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  283:    print_esc_char (*p++);
+call    0 never executed
+    #####:  284:  else if (*p == 'u' || *p == 'U')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  285:    {
+    #####:  286:      char esc_char = *p;
+        -:  287:      unsigned int uni_value;
+        -:  288:
+    #####:  289:      uni_value = 0;
+    #####:  290:      for (esc_length = (esc_char == 'u' ? 4 : 8), ++p;
+branch  0 never executed
+branch  1 never executed
+    #####:  291:           esc_length > 0;
+branch  0 never executed
+branch  1 never executed
+    #####:  292:           --esc_length, ++p)
+        -:  293:        {
+    #####:  294:          if (! isxdigit (to_uchar (*p)))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  295:            error (EXIT_FAILURE, 0, _("missing hexadecimal number in escape"));
+call    0 never executed
+    #####:  296:          uni_value = uni_value * 16 + hextobin (*p);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+        -:  297:        }
+        -:  298:
+        -:  299:      /* Error for invalid code points 0000D800 through 0000DFFF inclusive.
+        -:  300:         Note print_unicode_char() would print the literal \u.. in this case. */
+    #####:  301:      if (uni_value >= 0xd800 && uni_value <= 0xdfff)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  302:        error (EXIT_FAILURE, 0, _("invalid universal character name \\%c%0*x"),
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  303:               esc_char, (esc_char == 'u' ? 4 : 8), uni_value);
+        -:  304:
+    #####:  305:      print_unicode_char (stdout, uni_value, 0);
+call    0 never executed
+        -:  306:    }
+        -:  307:  else
+        -:  308:    {
+    #####:  309:      putchar ('\\');
+call    0 never executed
+    #####:  310:      if (*p)
+branch  0 never executed
+branch  1 never executed
+        -:  311:        {
+    #####:  312:          putchar (*p);
+call    0 never executed
+    #####:  313:          p++;
+        -:  314:        }
+        -:  315:    }
+    #####:  316:  return p - escstart - 1;
+        -:  317:}
+        -:  318:
+        -:  319:/* Print string STR, evaluating \ escapes. */
+        -:  320:
+        -:  321:static void
+function print_esc_string called 0 returned 0% blocks executed 0%
+    #####:  322:print_esc_string (char const *str)
+        -:  323:{
+    #####:  324:  for (; *str; str++)
+branch  0 never executed
+branch  1 never executed
+    #####:  325:    if (*str == '\\')
+branch  0 never executed
+branch  1 never executed
+    #####:  326:      str += print_esc (str, true);
+call    0 never executed
+        -:  327:    else
+    #####:  328:      putchar (*str);
+call    0 never executed
+    #####:  329:}
+        -:  330:
+        -:  331:/* Evaluate a printf conversion specification.  START is the start of
+        -:  332:   the directive, LENGTH is its length, and CONVERSION specifies the
+        -:  333:   type of conversion.  LENGTH does not include any length modifier or
+        -:  334:   the conversion specifier itself.  FIELD_WIDTH and PRECISION are the
+        -:  335:   field width and precision for '*' values, if HAVE_FIELD_WIDTH and
+        -:  336:   HAVE_PRECISION are true, respectively.  ARGUMENT is the argument to
+        -:  337:   be formatted.  */
+        -:  338:
+        -:  339:static void
+function print_direc called 0 returned 0% blocks executed 0%
+    #####:  340:print_direc (char const *start, size_t length, char conversion,
+        -:  341:             bool have_field_width, int field_width,
+        -:  342:             bool have_precision, int precision,
+        -:  343:             char const *argument)
+        -:  344:{
+        -:  345:  char *p;		/* Null-terminated copy of % directive. */
+        -:  346:
+        -:  347:  /* Create a null-terminated copy of the % directive, with an
+        -:  348:     intmax_t-wide length modifier substituted for any existing
+        -:  349:     integer length modifier.  */
+        -:  350:  {
+        -:  351:    char *q;
+        -:  352:    char const *length_modifier;
+        -:  353:    size_t length_modifier_len;
+        -:  354:
+    #####:  355:    switch (conversion)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  356:      {
+    #####:  357:      case 'd': case 'i': case 'o': case 'u': case 'x': case 'X':
+    #####:  358:        length_modifier = PRIdMAX;
+    #####:  359:        length_modifier_len = sizeof PRIdMAX - 2;
+    #####:  360:        break;
+        -:  361:
+    #####:  362:      case 'a': case 'e': case 'f': case 'g':
+        -:  363:      case 'A': case 'E': case 'F': case 'G':
+    #####:  364:        length_modifier = "L";
+    #####:  365:        length_modifier_len = 1;
+    #####:  366:        break;
+        -:  367:
+    #####:  368:      default:
+    #####:  369:        length_modifier = start;  /* Any valid pointer will do.  */
+    #####:  370:        length_modifier_len = 0;
+    #####:  371:        break;
+        -:  372:      }
+        -:  373:
+    #####:  374:    p = xmalloc (length + length_modifier_len + 2);
+call    0 never executed
+    #####:  375:    q = mempcpy (p, start, length);
+    #####:  376:    q = mempcpy (q, length_modifier, length_modifier_len);
+    #####:  377:    *q++ = conversion;
+    #####:  378:    *q = '\0';
+        -:  379:  }
+        -:  380:
+    #####:  381:  switch (conversion)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  382:    {
+    #####:  383:    case 'd':
+        -:  384:    case 'i':
+        -:  385:      {
+    #####:  386:        intmax_t arg = vstrtoimax (argument);
+call    0 never executed
+    #####:  387:        if (!have_field_width)
+branch  0 never executed
+branch  1 never executed
+        -:  388:          {
+    #####:  389:            if (!have_precision)
+branch  0 never executed
+branch  1 never executed
+    #####:  390:              xprintf (p, arg);
+call    0 never executed
+        -:  391:            else
+    #####:  392:              xprintf (p, precision, arg);
+call    0 never executed
+        -:  393:          }
+        -:  394:        else
+        -:  395:          {
+    #####:  396:            if (!have_precision)
+branch  0 never executed
+branch  1 never executed
+    #####:  397:              xprintf (p, field_width, arg);
+call    0 never executed
+        -:  398:            else
+    #####:  399:              xprintf (p, field_width, precision, arg);
+call    0 never executed
+        -:  400:          }
+        -:  401:      }
+    #####:  402:      break;
+        -:  403:
+    #####:  404:    case 'o':
+        -:  405:    case 'u':
+        -:  406:    case 'x':
+        -:  407:    case 'X':
+        -:  408:      {
+    #####:  409:        uintmax_t arg = vstrtoumax (argument);
+call    0 never executed
+    #####:  410:        if (!have_field_width)
+branch  0 never executed
+branch  1 never executed
+        -:  411:          {
+    #####:  412:            if (!have_precision)
+branch  0 never executed
+branch  1 never executed
+    #####:  413:              xprintf (p, arg);
+call    0 never executed
+        -:  414:            else
+    #####:  415:              xprintf (p, precision, arg);
+call    0 never executed
+        -:  416:          }
+        -:  417:        else
+        -:  418:          {
+    #####:  419:            if (!have_precision)
+branch  0 never executed
+branch  1 never executed
+    #####:  420:              xprintf (p, field_width, arg);
+call    0 never executed
+        -:  421:            else
+    #####:  422:              xprintf (p, field_width, precision, arg);
+call    0 never executed
+        -:  423:          }
+        -:  424:      }
+    #####:  425:      break;
+        -:  426:
+    #####:  427:    case 'a':
+        -:  428:    case 'A':
+        -:  429:    case 'e':
+        -:  430:    case 'E':
+        -:  431:    case 'f':
+        -:  432:    case 'F':
+        -:  433:    case 'g':
+        -:  434:    case 'G':
+        -:  435:      {
+    #####:  436:        long double arg = vstrtold (argument);
+call    0 never executed
+    #####:  437:        if (!have_field_width)
+branch  0 never executed
+branch  1 never executed
+        -:  438:          {
+    #####:  439:            if (!have_precision)
+branch  0 never executed
+branch  1 never executed
+    #####:  440:              xprintf (p, arg);
+call    0 never executed
+        -:  441:            else
+    #####:  442:              xprintf (p, precision, arg);
+call    0 never executed
+        -:  443:          }
+        -:  444:        else
+        -:  445:          {
+    #####:  446:            if (!have_precision)
+branch  0 never executed
+branch  1 never executed
+    #####:  447:              xprintf (p, field_width, arg);
+call    0 never executed
+        -:  448:            else
+    #####:  449:              xprintf (p, field_width, precision, arg);
+call    0 never executed
+        -:  450:          }
+        -:  451:      }
+    #####:  452:      break;
+        -:  453:
+    #####:  454:    case 'c':
+    #####:  455:      if (!have_field_width)
+branch  0 never executed
+branch  1 never executed
+    #####:  456:        xprintf (p, *argument);
+call    0 never executed
+        -:  457:      else
+    #####:  458:        xprintf (p, field_width, *argument);
+call    0 never executed
+    #####:  459:      break;
+        -:  460:
+    #####:  461:    case 's':
+    #####:  462:      if (!have_field_width)
+branch  0 never executed
+branch  1 never executed
+        -:  463:        {
+    #####:  464:          if (!have_precision)
+branch  0 never executed
+branch  1 never executed
+    #####:  465:            xprintf (p, argument);
+call    0 never executed
+        -:  466:          else
+    #####:  467:            xprintf (p, precision, argument);
+call    0 never executed
+        -:  468:        }
+        -:  469:      else
+        -:  470:        {
+    #####:  471:          if (!have_precision)
+branch  0 never executed
+branch  1 never executed
+    #####:  472:            xprintf (p, field_width, argument);
+call    0 never executed
+        -:  473:          else
+    #####:  474:            xprintf (p, field_width, precision, argument);
+call    0 never executed
+        -:  475:        }
+    #####:  476:      break;
+        -:  477:    }
+        -:  478:
+    #####:  479:  free (p);
+    #####:  480:}
+        -:  481:
+        -:  482:/* Print the text in FORMAT, using ARGV (with ARGC elements) for
+        -:  483:   arguments to any '%' directives.
+        -:  484:   Return the number of elements of ARGV used.  */
+        -:  485:
+        -:  486:static int
+function print_formatted called 20 returned 100% blocks executed 5%
+       20:  487:print_formatted (char const *format, int argc, char **argv)
+        -:  488:{
+       20:  489:  int save_argc = argc;		/* Preserve original value.  */
+        -:  490:  char const *f;		/* Pointer into 'format'.  */
+        -:  491:  char const *direc_start;	/* Start of % directive.  */
+        -:  492:  size_t direc_length;		/* Length of % directive.  */
+        -:  493:  bool have_field_width;	/* True if FIELD_WIDTH is valid.  */
+       20:  494:  int field_width = 0;		/* Arg to first '*'.  */
+        -:  495:  bool have_precision;		/* True if PRECISION is valid.  */
+       20:  496:  int precision = 0;		/* Arg to second '*'.  */
+        -:  497:  char ok[UCHAR_MAX + 1];	/* ok['x'] is true if %x is allowed.  */
+        -:  498:
+      20*:  499:  for (f = format; *f; ++f)
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+        -:  500:    {
+    #####:  501:      switch (*f)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  502:        {
+    #####:  503:        case '%':
+    #####:  504:          direc_start = f++;
+    #####:  505:          direc_length = 1;
+    #####:  506:          have_field_width = have_precision = false;
+    #####:  507:          if (*f == '%')
+branch  0 never executed
+branch  1 never executed
+        -:  508:            {
+    #####:  509:              putchar ('%');
+call    0 never executed
+    #####:  510:              break;
+        -:  511:            }
+    #####:  512:          if (*f == 'b')
+branch  0 never executed
+branch  1 never executed
+        -:  513:            {
+        -:  514:              /* FIXME: Field width and precision are not supported
+        -:  515:                 for %b, even though POSIX requires it.  */
+    #####:  516:              if (argc > 0)
+branch  0 never executed
+branch  1 never executed
+        -:  517:                {
+    #####:  518:                  print_esc_string (*argv);
+call    0 never executed
+    #####:  519:                  ++argv;
+    #####:  520:                  --argc;
+        -:  521:                }
+    #####:  522:              break;
+        -:  523:            }
+        -:  524:
+    #####:  525:          if (*f == 'q')
+branch  0 never executed
+branch  1 never executed
+        -:  526:            {
+    #####:  527:              if (argc > 0)
+branch  0 never executed
+branch  1 never executed
+        -:  528:                {
+    #####:  529:                  fputs (quotearg_style (shell_escape_quoting_style, *argv),
+call    0 never executed
+call    1 never executed
+        -:  530:                         stdout);
+    #####:  531:                  ++argv;
+    #####:  532:                  --argc;
+        -:  533:                }
+    #####:  534:              break;
+        -:  535:            }
+        -:  536:
+    #####:  537:          memset (ok, 0, sizeof ok);
+    #####:  538:          ok['a'] = ok['A'] = ok['c'] = ok['d'] = ok['e'] = ok['E'] =
+    #####:  539:            ok['f'] = ok['F'] = ok['g'] = ok['G'] = ok['i'] = ok['o'] =
+    #####:  540:            ok['s'] = ok['u'] = ok['x'] = ok['X'] = 1;
+        -:  541:
+    #####:  542:          for (;; f++, direc_length++)
+    #####:  543:            switch (*f)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  544:              {
+        -:  545:#if (__GLIBC__ == 2 && 2 <= __GLIBC_MINOR__) || 3 <= __GLIBC__
+    #####:  546:              case 'I':
+        -:  547:#endif
+        -:  548:              case '\'':
+    #####:  549:                ok['a'] = ok['A'] = ok['c'] = ok['e'] = ok['E'] =
+    #####:  550:                  ok['o'] = ok['s'] = ok['x'] = ok['X'] = 0;
+    #####:  551:                break;
+    #####:  552:              case '-': case '+': case ' ':
+    #####:  553:                break;
+    #####:  554:              case '#':
+    #####:  555:                ok['c'] = ok['d'] = ok['i'] = ok['s'] = ok['u'] = 0;
+    #####:  556:                break;
+    #####:  557:              case '0':
+    #####:  558:                ok['c'] = ok['s'] = 0;
+    #####:  559:                break;
+    #####:  560:              default:
+    #####:  561:                goto no_more_flag_characters;
+        -:  562:              }
+    #####:  563:        no_more_flag_characters:
+        -:  564:
+    #####:  565:          if (*f == '*')
+branch  0 never executed
+branch  1 never executed
+        -:  566:            {
+    #####:  567:              ++f;
+    #####:  568:              ++direc_length;
+    #####:  569:              if (argc > 0)
+branch  0 never executed
+branch  1 never executed
+        -:  570:                {
+    #####:  571:                  intmax_t width = vstrtoimax (*argv);
+call    0 never executed
+    #####:  572:                  if (INT_MIN <= width && width <= INT_MAX)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  573:                    field_width = width;
+        -:  574:                  else
+    #####:  575:                    error (EXIT_FAILURE, 0, _("invalid field width: %s"),
+call    0 never executed
+call    1 never executed
+        -:  576:                           quote (*argv));
+    #####:  577:                  ++argv;
+    #####:  578:                  --argc;
+        -:  579:                }
+        -:  580:              else
+    #####:  581:                field_width = 0;
+    #####:  582:              have_field_width = true;
+        -:  583:            }
+        -:  584:          else
+    #####:  585:            while (ISDIGIT (*f))
+branch  0 never executed
+branch  1 never executed
+        -:  586:              {
+    #####:  587:                ++f;
+    #####:  588:                ++direc_length;
+        -:  589:              }
+    #####:  590:          if (*f == '.')
+branch  0 never executed
+branch  1 never executed
+        -:  591:            {
+    #####:  592:              ++f;
+    #####:  593:              ++direc_length;
+    #####:  594:              ok['c'] = 0;
+    #####:  595:              if (*f == '*')
+branch  0 never executed
+branch  1 never executed
+        -:  596:                {
+    #####:  597:                  ++f;
+    #####:  598:                  ++direc_length;
+    #####:  599:                  if (argc > 0)
+branch  0 never executed
+branch  1 never executed
+        -:  600:                    {
+    #####:  601:                      intmax_t prec = vstrtoimax (*argv);
+call    0 never executed
+    #####:  602:                      if (prec < 0)
+branch  0 never executed
+branch  1 never executed
+        -:  603:                        {
+        -:  604:                          /* A negative precision is taken as if the
+        -:  605:                             precision were omitted, so -1 is safe
+        -:  606:                             here even if prec < INT_MIN.  */
+    #####:  607:                          precision = -1;
+        -:  608:                        }
+    #####:  609:                      else if (INT_MAX < prec)
+branch  0 never executed
+branch  1 never executed
+    #####:  610:                        error (EXIT_FAILURE, 0, _("invalid precision: %s"),
+call    0 never executed
+call    1 never executed
+        -:  611:                               quote (*argv));
+        -:  612:                      else
+    #####:  613:                        precision = prec;
+    #####:  614:                      ++argv;
+    #####:  615:                      --argc;
+        -:  616:                    }
+        -:  617:                  else
+    #####:  618:                    precision = 0;
+    #####:  619:                  have_precision = true;
+        -:  620:                }
+        -:  621:              else
+    #####:  622:                while (ISDIGIT (*f))
+branch  0 never executed
+branch  1 never executed
+        -:  623:                  {
+    #####:  624:                    ++f;
+    #####:  625:                    ++direc_length;
+        -:  626:                  }
+        -:  627:            }
+        -:  628:
+    #####:  629:          while (*f == 'l' || *f == 'L' || *f == 'h'
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  630:                 || *f == 'j' || *f == 't' || *f == 'z')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+    #####:  631:            ++f;
+        -:  632:
+        -:  633:          {
+    #####:  634:            unsigned char conversion = *f;
+    #####:  635:            int speclen = MIN (f + 1 - direc_start, INT_MAX);
+    #####:  636:            if (! ok[conversion])
+branch  0 never executed
+branch  1 never executed
+    #####:  637:              error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  638:                     _("%.*s: invalid conversion specification"),
+        -:  639:                     speclen, direc_start);
+        -:  640:          }
+        -:  641:
+    #####:  642:          print_direc (direc_start, direc_length, *f,
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  643:                       have_field_width, field_width,
+        -:  644:                       have_precision, precision,
+    #####:  645:                       (argc <= 0 ? "" : (argc--, *argv++)));
+    #####:  646:          break;
+        -:  647:
+    #####:  648:        case '\\':
+    #####:  649:          f += print_esc (f, false);
+call    0 never executed
+    #####:  650:          break;
+        -:  651:
+    #####:  652:        default:
+    #####:  653:          putchar (*f);
+call    0 never executed
+        -:  654:        }
+        -:  655:    }
+        -:  656:
+       20:  657:  return save_argc - argc;
+        -:  658:}
+        -:  659:
+        -:  660:int
+function main called 21 returned 95% blocks executed 81%
+       21:  661:main (int argc, char **argv)
+        -:  662:{
+        -:  663:  char *format;
+        -:  664:  int args_used;
+        -:  665:
+        -:  666:  initialize_main (&argc, &argv);
+       21:  667:  set_program_name (argv[0]);
+call    0 returned 100%
+       21:  668:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  669:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  670:  textdomain (PACKAGE);
+        -:  671:
+       21:  672:  atexit (close_stdout);
+call    0 returned 100%
+        -:  673:
+       21:  674:  exit_status = EXIT_SUCCESS;
+        -:  675:
+       21:  676:  posixly_correct = (getenv ("POSIXLY_CORRECT") != nullptr);
+call    0 returned 100%
+        -:  677:
+        -:  678:  /* We directly parse options, rather than use parse_long_options, in
+        -:  679:     order to avoid accepting abbreviations.  */
+       21:  680:  if (argc == 2)
+branch  0 taken 5% (fallthrough)
+branch  1 taken 95%
+        -:  681:    {
+        1:  682:      if (STREQ (argv[1], "--help"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  683:        usage (EXIT_SUCCESS);
+call    0 never executed
+        -:  684:
+        1:  685:      if (STREQ (argv[1], "--version"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  686:        {
+    #####:  687:          version_etc (stdout, PROGRAM_NAME, PACKAGE_NAME, Version, AUTHORS,
+call    0 never executed
+call    1 never executed
+        -:  688:                       (char *) nullptr);
+    #####:  689:          return EXIT_SUCCESS;
+        -:  690:        }
+        -:  691:    }
+        -:  692:
+        -:  693:  /* The above handles --help and --version.
+        -:  694:     Since there is no other invocation of getopt, handle '--' here.  */
+       21:  695:  if (1 < argc && STREQ (argv[1], "--"))
+branch  0 taken 95% (fallthrough)
+branch  1 taken 5%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+        -:  696:    {
+    #####:  697:      --argc;
+    #####:  698:      ++argv;
+        -:  699:    }
+        -:  700:
+       21:  701:  if (argc <= 1)
+branch  0 taken 5% (fallthrough)
+branch  1 taken 95%
+        -:  702:    {
+        -:  703:      error (0, 0, _("missing operand"));
+        1:  704:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  705:    }
+        -:  706:
+       20:  707:  format = argv[1];
+       20:  708:  argc -= 2;
+       20:  709:  argv += 2;
+        -:  710:
+        -:  711:  do
+        -:  712:    {
+       20:  713:      args_used = print_formatted (format, argc, argv);
+call    0 returned 100%
+       20:  714:      argc -= args_used;
+       20:  715:      argv += args_used;
+        -:  716:    }
+      20*:  717:  while (args_used > 0 && argc > 0);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  718:
+       20:  719:  if (argc > 0)
+branch  0 taken 95% (fallthrough)
+branch  1 taken 5%
+       19:  720:    error (0, 0,
+call    0 returned 100%
+        -:  721:           _("warning: ignoring excess arguments, starting with %s"),
+        -:  722:           quote (argv[0]));
+        -:  723:
+       20:  724:  return exit_status;
+        -:  725:}

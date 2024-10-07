@@ -1,0 +1,1559 @@
+        -:    0:Source:src/du.c
+        -:    0:Graph:du.gcno
+        -:    0:Data:du.gcda
+        -:    0:Runs:7
+        -:    1:/* du -- summarize device usage
+        -:    2:   Copyright (C) 1988-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Differences from the Unix du:
+        -:   18:   * Doesn't simply ignore the names of regular files given as arguments
+        -:   19:     when -a is given.
+        -:   20:
+        -:   21:   By tege@sics.se, Torbjörn Granlund,
+        -:   22:   and djm@ai.mit.edu, David MacKenzie.
+        -:   23:   Variable blocks added by lm@sgi.com and eggert@twinsun.com.
+        -:   24:   Rewritten to use nftw, then to use fts by Jim Meyering.  */
+        -:   25:
+        -:   26:#include <config.h>
+        -:   27:#include <getopt.h>
+        -:   28:#include <sys/types.h>
+        -:   29:#include "system.h"
+        -:   30:#include "argmatch.h"
+        -:   31:#include "argv-iter.h"
+        -:   32:#include "assure.h"
+        -:   33:#include "di-set.h"
+        -:   34:#include "exclude.h"
+        -:   35:#include "fprintftime.h"
+        -:   36:#include "human.h"
+        -:   37:#include "mountlist.h"
+        -:   38:#include "quote.h"
+        -:   39:#include "stat-size.h"
+        -:   40:#include "stat-time.h"
+        -:   41:#include "stdio--.h"
+        -:   42:#include "xfts.h"
+        -:   43:#include "xstrtol.h"
+        -:   44:#include "xstrtol-error.h"
+        -:   45:
+        -:   46:extern bool fts_debug;
+        -:   47:
+        -:   48:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   49:#define PROGRAM_NAME "du"
+        -:   50:
+        -:   51:#define AUTHORS \
+        -:   52:  proper_name_lite ("Torbjorn Granlund", "Torbj\303\266rn Granlund"), \
+        -:   53:  proper_name ("David MacKenzie"), \
+        -:   54:  proper_name ("Paul Eggert"), \
+        -:   55:  proper_name ("Jim Meyering")
+        -:   56:
+        -:   57:#if DU_DEBUG
+        -:   58:# define FTS_CROSS_CHECK(Fts) fts_cross_check (Fts)
+        -:   59:#else
+        -:   60:# define FTS_CROSS_CHECK(Fts)
+        -:   61:#endif
+        -:   62:
+        -:   63:/* A set of dev/ino pairs to help identify files and directories
+        -:   64:   whose sizes have already been counted.  */
+        -:   65:static struct di_set *di_files;
+        -:   66:
+        -:   67:/* A set containing a dev/ino pair for each local mount point directory.  */
+        -:   68:static struct di_set *di_mnt;
+        -:   69:
+        -:   70:/* Keep track of the preceding "level" (depth in hierarchy)
+        -:   71:   from one call of process_file to the next.  */
+        -:   72:static size_t prev_level;
+        -:   73:
+        -:   74:/* Define a class for collecting directory information. */
+        -:   75:struct duinfo
+        -:   76:{
+        -:   77:  /* Size of files in directory.  */
+        -:   78:  uintmax_t size;
+        -:   79:
+        -:   80:  /* Number of inodes in directory.  */
+        -:   81:  uintmax_t inodes;
+        -:   82:
+        -:   83:  /* Latest timestamp found.  If tmax.tv_sec == TYPE_MINIMUM (time_t)
+        -:   84:     && tmax.tv_nsec < 0, no timestamp has been found.  */
+        -:   85:  struct timespec tmax;
+        -:   86:};
+        -:   87:
+        -:   88:/* Initialize directory data.  */
+        -:   89:static inline void
+function duinfo_init called 0 returned 0% blocks executed 0%
+    #####:   90:duinfo_init (struct duinfo *a)
+        -:   91:{
+    #####:   92:  a->size = 0;
+    #####:   93:  a->inodes = 0;
+    #####:   94:  a->tmax.tv_sec = TYPE_MINIMUM (time_t);
+    #####:   95:  a->tmax.tv_nsec = -1;
+    #####:   96:}
+        -:   97:
+        -:   98:/* Set directory data.  */
+        -:   99:static inline void
+function duinfo_set called 4 returned 100% blocks executed 100%
+        4:  100:duinfo_set (struct duinfo *a, uintmax_t size, struct timespec tmax)
+        -:  101:{
+        4:  102:  a->size = size;
+        4:  103:  a->inodes = 1;
+        4:  104:  a->tmax = tmax;
+        4:  105:}
+        -:  106:
+        -:  107:/* Accumulate directory data.  */
+        -:  108:static inline void
+function duinfo_add called 12 returned 100% blocks executed 83%
+       12:  109:duinfo_add (struct duinfo *a, struct duinfo const *b)
+        -:  110:{
+       12:  111:  uintmax_t sum = a->size + b->size;
+      12*:  112:  a->size = a->size <= sum ? sum : UINTMAX_MAX;
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       12:  113:  a->inodes = a->inodes + b->inodes;
+       12:  114:  if (timespec_cmp (a->tmax, b->tmax) < 0)
+branch  0 taken 42% (fallthrough)
+branch  1 taken 58%
+        5:  115:    a->tmax = b->tmax;
+       12:  116:}
+        -:  117:
+        -:  118:/* A structure for per-directory level information.  */
+        -:  119:struct dulevel
+        -:  120:{
+        -:  121:  /* Entries in this directory.  */
+        -:  122:  struct duinfo ent;
+        -:  123:
+        -:  124:  /* Total for subdirectories.  */
+        -:  125:  struct duinfo subdir;
+        -:  126:};
+        -:  127:
+        -:  128:/* If true, display counts for all files, not just directories.  */
+        -:  129:static bool opt_all = false;
+        -:  130:
+        -:  131:/* If true, rather than using the device usage of each file,
+        -:  132:   use the apparent size (stat.st_size if usable, 0 otherwise).  */
+        -:  133:static bool apparent_size = false;
+        -:  134:
+        -:  135:/* If true, count each hard link of files with multiple links.  */
+        -:  136:static bool opt_count_all = false;
+        -:  137:
+        -:  138:/* If true, hash all files to look for hard links.  */
+        -:  139:static bool hash_all;
+        -:  140:
+        -:  141:/* If true, output the NUL byte instead of a newline at the end of each line. */
+        -:  142:static bool opt_nul_terminate_output = false;
+        -:  143:
+        -:  144:/* If true, print a grand total at the end.  */
+        -:  145:static bool print_grand_total = false;
+        -:  146:
+        -:  147:/* If nonzero, do not add sizes of subdirectories.  */
+        -:  148:static bool opt_separate_dirs = false;
+        -:  149:
+        -:  150:/* Show the total for each directory (and file if --all) that is at
+        -:  151:   most MAX_DEPTH levels down from the root of the hierarchy.  The root
+        -:  152:   is at level 0, so 'du --max-depth=0' is equivalent to 'du -s'.  */
+        -:  153:static idx_t max_depth = IDX_MAX;
+        -:  154:
+        -:  155:/* Only output entries with at least this SIZE if positive,
+        -:  156:   or at most if negative.  See --threshold option.  */
+        -:  157:static intmax_t opt_threshold = 0;
+        -:  158:
+        -:  159:/* Human-readable options for output.  */
+        -:  160:static int human_output_opts;
+        -:  161:
+        -:  162:/* Output inodes count instead of blocks used.  */
+        -:  163:static bool opt_inodes = false;
+        -:  164:
+        -:  165:/* If true, print most recently modified date, using the specified format.  */
+        -:  166:static bool opt_time = false;
+        -:  167:
+        -:  168:/* Type of time to display. controlled by --time.  */
+        -:  169:
+        -:  170:enum time_type
+        -:  171:  {
+        -:  172:    time_mtime,			/* default */
+        -:  173:    time_ctime,
+        -:  174:    time_atime
+        -:  175:  };
+        -:  176:
+        -:  177:static enum time_type time_type = time_mtime;
+        -:  178:
+        -:  179:/* User specified date / time style */
+        -:  180:static char const *time_style = nullptr;
+        -:  181:
+        -:  182:/* Format used to display date / time. Controlled by --time-style */
+        -:  183:static char const *time_format = nullptr;
+        -:  184:
+        -:  185:/* The local time zone rules, as per the TZ environment variable.  */
+        -:  186:static timezone_t localtz;
+        -:  187:
+        -:  188:/* The units to use when printing sizes.  */
+        -:  189:static uintmax_t output_block_size;
+        -:  190:
+        -:  191:/* File name patterns to exclude.  */
+        -:  192:static struct exclude *exclude;
+        -:  193:
+        -:  194:/* Grand total size of all args, in bytes. Also latest modified date. */
+        -:  195:static struct duinfo tot_dui;
+        -:  196:
+        -:  197:#define IS_DIR_TYPE(Type)	\
+        -:  198:  ((Type) == FTS_DP		\
+        -:  199:   || (Type) == FTS_DNR)
+        -:  200:
+        -:  201:/* For long options that have no equivalent short option, use a
+        -:  202:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:  203:enum
+        -:  204:{
+        -:  205:  APPARENT_SIZE_OPTION = CHAR_MAX + 1,
+        -:  206:  EXCLUDE_OPTION,
+        -:  207:  FILES0_FROM_OPTION,
+        -:  208:  HUMAN_SI_OPTION,
+        -:  209:  FTS_DEBUG,
+        -:  210:  TIME_OPTION,
+        -:  211:  TIME_STYLE_OPTION,
+        -:  212:  INODES_OPTION
+        -:  213:};
+        -:  214:
+        -:  215:static struct option const long_options[] =
+        -:  216:{
+        -:  217:  {"all", no_argument, nullptr, 'a'},
+        -:  218:  {"apparent-size", no_argument, nullptr, APPARENT_SIZE_OPTION},
+        -:  219:  {"block-size", required_argument, nullptr, 'B'},
+        -:  220:  {"bytes", no_argument, nullptr, 'b'},
+        -:  221:  {"count-links", no_argument, nullptr, 'l'},
+        -:  222:  /* {"-debug", no_argument, nullptr, FTS_DEBUG}, */
+        -:  223:  {"dereference", no_argument, nullptr, 'L'},
+        -:  224:  {"dereference-args", no_argument, nullptr, 'D'},
+        -:  225:  {"exclude", required_argument, nullptr, EXCLUDE_OPTION},
+        -:  226:  {"exclude-from", required_argument, nullptr, 'X'},
+        -:  227:  {"files0-from", required_argument, nullptr, FILES0_FROM_OPTION},
+        -:  228:  {"human-readable", no_argument, nullptr, 'h'},
+        -:  229:  {"inodes", no_argument, nullptr, INODES_OPTION},
+        -:  230:  {"si", no_argument, nullptr, HUMAN_SI_OPTION},
+        -:  231:  {"max-depth", required_argument, nullptr, 'd'},
+        -:  232:  {"null", no_argument, nullptr, '0'},
+        -:  233:  {"no-dereference", no_argument, nullptr, 'P'},
+        -:  234:  {"one-file-system", no_argument, nullptr, 'x'},
+        -:  235:  {"separate-dirs", no_argument, nullptr, 'S'},
+        -:  236:  {"summarize", no_argument, nullptr, 's'},
+        -:  237:  {"total", no_argument, nullptr, 'c'},
+        -:  238:  {"threshold", required_argument, nullptr, 't'},
+        -:  239:  {"time", optional_argument, nullptr, TIME_OPTION},
+        -:  240:  {"time-style", required_argument, nullptr, TIME_STYLE_OPTION},
+        -:  241:  {GETOPT_HELP_OPTION_DECL},
+        -:  242:  {GETOPT_VERSION_OPTION_DECL},
+        -:  243:  {nullptr, 0, nullptr, 0}
+        -:  244:};
+        -:  245:
+        -:  246:static char const *const time_args[] =
+        -:  247:{
+        -:  248:  "atime", "access", "use", "ctime", "status", nullptr
+        -:  249:};
+        -:  250:static enum time_type const time_types[] =
+        -:  251:{
+        -:  252:  time_atime, time_atime, time_atime, time_ctime, time_ctime
+        -:  253:};
+        -:  254:ARGMATCH_VERIFY (time_args, time_types);
+        -:  255:
+        -:  256:/* 'full-iso' uses full ISO-style dates and times.  'long-iso' uses longer
+        -:  257:   ISO-style timestamps, though shorter than 'full-iso'.  'iso' uses shorter
+        -:  258:   ISO-style timestamps.  */
+        -:  259:enum time_style
+        -:  260:  {
+        -:  261:    full_iso_time_style,       /* --time-style=full-iso */
+        -:  262:    long_iso_time_style,       /* --time-style=long-iso */
+        -:  263:    iso_time_style	       /* --time-style=iso */
+        -:  264:  };
+        -:  265:
+        -:  266:static char const *const time_style_args[] =
+        -:  267:{
+        -:  268:  "full-iso", "long-iso", "iso", nullptr
+        -:  269:};
+        -:  270:static enum time_style const time_style_types[] =
+        -:  271:{
+        -:  272:  full_iso_time_style, long_iso_time_style, iso_time_style
+        -:  273:};
+        -:  274:ARGMATCH_VERIFY (time_style_args, time_style_types);
+        -:  275:
+        -:  276:void
+function usage called 2 returned 0% blocks executed 17%
+        2:  277:usage (int status)
+        -:  278:{
+        2:  279:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        2:  280:    emit_try_help ();
+call    0 returned 100%
+        -:  281:  else
+        -:  282:    {
+    #####:  283:      printf (_("\
+call    0 never executed
+        -:  284:Usage: %s [OPTION]... [FILE]...\n\
+        -:  285:  or:  %s [OPTION]... --files0-from=F\n\
+        -:  286:"), program_name, program_name);
+    #####:  287:      fputs (_("\
+call    0 never executed
+        -:  288:Summarize device usage of the set of FILEs, recursively for directories.\n\
+        -:  289:"), stdout);
+        -:  290:
+    #####:  291:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  292:
+    #####:  293:      fputs (_("\
+call    0 never executed
+        -:  294:  -0, --null            end each output line with NUL, not newline\n\
+        -:  295:  -a, --all             write counts for all files, not just directories\n\
+        -:  296:      --apparent-size   print apparent sizes rather than device usage; although\
+        -:  297:\n\
+        -:  298:                          the apparent size is usually smaller, it may be\n\
+        -:  299:                          larger due to holes in ('sparse') files, internal\n\
+        -:  300:                          fragmentation, indirect blocks, and the like\n\
+        -:  301:"), stdout);
+    #####:  302:      fputs (_("\
+call    0 never executed
+        -:  303:  -B, --block-size=SIZE  scale sizes by SIZE before printing them; e.g.,\n\
+        -:  304:                           '-BM' prints sizes in units of 1,048,576 bytes;\n\
+        -:  305:                           see SIZE format below\n\
+        -:  306:  -b, --bytes           equivalent to '--apparent-size --block-size=1'\n\
+        -:  307:  -c, --total           produce a grand total\n\
+        -:  308:  -D, --dereference-args  dereference only symlinks that are listed on the\n\
+        -:  309:                          command line\n\
+        -:  310:  -d, --max-depth=N     print the total for a directory (or file, with --all)\n\
+        -:  311:                          only if it is N or fewer levels below the command\n\
+        -:  312:                          line argument;  --max-depth=0 is the same as\n\
+        -:  313:                          --summarize\n\
+        -:  314:"), stdout);
+    #####:  315:      fputs (_("\
+call    0 never executed
+        -:  316:      --files0-from=F   summarize device usage of the\n\
+        -:  317:                          NUL-terminated file names specified in file F;\n\
+        -:  318:                          if F is -, then read names from standard input\n\
+        -:  319:  -H                    equivalent to --dereference-args (-D)\n\
+        -:  320:  -h, --human-readable  print sizes in human readable format (e.g., 1K 234M 2G)\
+        -:  321:\n\
+        -:  322:      --inodes          list inode usage information instead of block usage\n\
+        -:  323:"), stdout);
+    #####:  324:      fputs (_("\
+call    0 never executed
+        -:  325:  -k                    like --block-size=1K\n\
+        -:  326:  -L, --dereference     dereference all symbolic links\n\
+        -:  327:  -l, --count-links     count sizes many times if hard linked\n\
+        -:  328:  -m                    like --block-size=1M\n\
+        -:  329:"), stdout);
+    #####:  330:      fputs (_("\
+call    0 never executed
+        -:  331:  -P, --no-dereference  don't follow any symbolic links (this is the default)\n\
+        -:  332:  -S, --separate-dirs   for directories do not include size of subdirectories\n\
+        -:  333:      --si              like -h, but use powers of 1000 not 1024\n\
+        -:  334:  -s, --summarize       display only a total for each argument\n\
+        -:  335:"), stdout);
+    #####:  336:      fputs (_("\
+call    0 never executed
+        -:  337:  -t, --threshold=SIZE  exclude entries smaller than SIZE if positive,\n\
+        -:  338:                          or entries greater than SIZE if negative\n\
+        -:  339:      --time            show time of the last modification of any file in the\n\
+        -:  340:                          directory, or any of its subdirectories\n\
+        -:  341:      --time=WORD       show time as WORD instead of modification time:\n\
+        -:  342:                          atime, access, use, ctime or status\n\
+        -:  343:      --time-style=STYLE  show times using STYLE, which can be:\n\
+        -:  344:                            full-iso, long-iso, iso, or +FORMAT;\n\
+        -:  345:                            FORMAT is interpreted like in 'date'\n\
+        -:  346:"), stdout);
+    #####:  347:      fputs (_("\
+call    0 never executed
+        -:  348:  -X, --exclude-from=FILE  exclude files that match any pattern in FILE\n\
+        -:  349:      --exclude=PATTERN    exclude files that match PATTERN\n\
+        -:  350:  -x, --one-file-system    skip directories on different file systems\n\
+        -:  351:"), stdout);
+    #####:  352:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  353:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  354:      emit_blocksize_note ("DU");
+call    0 never executed
+    #####:  355:      emit_size_note ();
+call    0 never executed
+    #####:  356:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  357:    }
+        2:  358:  exit (status);
+        -:  359:}
+        -:  360:
+        -:  361:/* Try to insert the INO/DEV pair into DI_SET.
+        -:  362:   Return true if the pair is successfully inserted,
+        -:  363:   false if the pair was already there.  */
+        -:  364:static bool
+function hash_ins called 0 returned 0% blocks executed 0%
+    #####:  365:hash_ins (struct di_set *di_set, ino_t ino, dev_t dev)
+        -:  366:{
+    #####:  367:  int inserted = di_set_insert (di_set, dev, ino);
+call    0 never executed
+    #####:  368:  if (inserted < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  369:    xalloc_die ();
+call    0 never executed
+    #####:  370:  return inserted;
+        -:  371:}
+        -:  372:
+        -:  373:/* FIXME: this code is nearly identical to code in date.c  */
+        -:  374:/* Display the date and time in WHEN according to the format specified
+        -:  375:   in FORMAT.  */
+        -:  376:
+        -:  377:static void
+function show_date called 0 returned 0% blocks executed 0%
+    #####:  378:show_date (char const *format, struct timespec when, timezone_t tz)
+        -:  379:{
+        -:  380:  struct tm tm;
+    #####:  381:  if (localtime_rz (tz, &when.tv_sec, &tm))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  382:    fprintftime (stdout, format, &tm, tz, when.tv_nsec);
+call    0 never executed
+        -:  383:  else
+        -:  384:    {
+        -:  385:      char buf[INT_BUFSIZE_BOUND (intmax_t)];
+    #####:  386:      char *when_str = timetostr (when.tv_sec, buf);
+call    0 never executed
+    #####:  387:      error (0, 0, _("time %s is out of range"), quote (when_str));
+call    0 never executed
+    #####:  388:      fputs (when_str, stdout);
+call    0 never executed
+        -:  389:    }
+    #####:  390:}
+        -:  391:
+        -:  392:/* Print N_BYTES.  Convert it to a readable value before printing.  */
+        -:  393:
+        -:  394:static void
+function print_only_size called 1 returned 100% blocks executed 80%
+        1:  395:print_only_size (uintmax_t n_bytes)
+        -:  396:{
+        -:  397:  char buf[LONGEST_HUMAN_READABLE + 1];
+       1*:  398:  fputs ((n_bytes == UINTMAX_MAX
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+call    2 returned 100%
+call    3 returned 100%
+        -:  399:          ? _("Infinity")
+        -:  400:          : human_readable (n_bytes, buf, human_output_opts,
+        -:  401:                            1, output_block_size)),
+        -:  402:         stdout);
+        1:  403:}
+        -:  404:
+        -:  405:/* Print size (and optionally time) indicated by *PDUI, followed by STRING.  */
+        -:  406:
+        -:  407:static void
+function print_size called 1 returned 100% blocks executed 69%
+        1:  408:print_size (const struct duinfo *pdui, char const *string)
+        -:  409:{
+       1*:  410:  print_only_size (opt_inodes
+call    0 returned 100%
+        1:  411:                   ? pdui->inodes
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  412:                   : pdui->size);
+        -:  413:
+        1:  414:  if (opt_time)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  415:    {
+    #####:  416:      putchar ('\t');
+call    0 never executed
+    #####:  417:      show_date (time_format, pdui->tmax, localtz);
+call    0 never executed
+        -:  418:    }
+       1*:  419:  printf ("\t%s%c", string, opt_nul_terminate_output ? '\0' : '\n');
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 returned 100%
+        1:  420:  fflush (stdout);
+call    0 returned 100%
+        1:  421:}
+        -:  422:
+        -:  423:/* Fill the di_mnt set with local mount point dev/ino pairs.  */
+        -:  424:
+        -:  425:static void
+function fill_mount_table called 0 returned 0% blocks executed 0%
+    #####:  426:fill_mount_table (void)
+        -:  427:{
+    #####:  428:  struct mount_entry *mnt_ent = read_file_system_list (false);
+call    0 never executed
+    #####:  429:  while (mnt_ent)
+branch  0 never executed
+branch  1 never executed
+        -:  430:    {
+        -:  431:      struct mount_entry *mnt_free;
+    #####:  432:      if (!mnt_ent->me_remote && !mnt_ent->me_dummy)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  433:        {
+        -:  434:          struct stat buf;
+    #####:  435:          if (!stat (mnt_ent->me_mountdir, &buf))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  436:            hash_ins (di_mnt, buf.st_ino, buf.st_dev);
+call    0 never executed
+        -:  437:          else
+        -:  438:            {
+        -:  439:              /* Ignore stat failure.  False positives are too common.
+        -:  440:                 E.g., "Permission denied" on /run/user/<name>/gvfs.  */
+        -:  441:            }
+        -:  442:        }
+        -:  443:
+    #####:  444:      mnt_free = mnt_ent;
+    #####:  445:      mnt_ent = mnt_ent->me_next;
+    #####:  446:      free_mount_entry (mnt_free);
+call    0 never executed
+        -:  447:    }
+    #####:  448:}
+        -:  449:
+        -:  450:/* This function checks whether any of the directories in the cycle that
+        -:  451:   fts detected is a mount point.  */
+        -:  452:
+        -:  453:static bool
+function mount_point_in_fts_cycle called 0 returned 0% blocks executed 0%
+    #####:  454:mount_point_in_fts_cycle (FTSENT const *ent)
+        -:  455:{
+    #####:  456:  FTSENT const *cycle_ent = ent->fts_cycle;
+        -:  457:
+    #####:  458:  if (!di_mnt)
+branch  0 never executed
+branch  1 never executed
+        -:  459:    {
+        -:  460:      /* Initialize the set of dev,inode pairs.  */
+    #####:  461:      di_mnt = di_set_alloc ();
+call    0 never executed
+    #####:  462:      if (!di_mnt)
+branch  0 never executed
+branch  1 never executed
+    #####:  463:        xalloc_die ();
+call    0 never executed
+        -:  464:
+    #####:  465:      fill_mount_table ();
+call    0 never executed
+        -:  466:    }
+        -:  467:
+    #####:  468:  while (ent && ent != cycle_ent)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  469:    {
+    #####:  470:      if (di_set_lookup (di_mnt, ent->fts_statp->st_dev,
+branch  0 never executed
+branch  1 never executed
+    #####:  471:                         ent->fts_statp->st_ino) > 0)
+call    0 never executed
+        -:  472:        {
+    #####:  473:          return true;
+        -:  474:        }
+    #####:  475:      ent = ent->fts_parent;
+        -:  476:    }
+        -:  477:
+    #####:  478:  return false;
+        -:  479:}
+        -:  480:
+        -:  481:/* This function is called once for every file system object that fts
+        -:  482:   encounters.  fts does a depth-first traversal.  This function knows
+        -:  483:   that and accumulates per-directory totals based on changes in
+        -:  484:   the depth of the current entry.  It returns true on success.  */
+        -:  485:
+        -:  486:static bool
+function process_file called 8 returned 100% blocks executed 52%
+        8:  487:process_file (FTS *fts, FTSENT *ent)
+        -:  488:{
+        8:  489:  bool ok = true;
+        -:  490:  struct duinfo dui;
+        -:  491:  struct duinfo dui_to_print;
+        -:  492:  size_t level;
+        -:  493:  static size_t n_alloc;
+        -:  494:  /* First element of the structure contains:
+        -:  495:     The sum of the sizes of all entries in the single directory
+        -:  496:     at the corresponding level.  Although this does include the sizes
+        -:  497:     corresponding to each subdirectory, it does not include the size of
+        -:  498:     any file in a subdirectory. Also corresponding last modified date.
+        -:  499:     Second element of the structure contains:
+        -:  500:     The sum of the sizes of all entries in the hierarchy at or below the
+        -:  501:     directory at the specified level.  */
+        -:  502:  static struct dulevel *dulvl;
+        -:  503:
+        8:  504:  char const *file = ent->fts_path;
+        8:  505:  const struct stat *sb = ent->fts_statp;
+        8:  506:  int info = ent->fts_info;
+        -:  507:
+        8:  508:  if (info == FTS_DNR)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  509:    {
+        -:  510:      /* An error occurred, but the size is known, so count it.  */
+    #####:  511:      error (0, ent->fts_errno, _("cannot read directory %s"), quoteaf (file));
+call    0 never executed
+    #####:  512:      ok = false;
+        -:  513:    }
+        8:  514:  else if (info != FTS_DP)
+branch  0 taken 88% (fallthrough)
+branch  1 taken 12%
+        -:  515:    {
+        7:  516:      bool excluded = excluded_file_name (exclude, file);
+call    0 returned 100%
+        7:  517:      if (! excluded)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  518:        {
+        -:  519:          /* Make the stat buffer *SB valid, or fail noisily.  */
+        -:  520:
+        7:  521:          if (info == FTS_NSOK)
+branch  0 taken 43% (fallthrough)
+branch  1 taken 57%
+        -:  522:            {
+        3:  523:              fts_set (fts, ent, FTS_AGAIN);
+call    0 returned 100%
+        3:  524:              MAYBE_UNUSED FTSENT const *e = fts_read (fts);
+call    0 returned 100%
+       3*:  525:              affirm (e == ent);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+        3:  526:              info = ent->fts_info;
+        -:  527:            }
+        -:  528:
+        7:  529:          if (info == FTS_NS || info == FTS_SLNONE)
+branch  0 taken 57% (fallthrough)
+branch  1 taken 43%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+        -:  530:            {
+        3:  531:              error (0, ent->fts_errno, _("cannot access %s"), quoteaf (file));
+call    0 returned 100%
+        3:  532:              return false;
+        -:  533:            }
+        -:  534:
+        -:  535:          /* The --one-file-system (-x) option cannot exclude anything
+        -:  536:             specified on the command-line.  By definition, it can exclude
+        -:  537:             a file or directory only when its device number is different
+        -:  538:             from that of its just-processed parent directory, and du does
+        -:  539:             not process the parent of a command-line argument.  */
+        4:  540:          if (fts->fts_options & FTS_XDEV
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  541:              && FTS_ROOTLEVEL < ent->fts_level
+branch  0 never executed
+branch  1 never executed
+    #####:  542:              && fts->fts_dev != sb->st_dev)
+branch  0 never executed
+branch  1 never executed
+    #####:  543:            excluded = true;
+        -:  544:        }
+        -:  545:
+        4:  546:      if (excluded
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        4:  547:          || (! opt_count_all
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        4:  548:              && (hash_all || (! S_ISDIR (sb->st_mode) && 1 < sb->st_nlink))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 75% (fallthrough)
+branch  3 taken 25%
+branch  4 taken 0% (fallthrough)
+branch  5 taken 100%
+    #####:  549:              && ! hash_ins (di_files, sb->st_ino, sb->st_dev)))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  550:        {
+        -:  551:          /* If ignoring a directory in preorder, skip its children.
+        -:  552:             Ignore the next fts_read output too, as it's a postorder
+        -:  553:             visit to the same directory.  */
+    #####:  554:          if (info == FTS_D)
+branch  0 never executed
+branch  1 never executed
+        -:  555:            {
+    #####:  556:              fts_set (fts, ent, FTS_SKIP);
+call    0 never executed
+    #####:  557:              MAYBE_UNUSED FTSENT const *e = fts_read (fts);
+call    0 never executed
+    #####:  558:              affirm (e == ent);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  559:            }
+        -:  560:
+    #####:  561:          return true;
+        -:  562:        }
+        -:  563:
+        4:  564:      switch (info)
+branch  0 taken 25%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 75%
+        -:  565:        {
+        1:  566:        case FTS_D:
+        1:  567:          return true;
+        -:  568:
+    #####:  569:        case FTS_ERR:
+        -:  570:          /* An error occurred, but the size is known, so count it.  */
+    #####:  571:          error (0, ent->fts_errno, "%s", quotef (file));
+call    0 never executed
+    #####:  572:          ok = false;
+    #####:  573:          break;
+        -:  574:
+    #####:  575:        case FTS_DC:
+        -:  576:          /* If not following symlinks and not a (bind) mount point.  */
+    #####:  577:          if (cycle_warning_required (fts, ent)
+branch  0 never executed
+branch  1 never executed
+    #####:  578:              && ! mount_point_in_fts_cycle (ent))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  579:            {
+    #####:  580:              emit_cycle_warning (file);
+call    0 never executed
+    #####:  581:              return false;
+        -:  582:            }
+    #####:  583:          return true;
+        -:  584:        }
+        -:  585:    }
+        -:  586:
+       4*:  587:  duinfo_set (&dui,
+call    0 returned 100%
+        -:  588:              (apparent_size
+       4*:  589:               ? (usable_st_size (sb) ? MAX (0, sb->st_size) : 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        4:  590:               : (uintmax_t) ST_NBLOCKS (*sb) * ST_NBLOCKSIZE),
+        4:  591:              (time_type == time_mtime ? get_stat_mtime (sb)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+    #####:  592:               : time_type == time_atime ? get_stat_atime (sb)
+branch  0 never executed
+branch  1 never executed
+    #####:  593:               : get_stat_ctime (sb)));
+        -:  594:
+        4:  595:  level = ent->fts_level;
+        4:  596:  dui_to_print = dui;
+        -:  597:
+        4:  598:  if (n_alloc == 0)
+branch  0 taken 25% (fallthrough)
+branch  1 taken 75%
+        -:  599:    {
+        1:  600:      n_alloc = level + 10;
+        1:  601:      dulvl = xcalloc (n_alloc, sizeof *dulvl);
+call    0 returned 100%
+        -:  602:    }
+        -:  603:  else
+        -:  604:    {
+        3:  605:      if (level == prev_level)
+branch  0 taken 33% (fallthrough)
+branch  1 taken 67%
+        -:  606:        {
+        -:  607:          /* This is usually the most common case.  Do nothing.  */
+        -:  608:        }
+        1:  609:      else if (level > prev_level)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  610:        {
+        -:  611:          /* Descending the hierarchy.
+        -:  612:             Clear the accumulators for *all* levels between prev_level
+        -:  613:             and the current one.  The depth may change dramatically,
+        -:  614:             e.g., from 1 to 10.  */
+        -:  615:
+    #####:  616:          if (n_alloc <= level)
+branch  0 never executed
+branch  1 never executed
+        -:  617:            {
+    #####:  618:              dulvl = xnrealloc (dulvl, level, 2 * sizeof *dulvl);
+call    0 never executed
+    #####:  619:              n_alloc = level * 2;
+        -:  620:            }
+        -:  621:
+    #####:  622:          for (size_t i = prev_level + 1; i <= level; i++)
+branch  0 never executed
+branch  1 never executed
+        -:  623:            {
+    #####:  624:              duinfo_init (&dulvl[i].ent);
+call    0 never executed
+    #####:  625:              duinfo_init (&dulvl[i].subdir);
+call    0 never executed
+        -:  626:            }
+        -:  627:        }
+        -:  628:      else /* level < prev_level */
+        -:  629:        {
+        -:  630:          /* Ascending the hierarchy.
+        -:  631:             Process a directory only after all entries in that
+        -:  632:             directory have been processed.  When the depth decreases,
+        -:  633:             propagate sums from the children (prev_level) to the parent.
+        -:  634:             Here, the current level is always one smaller than the
+        -:  635:             previous one.  */
+       1*:  636:          affirm (level == prev_level - 1);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+        1:  637:          duinfo_add (&dui_to_print, &dulvl[prev_level].ent);
+call    0 returned 100%
+        1:  638:          if (!opt_separate_dirs)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  639:            duinfo_add (&dui_to_print, &dulvl[prev_level].subdir);
+call    0 returned 100%
+        1:  640:          duinfo_add (&dulvl[level].subdir, &dulvl[prev_level].ent);
+call    0 returned 100%
+        1:  641:          duinfo_add (&dulvl[level].subdir, &dulvl[prev_level].subdir);
+call    0 returned 100%
+        -:  642:        }
+        -:  643:    }
+        -:  644:
+        4:  645:  prev_level = level;
+        -:  646:
+        -:  647:  /* Let the size of a directory entry contribute to the total for the
+        -:  648:     containing directory, unless --separate-dirs (-S) is specified.  */
+       4*:  649:  if (! (opt_separate_dirs && IS_DIR_TYPE (info)))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        4:  650:    duinfo_add (&dulvl[level].ent, &dui);
+call    0 returned 100%
+        -:  651:
+        -:  652:  /* Even if this directory is unreadable or we can't chdir into it,
+        -:  653:     do let its size contribute to the total. */
+        4:  654:  duinfo_add (&tot_dui, &dui);
+call    0 returned 100%
+        -:  655:
+        4:  656:  if ((IS_DIR_TYPE (info) && level <= max_depth)
+branch  0 taken 75% (fallthrough)
+branch  1 taken 25%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+branch  4 taken 0% (fallthrough)
+branch  5 taken 100%
+       3*:  657:      || (opt_all && level <= max_depth)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        3:  658:      || level == 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  659:    {
+        -:  660:      /* Print or elide this entry according to the --threshold option.  */
+       1*:  661:      uintmax_t v = opt_inodes ? dui_to_print.inodes : dui_to_print.size;
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+       2*:  662:      if (opt_threshold < 0
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+    #####:  663:          ? v <= -opt_threshold
+        1:  664:          : v >= opt_threshold)
+        1:  665:        print_size (&dui_to_print, file);
+call    0 returned 100%
+        -:  666:    }
+        -:  667:
+        4:  668:  return ok;
+        -:  669:}
+        -:  670:
+        -:  671:/* Recursively print the sizes of the directories (and, if selected, files)
+        -:  672:   named in FILES, the last entry of which is null.
+        -:  673:   BIT_FLAGS controls how fts works.
+        -:  674:   Return true if successful.  */
+        -:  675:
+        -:  676:static bool
+function du_files called 4 returned 100% blocks executed 57%
+        4:  677:du_files (char **files, int bit_flags)
+        -:  678:{
+        4:  679:  bool ok = true;
+        -:  680:
+        4:  681:  if (*files)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  682:    {
+        4:  683:      FTS *fts = xfts_open (files, bit_flags, nullptr);
+call    0 returned 100%
+        -:  684:
+        -:  685:      while (true)
+        8:  686:        {
+        -:  687:          FTSENT *ent;
+        -:  688:
+       12:  689:          ent = fts_read (fts);
+call    0 returned 100%
+       12:  690:          if (ent == nullptr)
+branch  0 taken 33% (fallthrough)
+branch  1 taken 67%
+        -:  691:            {
+        4:  692:              if (errno != 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  693:                {
+    #####:  694:                  error (0, errno, _("fts_read failed: %s"),
+call    0 never executed
+        -:  695:                         quotef (fts->fts_path));
+    #####:  696:                  ok = false;
+        -:  697:                }
+        -:  698:
+        -:  699:              /* When exiting this loop early, be careful to reset the
+        -:  700:                 global, prev_level, used in process_file.  Otherwise, its
+        -:  701:                 (level == prev_level - 1) assertion could fail.  */
+        4:  702:              prev_level = 0;
+        4:  703:              break;
+        -:  704:            }
+        -:  705:          FTS_CROSS_CHECK (fts);
+        -:  706:
+        8:  707:          ok &= process_file (fts, ent);
+call    0 returned 100%
+        -:  708:        }
+        -:  709:
+        4:  710:      if (fts_close (fts) != 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+        -:  711:        {
+    #####:  712:          error (0, errno, _("fts_close failed"));
+    #####:  713:          ok = false;
+        -:  714:        }
+        -:  715:    }
+        -:  716:
+        4:  717:  return ok;
+        -:  718:}
+        -:  719:
+        -:  720:int
+function main called 7 returned 71% blocks executed 28%
+        7:  721:main (int argc, char **argv)
+        -:  722:{
+        -:  723:  char *cwd_only[2];
+        7:  724:  bool max_depth_specified = false;
+        7:  725:  bool ok = true;
+        7:  726:  char *files_from = nullptr;
+        -:  727:
+        -:  728:  /* Bit flags that control how fts works.  */
+        7:  729:  int bit_flags = FTS_NOSTAT;
+        -:  730:
+        -:  731:  /* Select one of the three FTS_ options that control if/when
+        -:  732:     to follow a symlink.  */
+        7:  733:  int symlink_deref_bits = FTS_PHYSICAL;
+        -:  734:
+        -:  735:  /* If true, display only a total for each argument. */
+        7:  736:  bool opt_summarize_only = false;
+        -:  737:
+        7:  738:  cwd_only[0] = bad_cast (".");
+call    0 returned 100%
+        7:  739:  cwd_only[1] = nullptr;
+        -:  740:
+        -:  741:  initialize_main (&argc, &argv);
+        7:  742:  set_program_name (argv[0]);
+call    0 returned 100%
+        7:  743:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  744:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  745:  textdomain (PACKAGE);
+        -:  746:
+        7:  747:  atexit (close_stdout);
+call    0 returned 100%
+        -:  748:
+        7:  749:  exclude = new_exclude ();
+call    0 returned 100%
+        -:  750:
+        7:  751:  human_options (getenv ("DU_BLOCK_SIZE"),
+call    0 returned 100%
+call    1 returned 100%
+        -:  752:                 &human_output_opts, &output_block_size);
+        -:  753:
+        -:  754:  while (true)
+       15:  755:    {
+       22:  756:      int oi = -1;
+       22:  757:      int c = getopt_long (argc, argv, "0abd:chHklmst:xB:DLPSX:",
+call    0 returned 100%
+        -:  758:                           long_options, &oi);
+       22:  759:      if (c == -1)
+branch  0 taken 32% (fallthrough)
+branch  1 taken 68%
+        7:  760:        break;
+        -:  761:
+       15:  762:      switch (c)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 0%
+branch 13 taken 0%
+branch 14 taken 0%
+branch 15 taken 0%
+branch 16 taken 0%
+branch 17 taken 0%
+branch 18 taken 0%
+branch 19 taken 0%
+branch 20 taken 0%
+branch 21 taken 0%
+branch 22 taken 0%
+branch 23 taken 0%
+branch 24 taken 0%
+branch 25 taken 0%
+branch 26 taken 0%
+branch 27 taken 100%
+        -:  763:        {
+        -:  764:#if DU_DEBUG
+        -:  765:        case FTS_DEBUG:
+        -:  766:          fts_debug = true;
+        -:  767:          break;
+        -:  768:#endif
+        -:  769:
+    #####:  770:        case '0':
+    #####:  771:          opt_nul_terminate_output = true;
+    #####:  772:          break;
+        -:  773:
+    #####:  774:        case 'a':
+    #####:  775:          opt_all = true;
+    #####:  776:          break;
+        -:  777:
+    #####:  778:        case APPARENT_SIZE_OPTION:
+    #####:  779:          apparent_size = true;
+    #####:  780:          break;
+        -:  781:
+    #####:  782:        case 'b':
+    #####:  783:          apparent_size = true;
+    #####:  784:          human_output_opts = 0;
+    #####:  785:          output_block_size = 1;
+    #####:  786:          break;
+        -:  787:
+    #####:  788:        case 'c':
+    #####:  789:          print_grand_total = true;
+    #####:  790:          break;
+        -:  791:
+    #####:  792:        case 'h':
+    #####:  793:          human_output_opts = human_autoscale | human_SI | human_base_1024;
+    #####:  794:          output_block_size = 1;
+    #####:  795:          break;
+        -:  796:
+    #####:  797:        case HUMAN_SI_OPTION:
+    #####:  798:          human_output_opts = human_autoscale | human_SI;
+    #####:  799:          output_block_size = 1;
+    #####:  800:          break;
+        -:  801:
+    #####:  802:        case 'k':
+    #####:  803:          human_output_opts = 0;
+    #####:  804:          output_block_size = 1024;
+    #####:  805:          break;
+        -:  806:
+    #####:  807:        case 'd':		/* --max-depth=N */
+        -:  808:          {
+        -:  809:            intmax_t tmp;
+    #####:  810:            if (xstrtoimax (optarg, nullptr, 0, &tmp, "") == LONGINT_OK
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  811:                && tmp <= IDX_MAX)
+        -:  812:              {
+    #####:  813:                max_depth_specified = true;
+    #####:  814:                max_depth = tmp;
+        -:  815:              }
+        -:  816:            else
+        -:  817:              {
+    #####:  818:                error (0, 0, _("invalid maximum depth %s"),
+call    0 never executed
+        -:  819:                       quote (optarg));
+    #####:  820:                ok = false;
+        -:  821:              }
+        -:  822:          }
+    #####:  823:          break;
+        -:  824:
+    #####:  825:        case 'm':
+    #####:  826:          human_output_opts = 0;
+    #####:  827:          output_block_size = 1024 * 1024;
+    #####:  828:          break;
+        -:  829:
+    #####:  830:        case 'l':
+    #####:  831:          opt_count_all = true;
+    #####:  832:          break;
+        -:  833:
+    #####:  834:        case 's':
+    #####:  835:          opt_summarize_only = true;
+    #####:  836:          break;
+        -:  837:
+    #####:  838:        case 't':
+        -:  839:          {
+        -:  840:            enum strtol_error e;
+    #####:  841:            e = xstrtoimax (optarg, nullptr, 0, &opt_threshold,
+call    0 never executed
+        -:  842:                            "kKmMGTPEZYRQ0");
+    #####:  843:            if (e != LONGINT_OK)
+branch  0 never executed
+branch  1 never executed
+    #####:  844:              xstrtol_fatal (e, oi, c, long_options, optarg);
+call    0 never executed
+    #####:  845:            if (opt_threshold == 0 && *optarg == '-')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  846:              {
+        -:  847:                /* Do not allow -0, as this wouldn't make sense anyway.  */
+    #####:  848:                error (EXIT_FAILURE, 0, _("invalid --threshold argument '-0'"));
+call    0 never executed
+        -:  849:              }
+        -:  850:          }
+    #####:  851:          break;
+        -:  852:
+    #####:  853:        case 'x':
+    #####:  854:          bit_flags |= FTS_XDEV;
+    #####:  855:          break;
+        -:  856:
+    #####:  857:        case 'B':
+        -:  858:          {
+    #####:  859:            enum strtol_error e = human_options (optarg, &human_output_opts,
+call    0 never executed
+        -:  860:                                                 &output_block_size);
+    #####:  861:            if (e != LONGINT_OK)
+branch  0 never executed
+branch  1 never executed
+    #####:  862:              xstrtol_fatal (e, oi, c, long_options, optarg);
+call    0 never executed
+        -:  863:          }
+    #####:  864:          break;
+        -:  865:
+    #####:  866:        case 'H':  /* NOTE: before 2008-12, -H was equivalent to --si.  */
+        -:  867:        case 'D':
+    #####:  868:          symlink_deref_bits = FTS_COMFOLLOW | FTS_PHYSICAL;
+    #####:  869:          break;
+        -:  870:
+    #####:  871:        case 'L': /* --dereference */
+    #####:  872:          symlink_deref_bits = FTS_LOGICAL;
+    #####:  873:          break;
+        -:  874:
+    #####:  875:        case 'P': /* --no-dereference */
+    #####:  876:          symlink_deref_bits = FTS_PHYSICAL;
+    #####:  877:          break;
+        -:  878:
+    #####:  879:        case 'S':
+    #####:  880:          opt_separate_dirs = true;
+    #####:  881:          break;
+        -:  882:
+    #####:  883:        case 'X':
+    #####:  884:          if (add_exclude_file (add_exclude, exclude, optarg,
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  885:                                EXCLUDE_WILDCARDS, '\n'))
+        -:  886:            {
+    #####:  887:              error (0, errno, "%s", quotef (optarg));
+call    0 never executed
+    #####:  888:              ok = false;
+        -:  889:            }
+    #####:  890:          break;
+        -:  891:
+    #####:  892:        case FILES0_FROM_OPTION:
+    #####:  893:          files_from = optarg;
+    #####:  894:          break;
+        -:  895:
+    #####:  896:        case EXCLUDE_OPTION:
+    #####:  897:          add_exclude (exclude, optarg, EXCLUDE_WILDCARDS);
+call    0 never executed
+    #####:  898:          break;
+        -:  899:
+    #####:  900:        case INODES_OPTION:
+    #####:  901:          opt_inodes = true;
+    #####:  902:          break;
+        -:  903:
+    #####:  904:        case TIME_OPTION:
+    #####:  905:          opt_time = true;
+    #####:  906:          time_type =
+        -:  907:            (optarg
+    #####:  908:             ? XARGMATCH ("--time", optarg, time_args, time_types)
+call    0 never executed
+    #####:  909:             : time_mtime);
+branch  0 never executed
+branch  1 never executed
+    #####:  910:          localtz = tzalloc (getenv ("TZ"));
+call    0 never executed
+call    1 never executed
+    #####:  911:          break;
+        -:  912:
+    #####:  913:        case TIME_STYLE_OPTION:
+    #####:  914:          time_style = optarg;
+    #####:  915:          break;
+        -:  916:
+    #####:  917:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  918:
+    #####:  919:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+call    4 never executed
+call    5 never executed
+        -:  920:
+       15:  921:        default:
+       15:  922:          ok = false;
+        -:  923:        }
+        -:  924:    }
+        -:  925:
+        7:  926:  if (!ok)
+branch  0 taken 29%
+branch  1 taken 71%
+        2:  927:    usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  928:
+       5*:  929:  if (opt_all && opt_summarize_only)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  930:    {
+        -:  931:      error (0, 0, _("cannot both summarize and show all entries"));
+    #####:  932:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  933:    }
+        -:  934:
+       5*:  935:  if (opt_summarize_only && max_depth_specified && max_depth == 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  936:    {
+        -:  937:      error (0, 0,
+        -:  938:             _("warning: summarizing is the same as using --max-depth=0"));
+        -:  939:    }
+        -:  940:
+       5*:  941:  if (opt_summarize_only && max_depth_specified && max_depth != 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  942:    {
+    #####:  943:      error (0, 0, _("warning: summarizing conflicts with --max-depth=%td"),
+        -:  944:             max_depth);
+    #####:  945:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  946:    }
+        -:  947:
+        5:  948:  if (opt_summarize_only)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  949:    max_depth = 0;
+        -:  950:
+        5:  951:  if (opt_inodes)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  952:    {
+    #####:  953:      if (apparent_size)
+branch  0 never executed
+branch  1 never executed
+        -:  954:        {
+        -:  955:          error (0, 0, _("warning: options --apparent-size and -b are "
+        -:  956:                         "ineffective with --inodes"));
+        -:  957:        }
+    #####:  958:      output_block_size = 1;
+        -:  959:    }
+        -:  960:
+        -:  961:  /* Process time style if printing last times.  */
+        5:  962:  if (opt_time)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  963:    {
+    #####:  964:      if (! time_style)
+branch  0 never executed
+branch  1 never executed
+        -:  965:        {
+    #####:  966:          time_style = getenv ("TIME_STYLE");
+call    0 never executed
+        -:  967:
+        -:  968:          /* Ignore TIMESTYLE="locale", for compatibility with ls.  */
+    #####:  969:          if (! time_style || STREQ (time_style, "locale"))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  970:            time_style = "long-iso";
+    #####:  971:          else if (*time_style == '+')
+branch  0 never executed
+branch  1 never executed
+        -:  972:            {
+        -:  973:              /* Ignore anything after a newline, for compatibility
+        -:  974:                 with ls.  */
+    #####:  975:              char *p = strchr (time_style, '\n');
+    #####:  976:              if (p)
+branch  0 never executed
+branch  1 never executed
+    #####:  977:                *p = '\0';
+        -:  978:            }
+        -:  979:          else
+        -:  980:            {
+        -:  981:              /* Ignore "posix-" prefix, for compatibility with ls.  */
+        -:  982:              static char const posix_prefix[] = "posix-";
+        -:  983:              static const size_t prefix_len = sizeof posix_prefix - 1;
+    #####:  984:              while (STREQ_LEN (time_style, posix_prefix, prefix_len))
+branch  0 never executed
+branch  1 never executed
+    #####:  985:                time_style += prefix_len;
+        -:  986:            }
+        -:  987:        }
+        -:  988:
+    #####:  989:      if (*time_style == '+')
+branch  0 never executed
+branch  1 never executed
+    #####:  990:        time_format = time_style + 1;
+        -:  991:      else
+        -:  992:        {
+    #####:  993:          switch (XARGMATCH ("time style", time_style,
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  994:                             time_style_args, time_style_types))
+        -:  995:            {
+    #####:  996:            case full_iso_time_style:
+    #####:  997:              time_format = "%Y-%m-%d %H:%M:%S.%N %z";
+    #####:  998:              break;
+        -:  999:
+    #####: 1000:            case long_iso_time_style:
+    #####: 1001:              time_format = "%Y-%m-%d %H:%M";
+    #####: 1002:              break;
+        -: 1003:
+    #####: 1004:            case iso_time_style:
+    #####: 1005:              time_format = "%Y-%m-%d";
+    #####: 1006:              break;
+        -: 1007:            }
+        -: 1008:        }
+        -: 1009:    }
+        -: 1010:
+        -: 1011:  struct argv_iterator *ai;
+        5: 1012:  if (files_from)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1013:    {
+        -: 1014:      /* When using --files0-from=F, you may not specify any files
+        -: 1015:         on the command-line.  */
+    #####: 1016:      if (optind < argc)
+branch  0 never executed
+branch  1 never executed
+        -: 1017:        {
+    #####: 1018:          error (0, 0, _("extra operand %s"), quote (argv[optind]));
+call    0 never executed
+    #####: 1019:          fprintf (stderr, "%s\n",
+call    0 never executed
+        -: 1020:                   _("file operands cannot be combined with --files0-from"));
+    #####: 1021:          usage (EXIT_FAILURE);
+call    0 never executed
+        -: 1022:        }
+        -: 1023:
+    #####: 1024:      if (! (STREQ (files_from, "-") || freopen (files_from, "r", stdin)))
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####: 1025:        error (EXIT_FAILURE, errno, _("cannot open %s for reading"),
+call    0 never executed
+call    1 never executed
+        -: 1026:               quoteaf (files_from));
+        -: 1027:
+    #####: 1028:      ai = argv_iter_init_stream (stdin);
+call    0 never executed
+        -: 1029:
+        -: 1030:      /* It's not easy here to count the arguments, so assume the
+        -: 1031:         worst.  */
+    #####: 1032:      hash_all = true;
+        -: 1033:    }
+        -: 1034:  else
+        -: 1035:    {
+        5: 1036:      char **files = (optind < argc ? argv + optind : cwd_only);
+branch  0 taken 80% (fallthrough)
+branch  1 taken 20%
+        5: 1037:      ai = argv_iter_init_argv (files);
+call    0 returned 100%
+        -: 1038:
+        -: 1039:      /* Hash all dev,ino pairs if there are multiple arguments, or if
+        -: 1040:         following non-command-line symlinks, because in either case a
+        -: 1041:         file with just one hard link might be seen more than once.  */
+       5*: 1042:      hash_all = (optind + 1 < argc || symlink_deref_bits == FTS_LOGICAL);
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+        -: 1043:    }
+        -: 1044:
+        5: 1045:  if (!ai)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1046:    xalloc_die ();
+call    0 never executed
+        -: 1047:
+        -: 1048:  /* Initialize the set of dev,inode pairs.  */
+        5: 1049:  di_files = di_set_alloc ();
+call    0 returned 100%
+        5: 1050:  if (!di_files)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1051:    xalloc_die ();
+call    0 never executed
+        -: 1052:
+        -: 1053:  /* If not hashing everything, process_file won't find cycles on its
+        -: 1054:     own, so ask fts_read to check for them accurately.  */
+        5: 1055:  if (opt_count_all || ! hash_all)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        5: 1056:    bit_flags |= FTS_TIGHT_CYCLE_CHECK;
+        -: 1057:
+        5: 1058:  bit_flags |= symlink_deref_bits;
+        -: 1059:  static char *temp_argv[] = { nullptr, nullptr };
+        -: 1060:
+        -: 1061:  while (true)
+        5: 1062:    {
+       10: 1063:      bool skip_file = false;
+        -: 1064:      enum argv_iter_err ai_err;
+       10: 1065:      char *file_name = argv_iter (ai, &ai_err);
+call    0 returned 100%
+       10: 1066:      if (!file_name)
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+        -: 1067:        {
+        5: 1068:          switch (ai_err)
+branch  0 taken 100%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+        -: 1069:            {
+        5: 1070:            case AI_ERR_EOF:
+        5: 1071:              goto argv_iter_done;
+    #####: 1072:            case AI_ERR_READ:
+    #####: 1073:              error (0, errno, _("%s: read error"),
+call    0 never executed
+        -: 1074:                     quotef (files_from));
+    #####: 1075:              ok = false;
+    #####: 1076:              goto argv_iter_done;
+    #####: 1077:            case AI_ERR_MEM:
+    #####: 1078:              xalloc_die ();
+call    0 never executed
+    #####: 1079:            default:
+    #####: 1080:              affirm (!"unexpected error code from argv_iter");
+call    0 never executed
+        -: 1081:            }
+        -: 1082:        }
+       5*: 1083:      if (files_from && STREQ (files_from, "-") && STREQ (file_name, "-"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -: 1084:        {
+        -: 1085:          /* Give a better diagnostic in an unusual case:
+        -: 1086:             printf - | du --files0-from=- */
+    #####: 1087:          error (0, 0, _("when reading file names from stdin, "
+call    0 never executed
+        -: 1088:                         "no file name of %s allowed"),
+        -: 1089:                 quoteaf (file_name));
+    #####: 1090:          skip_file = true;
+        -: 1091:        }
+        -: 1092:
+        -: 1093:      /* Report and skip any empty file names before invoking fts.
+        -: 1094:         This works around a glitch in fts, which fails immediately
+        -: 1095:         (without looking at the other file names) when given an empty
+        -: 1096:         file name.  */
+        5: 1097:      if (!file_name[0])
+branch  0 taken 20% (fallthrough)
+branch  1 taken 80%
+        -: 1098:        {
+        -: 1099:          /* Diagnose a zero-length file name.  When it's one
+        -: 1100:             among many, knowing the record number may help.
+        -: 1101:             FIXME: currently print the record number only with
+        -: 1102:             --files0-from=FILE.  Maybe do it for argv, too?  */
+        1: 1103:          if (files_from == nullptr)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -: 1104:            error (0, 0, "%s", _("invalid zero-length file name"));
+        -: 1105:          else
+        -: 1106:            {
+        -: 1107:              /* Using the standard 'filename:line-number:' prefix here is
+        -: 1108:                 not totally appropriate, since NUL is the separator, not NL,
+        -: 1109:                 but it might be better than nothing.  */
+    #####: 1110:              idx_t file_number = argv_iter_n_args (ai);
+    #####: 1111:              error (0, 0, "%s:%td: %s", quotef (files_from),
+call    0 never executed
+        -: 1112:                     file_number, _("invalid zero-length file name"));
+        -: 1113:            }
+        1: 1114:          skip_file = true;
+        -: 1115:        }
+        -: 1116:
+        5: 1117:      if (skip_file)
+branch  0 taken 20% (fallthrough)
+branch  1 taken 80%
+        1: 1118:        ok = false;
+        -: 1119:      else
+        -: 1120:        {
+        4: 1121:          temp_argv[0] = file_name;
+        4: 1122:          ok &= du_files (temp_argv, bit_flags);
+call    0 returned 100%
+        -: 1123:        }
+        -: 1124:    }
+        5: 1125: argv_iter_done:
+        -: 1126:
+        5: 1127:  argv_iter_free (ai);
+call    0 returned 100%
+        5: 1128:  di_set_free (di_files);
+call    0 returned 100%
+        5: 1129:  if (di_mnt)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1130:    di_set_free (di_mnt);
+call    0 never executed
+        -: 1131:
+       5*: 1132:  if (files_from && (ferror (stdin) || fclose (stdin) != 0) && ok)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+call    5 never executed
+branch  6 never executed
+branch  7 never executed
+branch  8 never executed
+branch  9 never executed
+    #####: 1133:    error (EXIT_FAILURE, 0, _("error reading %s"), quoteaf (files_from));
+call    0 never executed
+call    1 never executed
+        -: 1134:
+        5: 1135:  if (print_grand_total)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1136:    print_size (&tot_dui, _("total"));
+call    0 never executed
+        -: 1137:
+        5: 1138:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -: 1139:}

@@ -1,0 +1,492 @@
+        -:    0:Source:src/uname.c
+        -:    0:Graph:uname.gcno
+        -:    0:Data:uname.gcda
+        -:    0:Runs:23
+        -:    1:/* uname -- print system information
+        -:    2:
+        -:    3:   Copyright (C) 1989-2023 Free Software Foundation, Inc.
+        -:    4:
+        -:    5:   This program is free software: you can redistribute it and/or modify
+        -:    6:   it under the terms of the GNU General Public License as published by
+        -:    7:   the Free Software Foundation, either version 3 of the License, or
+        -:    8:   (at your option) any later version.
+        -:    9:
+        -:   10:   This program is distributed in the hope that it will be useful,
+        -:   11:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   12:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   13:   GNU General Public License for more details.
+        -:   14:
+        -:   15:   You should have received a copy of the GNU General Public License
+        -:   16:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   17:
+        -:   18:/* Written by David MacKenzie <djm@gnu.ai.mit.edu> */
+        -:   19:
+        -:   20:#include <config.h>
+        -:   21:#include <stdio.h>
+        -:   22:#include <sys/types.h>
+        -:   23:#include <sys/utsname.h>
+        -:   24:#include <getopt.h>
+        -:   25:
+        -:   26:#if HAVE_SYSINFO && HAVE_SYS_SYSTEMINFO_H
+        -:   27:# include <sys/systeminfo.h>
+        -:   28:#endif
+        -:   29:
+        -:   30:#if HAVE_SYS_SYSCTL_H && ! defined __GLIBC__ && ! defined __APPLE__
+        -:   31:# if HAVE_SYS_PARAM_H
+        -:   32:#  include <sys/param.h> /* needed for OpenBSD 3.0 */
+        -:   33:# endif
+        -:   34:# include <sys/sysctl.h>
+        -:   35:# ifdef HW_MODEL
+        -:   36:#  ifdef HW_MACHINE_ARCH
+        -:   37:/* E.g., FreeBSD 4.5, NetBSD 1.5.2 */
+        -:   38:#   define UNAME_HARDWARE_PLATFORM HW_MODEL
+        -:   39:#   define UNAME_PROCESSOR HW_MACHINE_ARCH
+        -:   40:#  else
+        -:   41:/* E.g., OpenBSD 3.0 */
+        -:   42:#   define UNAME_PROCESSOR HW_MODEL
+        -:   43:#  endif
+        -:   44:# endif
+        -:   45:#endif
+        -:   46:
+        -:   47:#include "system.h"
+        -:   48:#include "quote.h"
+        -:   49:#include "uname.h"
+        -:   50:
+        -:   51:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   52:#define PROGRAM_NAME (uname_mode == UNAME_UNAME ? "uname" : "arch")
+        -:   53:
+        -:   54:#define AUTHORS proper_name ("David MacKenzie")
+        -:   55:#define ARCH_AUTHORS "David MacKenzie", "Karel Zak"
+        -:   56:
+        -:   57:/* Values that are bitwise or'd into 'toprint'. */
+        -:   58:/* Kernel name. */
+        -:   59:#define PRINT_KERNEL_NAME 1
+        -:   60:
+        -:   61:/* Node name on a communications network. */
+        -:   62:#define PRINT_NODENAME 2
+        -:   63:
+        -:   64:/* Kernel release. */
+        -:   65:#define PRINT_KERNEL_RELEASE 4
+        -:   66:
+        -:   67:/* Kernel version. */
+        -:   68:#define PRINT_KERNEL_VERSION 8
+        -:   69:
+        -:   70:/* Machine hardware name. */
+        -:   71:#define PRINT_MACHINE 16
+        -:   72:
+        -:   73:/* Processor type. */
+        -:   74:#define PRINT_PROCESSOR 32
+        -:   75:
+        -:   76:/* Hardware platform.  */
+        -:   77:#define PRINT_HARDWARE_PLATFORM 64
+        -:   78:
+        -:   79:/* Operating system.  */
+        -:   80:#define PRINT_OPERATING_SYSTEM 128
+        -:   81:
+        -:   82:static struct option const uname_long_options[] =
+        -:   83:{
+        -:   84:  {"all", no_argument, nullptr, 'a'},
+        -:   85:  {"kernel-name", no_argument, nullptr, 's'},
+        -:   86:  {"sysname", no_argument, nullptr, 's'},	/* Obsolescent.  */
+        -:   87:  {"nodename", no_argument, nullptr, 'n'},
+        -:   88:  {"kernel-release", no_argument, nullptr, 'r'},
+        -:   89:  {"release", no_argument, nullptr, 'r'},  /* Obsolescent.  */
+        -:   90:  {"kernel-version", no_argument, nullptr, 'v'},
+        -:   91:  {"machine", no_argument, nullptr, 'm'},
+        -:   92:  {"processor", no_argument, nullptr, 'p'},
+        -:   93:  {"hardware-platform", no_argument, nullptr, 'i'},
+        -:   94:  {"operating-system", no_argument, nullptr, 'o'},
+        -:   95:  {GETOPT_HELP_OPTION_DECL},
+        -:   96:  {GETOPT_VERSION_OPTION_DECL},
+        -:   97:  {nullptr, 0, nullptr, 0}
+        -:   98:};
+        -:   99:
+        -:  100:static struct option const arch_long_options[] =
+        -:  101:{
+        -:  102:  {GETOPT_HELP_OPTION_DECL},
+        -:  103:  {GETOPT_VERSION_OPTION_DECL},
+        -:  104:  {nullptr, 0, nullptr, 0}
+        -:  105:};
+        -:  106:
+        -:  107:void
+function usage called 22 returned 0% blocks executed 21%
+       22:  108:usage (int status)
+        -:  109:{
+       22:  110:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       22:  111:    emit_try_help ();
+call    0 returned 100%
+        -:  112:  else
+        -:  113:    {
+    #####:  114:      printf (_("Usage: %s [OPTION]...\n"), program_name);
+call    0 never executed
+        -:  115:
+    #####:  116:      if (uname_mode == UNAME_UNAME)
+branch  0 never executed
+branch  1 never executed
+        -:  117:        {
+    #####:  118:          fputs (_("\
+call    0 never executed
+        -:  119:Print certain system information.  With no OPTION, same as -s.\n\
+        -:  120:\n\
+        -:  121:  -a, --all                print all information, in the following order,\n\
+        -:  122:                             except omit -p and -i if unknown:\n\
+        -:  123:  -s, --kernel-name        print the kernel name\n\
+        -:  124:  -n, --nodename           print the network node hostname\n\
+        -:  125:  -r, --kernel-release     print the kernel release\n\
+        -:  126:"), stdout);
+    #####:  127:          fputs (_("\
+call    0 never executed
+        -:  128:  -v, --kernel-version     print the kernel version\n\
+        -:  129:  -m, --machine            print the machine hardware name\n\
+        -:  130:  -p, --processor          print the processor type (non-portable)\n\
+        -:  131:  -i, --hardware-platform  print the hardware platform (non-portable)\n\
+        -:  132:  -o, --operating-system   print the operating system\n\
+        -:  133:"), stdout);
+        -:  134:        }
+        -:  135:      else
+        -:  136:        {
+    #####:  137:          fputs (_("\
+call    0 never executed
+        -:  138:Print machine architecture.\n\
+        -:  139:\n\
+        -:  140:"), stdout);
+        -:  141:        }
+        -:  142:
+    #####:  143:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  144:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  145:      emit_ancillary_info (PROGRAM_NAME);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  146:    }
+       22:  147:  exit (status);
+        -:  148:}
+        -:  149:
+        -:  150:/* Print ELEMENT, preceded by a space if something has already been
+        -:  151:   printed.  */
+        -:  152:
+        -:  153:static void
+function print_element called 1 returned 100% blocks executed 75%
+        1:  154:print_element (char const *element)
+        -:  155:{
+        -:  156:  static bool printed;
+        1:  157:  if (printed)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  158:    putchar (' ');
+call    0 never executed
+        1:  159:  printed = true;
+        1:  160:  fputs (element, stdout);
+call    0 returned 100%
+        1:  161:}
+        -:  162:
+        -:  163:/* Print ELEMENT, preceded by a space if something has already been
+        -:  164:   printed.  But if the environment variable ENVVAR is set, print its
+        -:  165:   value instead of ELEMENT.  */
+        -:  166:
+        -:  167:static void
+function print_element_env called 1 returned 100% blocks executed 100%
+        1:  168:print_element_env (char const *element, MAYBE_UNUSED char const *envvar)
+        -:  169:{
+        -:  170:#ifdef __APPLE__
+        -:  171:  if (envvar)
+        -:  172:    {
+        -:  173:      char const *val = getenv (envvar);
+        -:  174:      if (val)
+        -:  175:        element = val;
+        -:  176:    }
+        -:  177:#endif
+        1:  178:  print_element (element);
+call    0 returned 100%
+        1:  179:}
+        -:  180:
+        -:  181:
+        -:  182:/* Set all the option flags according to the switches specified.
+        -:  183:   Return the mask indicating which elements to print.  */
+        -:  184:
+        -:  185:static int
+function decode_switches called 23 returned 4% blocks executed 33%
+       23:  186:decode_switches (int argc, char **argv)
+        -:  187:{
+        -:  188:  int c;
+       23:  189:  unsigned int toprint = 0;
+        -:  190:
+       23:  191:  if (uname_mode == UNAME_ARCH)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  192:    {
+    #####:  193:      while ((c = getopt_long (argc, argv, "",
+call    0 never executed
+        -:  194:                               arch_long_options, nullptr))
+    #####:  195:             != -1)
+branch  0 never executed
+branch  1 never executed
+        -:  196:        {
+    #####:  197:          switch (c)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  198:            {
+    #####:  199:            case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  200:
+    #####:  201:            case_GETOPT_VERSION_CHAR (PROGRAM_NAME, ARCH_AUTHORS);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+        -:  202:
+    #####:  203:            default:
+    #####:  204:              usage (EXIT_FAILURE);
+call    0 never executed
+        -:  205:            }
+        -:  206:        }
+    #####:  207:      toprint = PRINT_MACHINE;
+        -:  208:    }
+        -:  209:  else
+        -:  210:    {
+       23:  211:      while ((c = getopt_long (argc, argv, "asnrvmpio",
+call    0 returned 100%
+        -:  212:                               uname_long_options, nullptr))
+       23:  213:             != -1)
+branch  0 taken 4%
+branch  1 taken 96% (fallthrough)
+        -:  214:        {
+        1:  215:          switch (c)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 100%
+        -:  216:            {
+    #####:  217:            case 'a':
+    #####:  218:              toprint = UINT_MAX;
+    #####:  219:              break;
+        -:  220:
+    #####:  221:            case 's':
+    #####:  222:              toprint |= PRINT_KERNEL_NAME;
+    #####:  223:              break;
+        -:  224:
+    #####:  225:            case 'n':
+    #####:  226:              toprint |= PRINT_NODENAME;
+    #####:  227:              break;
+        -:  228:
+    #####:  229:            case 'r':
+    #####:  230:              toprint |= PRINT_KERNEL_RELEASE;
+    #####:  231:              break;
+        -:  232:
+    #####:  233:            case 'v':
+    #####:  234:              toprint |= PRINT_KERNEL_VERSION;
+    #####:  235:              break;
+        -:  236:
+    #####:  237:            case 'm':
+    #####:  238:              toprint |= PRINT_MACHINE;
+    #####:  239:              break;
+        -:  240:
+    #####:  241:            case 'p':
+    #####:  242:              toprint |= PRINT_PROCESSOR;
+    #####:  243:              break;
+        -:  244:
+    #####:  245:            case 'i':
+    #####:  246:              toprint |= PRINT_HARDWARE_PLATFORM;
+    #####:  247:              break;
+        -:  248:
+    #####:  249:            case 'o':
+    #####:  250:              toprint |= PRINT_OPERATING_SYSTEM;
+    #####:  251:              break;
+        -:  252:
+    #####:  253:            case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  254:
+    #####:  255:            case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+call    3 never executed
+call    4 never executed
+        -:  256:
+        1:  257:            default:
+        1:  258:              usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  259:            }
+        -:  260:        }
+        -:  261:    }
+        -:  262:
+       22:  263:  if (argc != optind)
+branch  0 taken 95% (fallthrough)
+branch  1 taken 5%
+        -:  264:    {
+       21:  265:      error (0, 0, _("extra operand %s"), quote (argv[optind]));
+call    0 returned 100%
+       21:  266:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  267:    }
+        -:  268:
+        1:  269:  return toprint;
+        -:  270:}
+        -:  271:
+        -:  272:int
+function main called 23 returned 4% blocks executed 59%
+       23:  273:main (int argc, char **argv)
+        -:  274:{
+        -:  275:  static char const unknown[] = "unknown";
+        -:  276:
+        -:  277:  /* Mask indicating which elements to print. */
+       23:  278:  unsigned int toprint = 0;
+        -:  279:
+        -:  280:  initialize_main (&argc, &argv);
+       23:  281:  set_program_name (argv[0]);
+call    0 returned 100%
+       23:  282:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  283:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  284:  textdomain (PACKAGE);
+        -:  285:
+       23:  286:  atexit (close_stdout);
+call    0 returned 100%
+        -:  287:
+       23:  288:  toprint = decode_switches (argc, argv);
+call    0 returned 4%
+        -:  289:
+        1:  290:  if (toprint == 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  291:    toprint = PRINT_KERNEL_NAME;
+        -:  292:
+        1:  293:  if (toprint
+        1:  294:       & (PRINT_KERNEL_NAME | PRINT_NODENAME | PRINT_KERNEL_RELEASE
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  295:          | PRINT_KERNEL_VERSION | PRINT_MACHINE))
+        -:  296:    {
+        -:  297:      struct utsname name;
+        -:  298:
+        1:  299:      if (uname (&name) == -1)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  300:        error (EXIT_FAILURE, errno, _("cannot get system name"));
+call    0 never executed
+        -:  301:
+        1:  302:      if (toprint & PRINT_KERNEL_NAME)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  303:        print_element_env (name.sysname, "UNAME_SYSNAME");
+call    0 returned 100%
+        1:  304:      if (toprint & PRINT_NODENAME)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  305:        print_element_env (name.nodename, "UNAME_NODENAME");
+call    0 never executed
+        1:  306:      if (toprint & PRINT_KERNEL_RELEASE)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  307:        print_element_env (name.release, "UNAME_RELEASE");
+call    0 never executed
+        1:  308:      if (toprint & PRINT_KERNEL_VERSION)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  309:        print_element_env (name.version, "UNAME_VERSION");
+call    0 never executed
+        1:  310:      if (toprint & PRINT_MACHINE)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  311:        print_element_env (name.machine, "UNAME_MACHINE");
+call    0 never executed
+        -:  312:    }
+        -:  313:
+        1:  314:  if (toprint & PRINT_PROCESSOR)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  315:    {
+    #####:  316:      char const *element = unknown;
+        -:  317:#ifdef __APPLE__
+        -:  318:# if defined __arm__ || defined __arm64__
+        -:  319:      element = "arm";
+        -:  320:# elif defined __i386__ || defined __x86_64__
+        -:  321:      element = "i386";
+        -:  322:# elif defined __ppc__ || defined __ppc64__
+        -:  323:      element = "powerpc";
+        -:  324:# endif
+        -:  325:#endif
+        -:  326:#if HAVE_SYSINFO && defined SI_ARCHITECTURE
+        -:  327:      if (element == unknown)
+        -:  328:        {
+        -:  329:          static char processor[257];
+        -:  330:          if (0 <= sysinfo (SI_ARCHITECTURE, processor, sizeof processor))
+        -:  331:            element = processor;
+        -:  332:        }
+        -:  333:#endif
+        -:  334:#ifdef UNAME_PROCESSOR
+        -:  335:      if (element == unknown)
+        -:  336:        {
+        -:  337:          static char processor[257];
+        -:  338:          size_t s = sizeof processor;
+        -:  339:          static int mib[] = { CTL_HW, UNAME_PROCESSOR };
+        -:  340:          if (sysctl (mib, 2, processor, &s, 0, 0) >= 0)
+        -:  341:            element = processor;
+        -:  342:        }
+        -:  343:#endif
+    #####:  344:      if (! (toprint == UINT_MAX && element == unknown))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  345:        print_element (element);
+call    0 never executed
+        -:  346:    }
+        -:  347:
+        1:  348:  if (toprint & PRINT_HARDWARE_PLATFORM)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  349:    {
+    #####:  350:      char const *element = unknown;
+        -:  351:#if HAVE_SYSINFO && defined SI_PLATFORM
+        -:  352:      {
+        -:  353:        static char hardware_platform[257];
+        -:  354:        if (0 <= sysinfo (SI_PLATFORM,
+        -:  355:                          hardware_platform, sizeof hardware_platform))
+        -:  356:          element = hardware_platform;
+        -:  357:      }
+        -:  358:#endif
+        -:  359:#ifdef UNAME_HARDWARE_PLATFORM
+        -:  360:      if (element == unknown)
+        -:  361:        {
+        -:  362:          static char hardware_platform[257];
+        -:  363:          size_t s = sizeof hardware_platform;
+        -:  364:          static int mib[] = { CTL_HW, UNAME_HARDWARE_PLATFORM };
+        -:  365:          if (sysctl (mib, 2, hardware_platform, &s, 0, 0) >= 0)
+        -:  366:            element = hardware_platform;
+        -:  367:        }
+        -:  368:#endif
+    #####:  369:      if (! (toprint == UINT_MAX && element == unknown))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  370:        print_element (element);
+call    0 never executed
+        -:  371:    }
+        -:  372:
+        1:  373:  if (toprint & PRINT_OPERATING_SYSTEM)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  374:    print_element (HOST_OPERATING_SYSTEM);
+call    0 never executed
+        -:  375:
+        1:  376:  putchar ('\n');
+call    0 returned 100%
+        -:  377:
+        1:  378:  return EXIT_SUCCESS;
+        -:  379:}

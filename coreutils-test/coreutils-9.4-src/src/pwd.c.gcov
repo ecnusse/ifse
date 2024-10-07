@@ -1,0 +1,560 @@
+        -:    0:Source:src/pwd.c
+        -:    0:Graph:pwd.gcno
+        -:    0:Data:pwd.gcda
+        -:    0:Runs:6
+        -:    1:/* pwd - print current directory
+        -:    2:   Copyright (C) 1994-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:#include <config.h>
+        -:   18:#include <getopt.h>
+        -:   19:#include <stdio.h>
+        -:   20:#include <sys/types.h>
+        -:   21:
+        -:   22:#include "system.h"
+        -:   23:#include "quote.h"
+        -:   24:#include "root-dev-ino.h"
+        -:   25:#include "xgetcwd.h"
+        -:   26:
+        -:   27:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   28:#define PROGRAM_NAME "pwd"
+        -:   29:
+        -:   30:#define AUTHORS proper_name ("Jim Meyering")
+        -:   31:
+        -:   32:struct file_name
+        -:   33:{
+        -:   34:  char *buf;
+        -:   35:  size_t n_alloc;
+        -:   36:  char *start;
+        -:   37:};
+        -:   38:
+        -:   39:static struct option const longopts[] =
+        -:   40:{
+        -:   41:  {"logical", no_argument, nullptr, 'L'},
+        -:   42:  {"physical", no_argument, nullptr, 'P'},
+        -:   43:  {GETOPT_HELP_OPTION_DECL},
+        -:   44:  {GETOPT_VERSION_OPTION_DECL},
+        -:   45:  {nullptr, 0, nullptr, 0}
+        -:   46:};
+        -:   47:
+        -:   48:void
+function usage called 1 returned 0% blocks executed 27%
+        1:   49:usage (int status)
+        -:   50:{
+        1:   51:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:   52:    emit_try_help ();
+call    0 returned 100%
+        -:   53:  else
+        -:   54:    {
+    #####:   55:      printf (_("Usage: %s [OPTION]...\n"), program_name);
+call    0 never executed
+    #####:   56:      fputs (_("\
+call    0 never executed
+        -:   57:Print the full filename of the current working directory.\n\
+        -:   58:\n\
+        -:   59:"), stdout);
+    #####:   60:      fputs (_("\
+call    0 never executed
+        -:   61:  -L, --logical   use PWD from environment, even if it contains symlinks\n\
+        -:   62:  -P, --physical  avoid all symlinks\n\
+        -:   63:"), stdout);
+    #####:   64:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   65:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   66:      fputs (_("\n\
+call    0 never executed
+        -:   67:If no option is specified, -P is assumed.\n\
+        -:   68:"), stdout);
+    #####:   69:      printf (USAGE_BUILTIN_WARNING, PROGRAM_NAME);
+call    0 never executed
+    #####:   70:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   71:    }
+        1:   72:  exit (status);
+        -:   73:}
+        -:   74:
+        -:   75:static void
+function file_name_free called 0 returned 0% blocks executed 0%
+    #####:   76:file_name_free (struct file_name *p)
+        -:   77:{
+    #####:   78:  free (p->buf);
+    #####:   79:  free (p);
+    #####:   80:}
+        -:   81:
+        -:   82:static struct file_name *
+function file_name_init called 0 returned 0% blocks executed 0%
+    #####:   83:file_name_init (void)
+        -:   84:{
+    #####:   85:  struct file_name *p = xmalloc (sizeof *p);
+call    0 never executed
+        -:   86:
+        -:   87:  /* Start with a buffer larger than PATH_MAX, but beware of systems
+        -:   88:     on which PATH_MAX is very large -- e.g., INT_MAX.  */
+    #####:   89:  p->n_alloc = MIN (2 * PATH_MAX, 32 * 1024);
+        -:   90:
+    #####:   91:  p->buf = xmalloc (p->n_alloc);
+call    0 never executed
+    #####:   92:  p->start = p->buf + (p->n_alloc - 1);
+    #####:   93:  p->start[0] = '\0';
+    #####:   94:  return p;
+        -:   95:}
+        -:   96:
+        -:   97:/* Prepend the name S of length S_LEN, to the growing file_name, P.  */
+        -:   98:static void
+function file_name_prepend called 0 returned 0% blocks executed 0%
+    #####:   99:file_name_prepend (struct file_name *p, char const *s, size_t s_len)
+        -:  100:{
+    #####:  101:  size_t n_free = p->start - p->buf;
+    #####:  102:  if (n_free < 1 + s_len)
+branch  0 never executed
+branch  1 never executed
+        -:  103:    {
+    #####:  104:      size_t half = p->n_alloc + 1 + s_len;
+        -:  105:      /* Use xnmalloc+free rather than xnrealloc, since with the latter
+        -:  106:         we'd end up copying the data twice: once via realloc, then again
+        -:  107:         to align it with the end of the new buffer.  With xnmalloc, we
+        -:  108:         copy it only once.  */
+    #####:  109:      char *q = xnmalloc (2, half);
+call    0 never executed
+    #####:  110:      size_t n_used = p->n_alloc - n_free;
+    #####:  111:      p->start = q + 2 * half - n_used;
+    #####:  112:      memcpy (p->start, p->buf + n_free, n_used);
+    #####:  113:      free (p->buf);
+    #####:  114:      p->buf = q;
+    #####:  115:      p->n_alloc = 2 * half;
+        -:  116:    }
+        -:  117:
+    #####:  118:  p->start -= 1 + s_len;
+    #####:  119:  p->start[0] = '/';
+    #####:  120:  memcpy (p->start + 1, s, s_len);
+    #####:  121:}
+        -:  122:
+        -:  123:/* Return a string (malloc'd) consisting of N '/'-separated ".." components.  */
+        -:  124:static char *
+function nth_parent called 0 returned 0% blocks executed 0%
+    #####:  125:nth_parent (size_t n)
+        -:  126:{
+    #####:  127:  char *buf = xnmalloc (3, n);
+call    0 never executed
+    #####:  128:  char *p = buf;
+        -:  129:
+    #####:  130:  for (size_t i = 0; i < n; i++)
+branch  0 never executed
+branch  1 never executed
+        -:  131:    {
+    #####:  132:      memcpy (p, "../", 3);
+    #####:  133:      p += 3;
+        -:  134:    }
+    #####:  135:  p[-1] = '\0';
+    #####:  136:  return buf;
+        -:  137:}
+        -:  138:
+        -:  139:/* Determine the basename of the current directory, where DOT_SB is the
+        -:  140:   result of lstat'ing "." and prepend that to the file name in *FILE_NAME.
+        -:  141:   Find the directory entry in '..' that matches the dev/i-node of DOT_SB.
+        -:  142:   Upon success, update *DOT_SB with stat information of '..', chdir to '..',
+        -:  143:   and prepend "/basename" to FILE_NAME.
+        -:  144:   Otherwise, exit with a diagnostic.
+        -:  145:   PARENT_HEIGHT is the number of levels '..' is above the starting directory.
+        -:  146:   The first time this function is called (from the initial directory),
+        -:  147:   PARENT_HEIGHT is 1.  This is solely for diagnostics.
+        -:  148:   Exit nonzero upon error.  */
+        -:  149:
+        -:  150:static void
+function find_dir_entry called 0 returned 0% blocks executed 0%
+    #####:  151:find_dir_entry (struct stat *dot_sb, struct file_name *file_name,
+        -:  152:                size_t parent_height)
+        -:  153:{
+        -:  154:  DIR *dirp;
+        -:  155:  int fd;
+        -:  156:  struct stat parent_sb;
+        -:  157:  bool use_lstat;
+        -:  158:  bool found;
+        -:  159:
+    #####:  160:  dirp = opendir ("..");
+call    0 never executed
+    #####:  161:  if (dirp == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  162:    error (EXIT_FAILURE, errno, _("cannot open directory %s"),
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  163:           quote (nth_parent (parent_height)));
+        -:  164:
+    #####:  165:  fd = dirfd (dirp);
+call    0 never executed
+    #####:  166:  if ((0 <= fd ? fchdir (fd) : chdir ("..")) < 0)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  167:    error (EXIT_FAILURE, errno, _("failed to chdir to %s"),
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  168:           quote (nth_parent (parent_height)));
+        -:  169:
+    #####:  170:  if ((0 <= fd ? fstat (fd, &parent_sb) : stat (".", &parent_sb)) < 0)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  171:    error (EXIT_FAILURE, errno, _("failed to stat %s"),
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  172:           quote (nth_parent (parent_height)));
+        -:  173:
+        -:  174:  /* If parent and child directory are on different devices, then we
+        -:  175:     can't rely on d_ino for useful i-node numbers; use lstat instead.  */
+    #####:  176:  use_lstat = (parent_sb.st_dev != dot_sb->st_dev);
+        -:  177:
+    #####:  178:  found = false;
+        -:  179:  while (true)
+    #####:  180:    {
+        -:  181:      struct dirent const *dp;
+        -:  182:      struct stat ent_sb;
+        -:  183:      ino_t ino;
+        -:  184:
+    #####:  185:      errno = 0;
+    #####:  186:      if ((dp = readdir_ignoring_dot_and_dotdot (dirp)) == nullptr)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  187:        {
+    #####:  188:          if (errno)
+branch  0 never executed
+branch  1 never executed
+        -:  189:            {
+        -:  190:              /* Save/restore errno across closedir call.  */
+    #####:  191:              int e = errno;
+    #####:  192:              closedir (dirp);
+call    0 never executed
+    #####:  193:              errno = e;
+        -:  194:
+        -:  195:              /* Arrange to give a diagnostic after exiting this loop.  */
+    #####:  196:              dirp = nullptr;
+        -:  197:            }
+    #####:  198:          break;
+        -:  199:        }
+        -:  200:
+    #####:  201:      ino = D_INO (dp);
+        -:  202:
+    #####:  203:      if (ino == NOT_AN_INODE_NUMBER || use_lstat)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  204:        {
+    #####:  205:          if (lstat (dp->d_name, &ent_sb) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  206:            {
+        -:  207:              /* Skip any entry we can't stat.  */
+    #####:  208:              continue;
+        -:  209:            }
+    #####:  210:          ino = ent_sb.st_ino;
+        -:  211:        }
+        -:  212:
+    #####:  213:      if (ino != dot_sb->st_ino)
+branch  0 never executed
+branch  1 never executed
+    #####:  214:        continue;
+        -:  215:
+        -:  216:      /* If we're not crossing a device boundary, then a simple i-node
+        -:  217:         match is enough.  */
+    #####:  218:      if ( ! use_lstat || ent_sb.st_dev == dot_sb->st_dev)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  219:        {
+    #####:  220:          file_name_prepend (file_name, dp->d_name, _D_EXACT_NAMLEN (dp));
+call    0 never executed
+    #####:  221:          found = true;
+    #####:  222:          break;
+        -:  223:        }
+        -:  224:    }
+        -:  225:
+    #####:  226:  if (dirp == nullptr || closedir (dirp) != 0)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  227:    {
+        -:  228:      /* Note that this diagnostic serves for both readdir
+        -:  229:         and closedir failures.  */
+    #####:  230:      error (EXIT_FAILURE, errno, _("reading directory %s"),
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  231:             quote (nth_parent (parent_height)));
+        -:  232:    }
+        -:  233:
+    #####:  234:  if ( ! found)
+branch  0 never executed
+branch  1 never executed
+    #####:  235:    error (EXIT_FAILURE, 0,
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  236:           _("couldn't find directory entry in %s with matching i-node"),
+        -:  237:           quote (nth_parent (parent_height)));
+        -:  238:
+    #####:  239:  *dot_sb = parent_sb;
+    #####:  240:}
+        -:  241:
+        -:  242:/* Construct the full, absolute name of the current working
+        -:  243:   directory and store it in *FILE_NAME.
+        -:  244:   The getcwd function performs nearly the same task, but is typically
+        -:  245:   unable to handle names longer than PATH_MAX.  This function has
+        -:  246:   no such limitation.  However, this function *can* fail due to
+        -:  247:   permission problems or a lack of memory, while GNU/Linux's getcwd
+        -:  248:   function works regardless of restricted permissions on parent
+        -:  249:   directories.  Upon failure, give a diagnostic and exit nonzero.
+        -:  250:
+        -:  251:   Note: although this function is similar to getcwd, it has a fundamental
+        -:  252:   difference in that it gives a diagnostic and exits upon failure.
+        -:  253:   I would have liked a function that did not exit, and that could be
+        -:  254:   used as a getcwd replacement.  Unfortunately, considering all of
+        -:  255:   the information the caller would require in order to produce good
+        -:  256:   diagnostics, it doesn't seem worth the added complexity.
+        -:  257:   In any case, any getcwd replacement must *not* exceed the PATH_MAX
+        -:  258:   limitation.  Otherwise, functions like 'chdir' would fail with
+        -:  259:   ENAMETOOLONG.
+        -:  260:
+        -:  261:   FIXME-maybe: if find_dir_entry fails due to permissions, try getcwd,
+        -:  262:   in case the unreadable directory is close enough to the root that
+        -:  263:   getcwd works from there.  */
+        -:  264:
+        -:  265:static void
+function robust_getcwd called 0 returned 0% blocks executed 0%
+    #####:  266:robust_getcwd (struct file_name *file_name)
+        -:  267:{
+    #####:  268:  size_t height = 1;
+        -:  269:  struct dev_ino dev_ino_buf;
+    #####:  270:  struct dev_ino *root_dev_ino = get_root_dev_ino (&dev_ino_buf);
+call    0 never executed
+        -:  271:  struct stat dot_sb;
+        -:  272:
+    #####:  273:  if (root_dev_ino == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  274:    error (EXIT_FAILURE, errno, _("failed to get attributes of %s"),
+call    0 never executed
+call    1 never executed
+        -:  275:           quoteaf ("/"));
+        -:  276:
+    #####:  277:  if (stat (".", &dot_sb) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  278:    error (EXIT_FAILURE, errno, _("failed to stat %s"), quoteaf ("."));
+call    0 never executed
+call    1 never executed
+        -:  279:
+        -:  280:  while (true)
+        -:  281:    {
+        -:  282:      /* If we've reached the root, we're done.  */
+    #####:  283:      if (SAME_INODE (dot_sb, *root_dev_ino))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  284:        break;
+        -:  285:
+    #####:  286:      find_dir_entry (&dot_sb, file_name, height++);
+call    0 never executed
+        -:  287:    }
+        -:  288:
+        -:  289:  /* See if a leading slash is needed; file_name_prepend adds one.  */
+    #####:  290:  if (file_name->start[0] == '\0')
+branch  0 never executed
+branch  1 never executed
+    #####:  291:    file_name_prepend (file_name, "", 0);
+call    0 never executed
+    #####:  292:}
+        -:  293:
+        -:  294:
+        -:  295:/* Return PWD from the environment if it is acceptable for 'pwd -L'
+        -:  296:   output, otherwise nullptr.  */
+        -:  297:static char *
+function logical_getcwd called 0 returned 0% blocks executed 0%
+    #####:  298:logical_getcwd (void)
+        -:  299:{
+        -:  300:  struct stat st1;
+        -:  301:  struct stat st2;
+    #####:  302:  char *wd = getenv ("PWD");
+call    0 never executed
+        -:  303:  char *p;
+        -:  304:
+        -:  305:  /* Textual validation first.  */
+    #####:  306:  if (!wd || wd[0] != '/')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  307:    return nullptr;
+    #####:  308:  p = wd;
+    #####:  309:  while ((p = strstr (p, "/.")))
+branch  0 never executed
+branch  1 never executed
+        -:  310:    {
+    #####:  311:      if (!p[2] || p[2] == '/'
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  312:          || (p[2] == '.' && (!p[3] || p[3] == '/')))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  313:        return nullptr;
+    #####:  314:      p++;
+        -:  315:    }
+        -:  316:
+        -:  317:  /* System call validation.  */
+    #####:  318:  if (stat (wd, &st1) == 0 && stat (".", &st2) == 0 && SAME_INODE (st1, st2))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+call    3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+branch  8 never executed
+branch  9 never executed
+    #####:  319:    return wd;
+    #####:  320:  return nullptr;
+        -:  321:}
+        -:  322:
+        -:  323:
+        -:  324:int
+function main called 6 returned 83% blocks executed 58%
+        6:  325:main (int argc, char **argv)
+        -:  326:{
+        -:  327:  char *wd;
+        -:  328:  /* POSIX requires a default of -L, but most scripts expect -P.
+        -:  329:     Currently shells default to -L, while stand-alone
+        -:  330:     pwd implementations default to -P.  */
+        6:  331:  bool logical = (getenv ("POSIXLY_CORRECT") != nullptr);
+call    0 returned 100%
+        -:  332:
+        -:  333:  initialize_main (&argc, &argv);
+        6:  334:  set_program_name (argv[0]);
+call    0 returned 100%
+        6:  335:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  336:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  337:  textdomain (PACKAGE);
+        -:  338:
+        6:  339:  atexit (close_stdout);
+call    0 returned 100%
+        -:  340:
+        -:  341:  while (true)
+    #####:  342:    {
+        6:  343:      int c = getopt_long (argc, argv, "LP", longopts, nullptr);
+call    0 returned 100%
+        6:  344:      if (c == -1)
+branch  0 taken 83% (fallthrough)
+branch  1 taken 17%
+        5:  345:        break;
+        1:  346:      switch (c)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 100%
+        -:  347:        {
+    #####:  348:        case 'L':
+    #####:  349:          logical = true;
+    #####:  350:          break;
+    #####:  351:        case 'P':
+    #####:  352:          logical = false;
+    #####:  353:          break;
+        -:  354:
+    #####:  355:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  356:
+    #####:  357:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  358:
+        1:  359:        default:
+        1:  360:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  361:        }
+        -:  362:    }
+        -:  363:
+        5:  364:  if (optind < argc)
+branch  0 taken 80% (fallthrough)
+branch  1 taken 20%
+        -:  365:    error (0, 0, _("ignoring non-option arguments"));
+        -:  366:
+        5:  367:  if (logical)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  368:    {
+    #####:  369:      wd = logical_getcwd ();
+call    0 never executed
+    #####:  370:      if (wd)
+branch  0 never executed
+branch  1 never executed
+        -:  371:        {
+    #####:  372:          puts (wd);
+call    0 never executed
+    #####:  373:          return EXIT_SUCCESS;
+        -:  374:        }
+        -:  375:    }
+        -:  376:
+        5:  377:  wd = xgetcwd ();
+call    0 returned 100%
+        5:  378:  if (wd != nullptr)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  379:    {
+        5:  380:      puts (wd);
+call    0 returned 100%
+        5:  381:      free (wd);
+        -:  382:    }
+        -:  383:  else
+        -:  384:    {
+    #####:  385:      struct file_name *file_name = file_name_init ();
+call    0 never executed
+    #####:  386:      robust_getcwd (file_name);
+call    0 never executed
+    #####:  387:      puts (file_name->start);
+call    0 never executed
+    #####:  388:      file_name_free (file_name);
+call    0 never executed
+        -:  389:    }
+        -:  390:
+        5:  391:  return EXIT_SUCCESS;
+        -:  392:}

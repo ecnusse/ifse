@@ -1,0 +1,109 @@
+        -:    0:Source:src/hostid.c
+        -:    0:Graph:hostid.gcno
+        -:    0:Data:hostid.gcda
+        -:    0:Runs:23
+        -:    1:/* print the hexadecimal identifier for the current host
+        -:    2:
+        -:    3:   Copyright (C) 1997-2023 Free Software Foundation, Inc.
+        -:    4:
+        -:    5:   This program is free software: you can redistribute it and/or modify
+        -:    6:   it under the terms of the GNU General Public License as published by
+        -:    7:   the Free Software Foundation, either version 3 of the License, or
+        -:    8:   (at your option) any later version.
+        -:    9:
+        -:   10:   This program is distributed in the hope that it will be useful,
+        -:   11:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   12:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   13:   GNU General Public License for more details.
+        -:   14:
+        -:   15:   You should have received a copy of the GNU General Public License
+        -:   16:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   17:
+        -:   18:/* Written by Jim Meyering.  */
+        -:   19:
+        -:   20:#include <config.h>
+        -:   21:#include <stdio.h>
+        -:   22:#include <sys/types.h>
+        -:   23:
+        -:   24:#include "system.h"
+        -:   25:#include "long-options.h"
+        -:   26:#include "quote.h"
+        -:   27:
+        -:   28:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   29:#define PROGRAM_NAME "hostid"
+        -:   30:
+        -:   31:#define AUTHORS proper_name ("Jim Meyering")
+        -:   32:
+        -:   33:void
+function usage called 22 returned 0% blocks executed 43%
+       22:   34:usage (int status)
+        -:   35:{
+       22:   36:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       22:   37:    emit_try_help ();
+call    0 returned 100%
+        -:   38:  else
+        -:   39:    {
+    #####:   40:      printf (_("\
+call    0 never executed
+        -:   41:Usage: %s [OPTION]\n\
+        -:   42:Print the numeric identifier (in hexadecimal) for the current host.\n\
+        -:   43:\n\
+        -:   44:"), program_name);
+    #####:   45:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   46:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   47:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   48:    }
+       22:   49:  exit (status);
+        -:   50:}
+        -:   51:
+        -:   52:int
+function main called 23 returned 4% blocks executed 100%
+       23:   53:main (int argc, char **argv)
+        -:   54:{
+        -:   55:  unsigned int id;
+        -:   56:
+        -:   57:  initialize_main (&argc, &argv);
+       23:   58:  set_program_name (argv[0]);
+call    0 returned 100%
+       23:   59:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:   60:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:   61:  textdomain (PACKAGE);
+        -:   62:
+       23:   63:  atexit (close_stdout);
+call    0 returned 100%
+        -:   64:
+       23:   65:  parse_gnu_standard_options_only (argc, argv, PROGRAM_NAME, PACKAGE_NAME,
+call    0 returned 100%
+call    1 returned 96%
+        -:   66:                                   Version, true, usage, AUTHORS,
+        -:   67:                                   (char const *) nullptr);
+        -:   68:
+       22:   69:  if (optind < argc)
+branch  0 taken 95% (fallthrough)
+branch  1 taken 5%
+        -:   70:    {
+       21:   71:      error (0, 0, _("extra operand %s"), quote (argv[optind]));
+call    0 returned 100%
+       21:   72:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:   73:    }
+        -:   74:
+        1:   75:  id = gethostid ();
+call    0 returned 100%
+        -:   76:
+        -:   77:  /* POSIX says gethostid returns a "32-bit identifier" but is silent
+        -:   78:     whether it's sign-extended.  Turn off any sign-extension.  This
+        -:   79:     is a no-op unless unsigned int is wider than 32 bits.  */
+        1:   80:  id &= 0xffffffff;
+        -:   81:
+        1:   82:  printf ("%08x\n", id);
+call    0 returned 100%
+        -:   83:
+        1:   84:  return EXIT_SUCCESS;
+        -:   85:}

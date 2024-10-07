@@ -1,0 +1,1417 @@
+        -:    0:Source:src/basenc.c
+        -:    0:Graph:base64-basenc.gcno
+        -:    0:Data:base64-basenc.gcda
+        -:    0:Runs:44
+        -:    1:/* Base64, base32, and similar encoding/decoding strings or files.
+        -:    2:   Copyright (C) 2004-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>. */
+        -:   16:
+        -:   17:/* Written by Simon Josefsson <simon@josefsson.org>.  */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:
+        -:   21:#include <stdio.h>
+        -:   22:#include <getopt.h>
+        -:   23:#include <sys/types.h>
+        -:   24:
+        -:   25:#include "system.h"
+        -:   26:#include "c-ctype.h"
+        -:   27:#include "fadvise.h"
+        -:   28:#include "quote.h"
+        -:   29:#include "xstrtol.h"
+        -:   30:#include "xdectoint.h"
+        -:   31:#include "xbinary-io.h"
+        -:   32:
+        -:   33:#if BASE_TYPE == 42
+        -:   34:# define AUTHORS \
+        -:   35:  proper_name ("Simon Josefsson"), \
+        -:   36:  proper_name ("Assaf Gordon")
+        -:   37:#else
+        -:   38:# define AUTHORS proper_name ("Simon Josefsson")
+        -:   39:#endif
+        -:   40:
+        -:   41:#if BASE_TYPE == 32
+        -:   42:# include "base32.h"
+        -:   43:# define PROGRAM_NAME "base32"
+        -:   44:#elif BASE_TYPE == 64
+        -:   45:# include "base64.h"
+        -:   46:# define PROGRAM_NAME "base64"
+        -:   47:#elif BASE_TYPE == 42
+        -:   48:# include "base32.h"
+        -:   49:# include "base64.h"
+        -:   50:# include "assure.h"
+        -:   51:# define PROGRAM_NAME "basenc"
+        -:   52:#else
+        -:   53:# error missing/invalid BASE_TYPE definition
+        -:   54:#endif
+        -:   55:
+        -:   56:
+        -:   57:
+        -:   58:#if BASE_TYPE == 42
+        -:   59:enum
+        -:   60:{
+        -:   61:  BASE64_OPTION = CHAR_MAX + 1,
+        -:   62:  BASE64URL_OPTION,
+        -:   63:  BASE32_OPTION,
+        -:   64:  BASE32HEX_OPTION,
+        -:   65:  BASE16_OPTION,
+        -:   66:  BASE2MSBF_OPTION,
+        -:   67:  BASE2LSBF_OPTION,
+        -:   68:  Z85_OPTION
+        -:   69:};
+        -:   70:#endif
+        -:   71:
+        -:   72:static struct option const long_options[] =
+        -:   73:{
+        -:   74:  {"decode", no_argument, 0, 'd'},
+        -:   75:  {"wrap", required_argument, 0, 'w'},
+        -:   76:  {"ignore-garbage", no_argument, 0, 'i'},
+        -:   77:#if BASE_TYPE == 42
+        -:   78:  {"base64",    no_argument, 0, BASE64_OPTION},
+        -:   79:  {"base64url", no_argument, 0, BASE64URL_OPTION},
+        -:   80:  {"base32",    no_argument, 0, BASE32_OPTION},
+        -:   81:  {"base32hex", no_argument, 0, BASE32HEX_OPTION},
+        -:   82:  {"base16",    no_argument, 0, BASE16_OPTION},
+        -:   83:  {"base2msbf", no_argument, 0, BASE2MSBF_OPTION},
+        -:   84:  {"base2lsbf", no_argument, 0, BASE2LSBF_OPTION},
+        -:   85:  {"z85",       no_argument, 0, Z85_OPTION},
+        -:   86:#endif
+        -:   87:  {GETOPT_HELP_OPTION_DECL},
+        -:   88:  {GETOPT_VERSION_OPTION_DECL},
+        -:   89:  {nullptr, 0, nullptr, 0}
+        -:   90:};
+        -:   91:
+        -:   92:void
+function usage called 22 returned 0% blocks executed 25%
+       22:   93:usage (int status)
+        -:   94:{
+       22:   95:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       22:   96:    emit_try_help ();
+call    0 returned 100%
+        -:   97:  else
+        -:   98:    {
+    #####:   99:      printf (_("\
+call    0 never executed
+        -:  100:Usage: %s [OPTION]... [FILE]\n\
+        -:  101:"), program_name);
+        -:  102:
+        -:  103:#if BASE_TYPE == 42
+        -:  104:      fputs (_("\
+        -:  105:basenc encode or decode FILE, or standard input, to standard output.\n\
+        -:  106:"), stdout);
+        -:  107:#else
+    #####:  108:      printf (_("\
+call    0 never executed
+        -:  109:Base%d encode or decode FILE, or standard input, to standard output.\n\
+        -:  110:"), BASE_TYPE);
+        -:  111:#endif
+        -:  112:
+    #####:  113:      emit_stdin_note ();
+call    0 never executed
+    #####:  114:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  115:#if BASE_TYPE == 42
+        -:  116:      fputs (_("\
+        -:  117:      --base64          same as 'base64' program (RFC4648 section 4)\n\
+        -:  118:"), stdout);
+        -:  119:      fputs (_("\
+        -:  120:      --base64url       file- and url-safe base64 (RFC4648 section 5)\n\
+        -:  121:"), stdout);
+        -:  122:      fputs (_("\
+        -:  123:      --base32          same as 'base32' program (RFC4648 section 6)\n\
+        -:  124:"), stdout);
+        -:  125:      fputs (_("\
+        -:  126:      --base32hex       extended hex alphabet base32 (RFC4648 section 7)\n\
+        -:  127:"), stdout);
+        -:  128:      fputs (_("\
+        -:  129:      --base16          hex encoding (RFC4648 section 8)\n\
+        -:  130:"), stdout);
+        -:  131:      fputs (_("\
+        -:  132:      --base2msbf       bit string with most significant bit (msb) first\n\
+        -:  133:"), stdout);
+        -:  134:      fputs (_("\
+        -:  135:      --base2lsbf       bit string with least significant bit (lsb) first\n\
+        -:  136:"), stdout);
+        -:  137:#endif
+    #####:  138:      fputs (_("\
+call    0 never executed
+        -:  139:  -d, --decode          decode data\n\
+        -:  140:  -i, --ignore-garbage  when decoding, ignore non-alphabet characters\n\
+        -:  141:  -w, --wrap=COLS       wrap encoded lines after COLS character (default 76).\n\
+        -:  142:                          Use 0 to disable line wrapping\n\
+        -:  143:"), stdout);
+        -:  144:#if BASE_TYPE == 42
+        -:  145:      fputs (_("\
+        -:  146:      --z85             ascii85-like encoding (ZeroMQ spec:32/Z85);\n\
+        -:  147:                        when encoding, input length must be a multiple of 4;\n\
+        -:  148:                        when decoding, input length must be a multiple of 5\n\
+        -:  149:"), stdout);
+        -:  150:#endif
+    #####:  151:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  152:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+        -:  153:#if BASE_TYPE == 42
+        -:  154:      fputs (_("\
+        -:  155:\n\
+        -:  156:When decoding, the input may contain newlines in addition to the bytes of\n\
+        -:  157:the formal alphabet.  Use --ignore-garbage to attempt to recover\n\
+        -:  158:from any other non-alphabet bytes in the encoded stream.\n\
+        -:  159:"), stdout);
+        -:  160:#else
+    #####:  161:      printf (_("\
+call    0 never executed
+        -:  162:\n\
+        -:  163:The data are encoded as described for the %s alphabet in RFC 4648.\n\
+        -:  164:When decoding, the input may contain newlines in addition to the bytes of\n\
+        -:  165:the formal %s alphabet.  Use --ignore-garbage to attempt to recover\n\
+        -:  166:from any other non-alphabet bytes in the encoded stream.\n"),
+        -:  167:              PROGRAM_NAME, PROGRAM_NAME);
+        -:  168:#endif
+    #####:  169:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  170:    }
+        -:  171:
+       22:  172:  exit (status);
+        -:  173:}
+        -:  174:
+        -:  175:#define ENC_BLOCKSIZE (1024 * 3 * 10)
+        -:  176:
+        -:  177:#if BASE_TYPE == 32
+        -:  178:# define BASE_LENGTH BASE32_LENGTH
+        -:  179:/* Note that increasing this may decrease performance if --ignore-garbage
+        -:  180:   is used, because of the memmove operation below.  */
+        -:  181:# define DEC_BLOCKSIZE (1024 * 5)
+        -:  182:
+        -:  183:/* Ensure that BLOCKSIZE is a multiple of 5 and 8.  */
+        -:  184:static_assert (ENC_BLOCKSIZE % 40 == 0); /* Padding chars only on last block. */
+        -:  185:static_assert (DEC_BLOCKSIZE % 40 == 0); /* Complete encoded blocks are used. */
+        -:  186:
+        -:  187:# define base_encode base32_encode
+        -:  188:# define base_decode_context base32_decode_context
+        -:  189:# define base_decode_ctx_init base32_decode_ctx_init
+        -:  190:# define base_decode_ctx base32_decode_ctx
+        -:  191:# define isbase isbase32
+        -:  192:#elif BASE_TYPE == 64
+        -:  193:# define BASE_LENGTH BASE64_LENGTH
+        -:  194:/* Note that increasing this may decrease performance if --ignore-garbage
+        -:  195:   is used, because of the memmove operation below.  */
+        -:  196:# define DEC_BLOCKSIZE (1024 * 3)
+        -:  197:
+        -:  198:/* Ensure that BLOCKSIZE is a multiple of 3 and 4.  */
+        -:  199:static_assert (ENC_BLOCKSIZE % 12 == 0); /* Padding chars only on last block. */
+        -:  200:static_assert (DEC_BLOCKSIZE % 12 == 0); /* Complete encoded blocks are used. */
+        -:  201:
+        -:  202:# define base_encode base64_encode
+        -:  203:# define base_decode_context base64_decode_context
+        -:  204:# define base_decode_ctx_init base64_decode_ctx_init
+        -:  205:# define base_decode_ctx base64_decode_ctx
+        -:  206:# define isbase isbase64
+        -:  207:#elif BASE_TYPE == 42
+        -:  208:
+        -:  209:
+        -:  210:# define BASE_LENGTH base_length
+        -:  211:
+        -:  212:/* Note that increasing this may decrease performance if --ignore-garbage
+        -:  213:   is used, because of the memmove operation below.  */
+        -:  214:# define DEC_BLOCKSIZE (4200)
+        -:  215:static_assert (DEC_BLOCKSIZE % 40 == 0); /* complete encoded blocks for base32*/
+        -:  216:static_assert (DEC_BLOCKSIZE % 12 == 0); /* complete encoded blocks for base64*/
+        -:  217:
+        -:  218:static int (*base_length) (int i);
+        -:  219:static bool (*isbase) (char ch);
+        -:  220:static void (*base_encode) (char const *restrict in, idx_t inlen,
+        -:  221:                            char *restrict out, idx_t outlen);
+        -:  222:
+        -:  223:struct base16_decode_context
+        -:  224:{
+        -:  225:  char nibble;
+        -:  226:  bool have_nibble;
+        -:  227:};
+        -:  228:
+        -:  229:struct z85_decode_context
+        -:  230:{
+        -:  231:  int i;
+        -:  232:  unsigned char octets[5];
+        -:  233:};
+        -:  234:
+        -:  235:struct base2_decode_context
+        -:  236:{
+        -:  237:  unsigned char octet;
+        -:  238:};
+        -:  239:
+        -:  240:struct base_decode_context
+        -:  241:{
+        -:  242:  int i; /* will be updated manually */
+        -:  243:  union {
+        -:  244:    struct base64_decode_context base64;
+        -:  245:    struct base32_decode_context base32;
+        -:  246:    struct base16_decode_context base16;
+        -:  247:    struct base2_decode_context base2;
+        -:  248:    struct z85_decode_context z85;
+        -:  249:  } ctx;
+        -:  250:  char *inbuf;
+        -:  251:  idx_t bufsize;
+        -:  252:};
+        -:  253:static void (*base_decode_ctx_init) (struct base_decode_context *ctx);
+        -:  254:static bool (*base_decode_ctx) (struct base_decode_context *ctx,
+        -:  255:                                char const *restrict in, idx_t inlen,
+        -:  256:                                char *restrict out, idx_t *outlen);
+        -:  257:#endif
+        -:  258:
+        -:  259:
+        -:  260:
+        -:  261:
+        -:  262:#if BASE_TYPE == 42
+        -:  263:
+        -:  264:static int
+        -:  265:base64_length_wrapper (int len)
+        -:  266:{
+        -:  267:  return BASE64_LENGTH (len);
+        -:  268:}
+        -:  269:
+        -:  270:static void
+        -:  271:base64_decode_ctx_init_wrapper (struct base_decode_context *ctx)
+        -:  272:{
+        -:  273:  base64_decode_ctx_init (&ctx->ctx.base64);
+        -:  274:}
+        -:  275:
+        -:  276:static bool
+        -:  277:base64_decode_ctx_wrapper (struct base_decode_context *ctx,
+        -:  278:                           char const *restrict in, idx_t inlen,
+        -:  279:                           char *restrict out, idx_t *outlen)
+        -:  280:{
+        -:  281:  bool b = base64_decode_ctx (&ctx->ctx.base64, in, inlen, out, outlen);
+        -:  282:  ctx->i = ctx->ctx.base64.i;
+        -:  283:  return b;
+        -:  284:}
+        -:  285:
+        -:  286:static void
+        -:  287:init_inbuf (struct base_decode_context *ctx)
+        -:  288:{
+        -:  289:  ctx->bufsize = DEC_BLOCKSIZE;
+        -:  290:  ctx->inbuf = xcharalloc (ctx->bufsize);
+        -:  291:}
+        -:  292:
+        -:  293:static void
+        -:  294:prepare_inbuf (struct base_decode_context *ctx, idx_t inlen)
+        -:  295:{
+        -:  296:  if (ctx->bufsize < inlen)
+        -:  297:    {
+        -:  298:      ctx->bufsize = inlen * 2;
+        -:  299:      ctx->inbuf = xnrealloc (ctx->inbuf, ctx->bufsize, sizeof (char));
+        -:  300:    }
+        -:  301:}
+        -:  302:
+        -:  303:
+        -:  304:static void
+        -:  305:base64url_encode (char const *restrict in, idx_t inlen,
+        -:  306:                  char *restrict out, idx_t outlen)
+        -:  307:{
+        -:  308:  base64_encode (in, inlen, out, outlen);
+        -:  309:  /* translate 62nd and 63rd characters */
+        -:  310:  char *p = out;
+        -:  311:  while (outlen--)
+        -:  312:    {
+        -:  313:      if (*p == '+')
+        -:  314:        *p = '-';
+        -:  315:      else if (*p == '/')
+        -:  316:        *p = '_';
+        -:  317:      ++p;
+        -:  318:    }
+        -:  319:}
+        -:  320:
+        -:  321:static bool
+        -:  322:isbase64url (char ch)
+        -:  323:{
+        -:  324:  return (ch == '-' || ch == '_'
+        -:  325:          || (ch != '+' && ch != '/' && isbase64 (ch)));
+        -:  326:}
+        -:  327:
+        -:  328:static void
+        -:  329:base64url_decode_ctx_init_wrapper (struct base_decode_context *ctx)
+        -:  330:{
+        -:  331:  base64_decode_ctx_init (&ctx->ctx.base64);
+        -:  332:  init_inbuf (ctx);
+        -:  333:}
+        -:  334:
+        -:  335:
+        -:  336:static bool
+        -:  337:base64url_decode_ctx_wrapper (struct base_decode_context *ctx,
+        -:  338:                              char const *restrict in, idx_t inlen,
+        -:  339:                              char *restrict out, idx_t *outlen)
+        -:  340:{
+        -:  341:  prepare_inbuf (ctx, inlen);
+        -:  342:  memcpy (ctx->inbuf, in, inlen);
+        -:  343:
+        -:  344:  /* translate 62nd and 63rd characters */
+        -:  345:  idx_t i = inlen;
+        -:  346:  char *p = ctx->inbuf;
+        -:  347:  while (i--)
+        -:  348:    {
+        -:  349:      if (*p == '+' || *p == '/')
+        -:  350:        {
+        -:  351:          *outlen = 0;
+        -:  352:          return false; /* reject base64 input */
+        -:  353:        }
+        -:  354:      else if (*p == '-')
+        -:  355:        *p = '+';
+        -:  356:      else if (*p == '_')
+        -:  357:        *p = '/';
+        -:  358:      ++p;
+        -:  359:    }
+        -:  360:
+        -:  361:  bool b = base64_decode_ctx (&ctx->ctx.base64, ctx->inbuf, inlen,
+        -:  362:                              out, outlen);
+        -:  363:  ctx->i = ctx->ctx.base64.i;
+        -:  364:
+        -:  365:  return b;
+        -:  366:}
+        -:  367:
+        -:  368:
+        -:  369:
+        -:  370:static int
+        -:  371:base32_length_wrapper (int len)
+        -:  372:{
+        -:  373:  return BASE32_LENGTH (len);
+        -:  374:}
+        -:  375:
+        -:  376:static void
+        -:  377:base32_decode_ctx_init_wrapper (struct base_decode_context *ctx)
+        -:  378:{
+        -:  379:  base32_decode_ctx_init (&ctx->ctx.base32);
+        -:  380:}
+        -:  381:
+        -:  382:static bool
+        -:  383:base32_decode_ctx_wrapper (struct base_decode_context *ctx,
+        -:  384:                           char const *restrict in, idx_t inlen,
+        -:  385:                           char *restrict out, idx_t *outlen)
+        -:  386:{
+        -:  387:  bool b = base32_decode_ctx (&ctx->ctx.base32, in, inlen, out, outlen);
+        -:  388:  ctx->i = ctx->ctx.base32.i;
+        -:  389:  return b;
+        -:  390:}
+        -:  391:
+        -:  392:/* ABCDEFGHIJKLMNOPQRSTUVWXYZ234567
+        -:  393:     to
+        -:  394:   0123456789ABCDEFGHIJKLMNOPQRSTUV */
+        -:  395:static const char base32_norm_to_hex[32 + 9] = {
+        -:  396:/*0x32, 0x33, 0x34, 0x35, 0x36, 0x37, */
+        -:  397:  'Q',  'R',  'S',  'T',  'U',  'V',
+        -:  398:
+        -:  399:  0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40,
+        -:  400:
+        -:  401:/*0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, */
+        -:  402:  '0',  '1',  '2',  '3',  '4',  '5',  '6',  '7',
+        -:  403:
+        -:  404:/*0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50, */
+        -:  405:  '8',  '9',  'A',  'B',  'C',  'D',  'E',  'F',
+        -:  406:
+        -:  407:/*0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, */
+        -:  408:  'G',  'H',  'I',  'J',  'K',  'L',  'M',  'N',
+        -:  409:
+        -:  410:/*0x59, 0x5a, */
+        -:  411:  'O',  'P',
+        -:  412:};
+        -:  413:
+        -:  414:/* 0123456789ABCDEFGHIJKLMNOPQRSTUV
+        -:  415:     to
+        -:  416:   ABCDEFGHIJKLMNOPQRSTUVWXYZ234567 */
+        -:  417:static const char base32_hex_to_norm[32 + 9] = {
+        -:  418:  /* from: 0x30 .. 0x39 ('0' to '9') */
+        -:  419:  /* to:*/ 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+        -:  420:
+        -:  421:  0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40,
+        -:  422:
+        -:  423:  /* from: 0x41 .. 0x4A ('A' to 'J') */
+        -:  424:  /* to:*/ 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
+        -:  425:
+        -:  426:  /* from: 0x4B .. 0x54 ('K' to 'T') */
+        -:  427:  /* to:*/ 'U', 'V', 'W', 'X', 'Y', 'Z', '2', '3', '4', '5',
+        -:  428:
+        -:  429:  /* from: 0x55 .. 0x56 ('U' to 'V') */
+        -:  430:  /* to:*/ '6', '7'
+        -:  431:};
+        -:  432:
+        -:  433:
+        -:  434:inline static bool
+        -:  435:isbase32hex (char ch)
+        -:  436:{
+        -:  437:  return ('0' <= ch && ch <= '9') || ('A' <= ch && ch <= 'V');
+        -:  438:}
+        -:  439:
+        -:  440:
+        -:  441:static void
+        -:  442:base32hex_encode (char const *restrict in, idx_t inlen,
+        -:  443:                  char *restrict out, idx_t outlen)
+        -:  444:{
+        -:  445:  base32_encode (in, inlen, out, outlen);
+        -:  446:
+        -:  447:  for (char *p = out; outlen--; p++)
+        -:  448:    {
+        -:  449:      affirm (0x32 <= *p && *p <= 0x5a);          /* LCOV_EXCL_LINE */
+        -:  450:      *p = base32_norm_to_hex[*p - 0x32];
+        -:  451:    }
+        -:  452:}
+        -:  453:
+        -:  454:
+        -:  455:static void
+        -:  456:base32hex_decode_ctx_init_wrapper (struct base_decode_context *ctx)
+        -:  457:{
+        -:  458:  base32_decode_ctx_init (&ctx->ctx.base32);
+        -:  459:  init_inbuf (ctx);
+        -:  460:}
+        -:  461:
+        -:  462:
+        -:  463:static bool
+        -:  464:base32hex_decode_ctx_wrapper (struct base_decode_context *ctx,
+        -:  465:                              char const *restrict in, idx_t inlen,
+        -:  466:                              char *restrict out, idx_t *outlen)
+        -:  467:{
+        -:  468:  prepare_inbuf (ctx, inlen);
+        -:  469:
+        -:  470:  idx_t i = inlen;
+        -:  471:  char *p = ctx->inbuf;
+        -:  472:  while (i--)
+        -:  473:    {
+        -:  474:      if (isbase32hex (*in))
+        -:  475:        *p = base32_hex_to_norm[ (int)*in - 0x30];
+        -:  476:      else
+        -:  477:        *p = *in;
+        -:  478:      ++p;
+        -:  479:      ++in;
+        -:  480:    }
+        -:  481:
+        -:  482:  bool b = base32_decode_ctx (&ctx->ctx.base32, ctx->inbuf, inlen,
+        -:  483:                              out, outlen);
+        -:  484:  ctx->i = ctx->ctx.base32.i;
+        -:  485:
+        -:  486:  return b;
+        -:  487:}
+        -:  488:
+        -:  489:
+        -:  490:static bool
+        -:  491:isbase16 (char ch)
+        -:  492:{
+        -:  493:  return ('0' <= ch && ch <= '9') || ('A' <= ch && ch <= 'F');
+        -:  494:}
+        -:  495:
+        -:  496:static int
+        -:  497:base16_length (int len)
+        -:  498:{
+        -:  499:  return len * 2;
+        -:  500:}
+        -:  501:
+        -:  502:static const char base16[16] = "0123456789ABCDEF";
+        -:  503:
+        -:  504:static void
+        -:  505:base16_encode (char const *restrict in, idx_t inlen,
+        -:  506:               char *restrict out, idx_t outlen)
+        -:  507:{
+        -:  508:  while (inlen--)
+        -:  509:    {
+        -:  510:      unsigned char c = *in;
+        -:  511:      *out++ = base16[c >> 4];
+        -:  512:      *out++ = base16[c & 0x0F];
+        -:  513:      ++in;
+        -:  514:    }
+        -:  515:}
+        -:  516:
+        -:  517:
+        -:  518:static void
+        -:  519:base16_decode_ctx_init (struct base_decode_context *ctx)
+        -:  520:{
+        -:  521:  init_inbuf (ctx);
+        -:  522:  ctx->ctx.base16.have_nibble = false;
+        -:  523:  ctx->i = 1;
+        -:  524:}
+        -:  525:
+        -:  526:
+        -:  527:static bool
+        -:  528:base16_decode_ctx (struct base_decode_context *ctx,
+        -:  529:                   char const *restrict in, idx_t inlen,
+        -:  530:                   char *restrict out, idx_t *outlen)
+        -:  531:{
+        -:  532:  bool ignore_lines = true;  /* for now, always ignore them */
+        -:  533:
+        -:  534:  *outlen = 0;
+        -:  535:
+        -:  536:  /* inlen==0 is request to flush output.
+        -:  537:     if there is a dangling high nibble - we are missing the low nibble,
+        -:  538:     so return false - indicating an invalid input.  */
+        -:  539:  if (inlen == 0)
+        -:  540:    return !ctx->ctx.base16.have_nibble;
+        -:  541:
+        -:  542:  while (inlen--)
+        -:  543:    {
+        -:  544:      if (ignore_lines && *in == '\n')
+        -:  545:        {
+        -:  546:          ++in;
+        -:  547:          continue;
+        -:  548:        }
+        -:  549:
+        -:  550:      int nib = *in++;
+        -:  551:      if ('0' <= nib && nib <= '9')
+        -:  552:        nib -= '0';
+        -:  553:      else if ('A' <= nib && nib <= 'F')
+        -:  554:        nib -= 'A' - 10;
+        -:  555:      else
+        -:  556:        return false; /* garbage - return false */
+        -:  557:
+        -:  558:      if (ctx->ctx.base16.have_nibble)
+        -:  559:        {
+        -:  560:          /* have both nibbles, write octet */
+        -:  561:          *out++ = (ctx->ctx.base16.nibble << 4) + nib;
+        -:  562:          ++(*outlen);
+        -:  563:        }
+        -:  564:      else
+        -:  565:        {
+        -:  566:          /* Store higher nibble until next one arrives */
+        -:  567:          ctx->ctx.base16.nibble = nib;
+        -:  568:        }
+        -:  569:      ctx->ctx.base16.have_nibble = !ctx->ctx.base16.have_nibble;
+        -:  570:    }
+        -:  571:  return true;
+        -:  572:}
+        -:  573:
+        -:  574:
+        -:  575:
+        -:  576:
+        -:  577:static int
+        -:  578:z85_length (int len)
+        -:  579:{
+        -:  580:  /* Z85 does not allow padding, so no need to round to highest integer.  */
+        -:  581:  int outlen = (len * 5) / 4;
+        -:  582:  return outlen;
+        -:  583:}
+        -:  584:
+        -:  585:static bool
+        -:  586:isz85 (char ch)
+        -:  587:{
+        -:  588:  return c_isalnum (ch) || strchr (".-:+=^!/*?&<>()[]{}@%$#", ch) != nullptr;
+        -:  589:}
+        -:  590:
+        -:  591:static char const z85_encoding[85] =
+        -:  592:  "0123456789"
+        -:  593:  "abcdefghijklmnopqrstuvwxyz"
+        -:  594:  "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        -:  595:  ".-:+=^!/*?&<>()[]{}@%$#";
+        -:  596:
+        -:  597:static void
+        -:  598:z85_encode (char const *restrict in, idx_t inlen,
+        -:  599:            char *restrict out, idx_t outlen)
+        -:  600:{
+        -:  601:  int i = 0;
+        -:  602:  unsigned char quad[4];
+        -:  603:  idx_t outidx = 0;
+        -:  604:
+        -:  605:  while (true)
+        -:  606:    {
+        -:  607:      if (inlen == 0)
+        -:  608:        {
+        -:  609:          /* no more input, exactly on 4 octet boundary. */
+        -:  610:          if (i == 0)
+        -:  611:            return;
+        -:  612:
+        -:  613:          /* currently, there's no way to return an error in encoding.  */
+        -:  614:          error (EXIT_FAILURE, 0,
+        -:  615:                 _("invalid input (length must be multiple of 4 characters)"));
+        -:  616:        }
+        -:  617:      else
+        -:  618:        {
+        -:  619:          quad[i++] = *in++;
+        -:  620:          --inlen;
+        -:  621:        }
+        -:  622:
+        -:  623:      /* Got a quad, encode it */
+        -:  624:      if (i == 4)
+        -:  625:        {
+        -:  626:          int_fast64_t val = quad[0];
+        -:  627:          val = (val << 24) + (quad[1] << 16) + (quad[2] << 8) + quad[3];
+        -:  628:
+        -:  629:          for (int j = 4; j >= 0; --j)
+        -:  630:            {
+        -:  631:              int c = val % 85;
+        -:  632:              val /= 85;
+        -:  633:
+        -:  634:              /* NOTE: if there is padding (which is trimmed by z85
+        -:  635:                 before outputting the result), the output buffer 'out'
+        -:  636:                 might not include enough allocated bytes for the padding,
+        -:  637:                 so don't store them. */
+        -:  638:              if (outidx + j < outlen)
+        -:  639:                out[j] = z85_encoding[c];
+        -:  640:            }
+        -:  641:          out += 5;
+        -:  642:          outidx += 5;
+        -:  643:          i = 0;
+        -:  644:        }
+        -:  645:    }
+        -:  646:}
+        -:  647:
+        -:  648:static void
+        -:  649:z85_decode_ctx_init (struct base_decode_context *ctx)
+        -:  650:{
+        -:  651:  init_inbuf (ctx);
+        -:  652:  ctx->ctx.z85.i = 0;
+        -:  653:  ctx->i = 1;
+        -:  654:}
+        -:  655:
+        -:  656:
+        -:  657:# define Z85_LO_CTX_TO_32BIT_VAL(ctx) \
+        -:  658:  (((ctx)->ctx.z85.octets[1] * 85 * 85 * 85) +      \
+        -:  659:   ((ctx)->ctx.z85.octets[2] * 85 * 85) +	    \
+        -:  660:   ((ctx)->ctx.z85.octets[3] * 85) +		    \
+        -:  661:   ((ctx)->ctx.z85.octets[4]))
+        -:  662:
+        -:  663:
+        -:  664:# define Z85_HI_CTX_TO_32BIT_VAL(ctx) \
+        -:  665:  ((int_fast64_t) (ctx)->ctx.z85.octets[0] * 85 * 85 * 85 * 85 )
+        -:  666:
+        -:  667:/*
+        -:  668: 0 -  9:  0 1 2 3 4 5 6 7 8 9
+        -:  669: 10 - 19:  a b c d e f g h i j
+        -:  670: 20 - 29:  k l m n o p q r s t
+        -:  671: 30 - 39:  u v w x y z A B C D
+        -:  672: 40 - 49:  E F G H I J K L M N
+        -:  673: 50 - 59:  O P Q R S T U V W X
+        -:  674: 60 - 69:  Y Z . - : + = ^ ! /   #dummy comment to workaround syntax-check
+        -:  675: 70 - 79:  * ? & < > ( ) [ ] {
+        -:  676: 80 - 84:  } @ % $ #
+        -:  677:*/
+        -:  678:static signed char const z85_decoding[93] = {
+        -:  679:  68, -1,  84,  83, 82,  72, -1,               /* ! " # $ % & ' */
+        -:  680:  75, 76,  70,  65, -1,  63, 62, 69,           /* ( ) * + , - . / */
+        -:  681:  0,  1,   2,   3,  4,   5,  6,   7,  8,  9,   /* '0' to '9' */
+        -:  682:  64, -1,  73,  66, 74,  71, 81,               /* : ; < =  > ? @ */
+        -:  683:  36, 37,  38,  39, 40,  41, 42,  43, 44, 45,  /* 'A' to 'J' */
+        -:  684:  46, 47,  48,  49, 50,  51, 52,  53, 54, 55,  /* 'K' to 'T' */
+        -:  685:  56, 57,  58,  59, 60,  61,                   /* 'U' to 'Z' */
+        -:  686:  77,  -1, 78,  67,  -1,  -1,                  /* [ \ ] ^ _ ` */
+        -:  687:  10, 11,  12,  13, 14,  15, 16,  17, 18, 19,  /* 'a' to 'j' */
+        -:  688:  20, 21,  22,  23, 24,  25, 26,  27, 28, 29,  /* 'k' to 't' */
+        -:  689:  30, 31,  32,  33, 34,  35,                   /* 'u' to 'z' */
+        -:  690:  79, -1,  80                                  /* { | } */
+        -:  691:};
+        -:  692:
+        -:  693:static bool
+        -:  694:z85_decode_ctx (struct base_decode_context *ctx,
+        -:  695:                char const *restrict in, idx_t inlen,
+        -:  696:                char *restrict out, idx_t *outlen)
+        -:  697:{
+        -:  698:  bool ignore_lines = true;  /* for now, always ignore them */
+        -:  699:
+        -:  700:  *outlen = 0;
+        -:  701:
+        -:  702:  /* inlen==0 is request to flush output.
+        -:  703:     if there are dangling values - we are missing entries,
+        -:  704:     so return false - indicating an invalid input.  */
+        -:  705:  if (inlen == 0)
+        -:  706:    {
+        -:  707:      if (ctx->ctx.z85.i > 0)
+        -:  708:        {
+        -:  709:          /* Z85 variant does not allow padding - input must
+        -:  710:             be a multiple of 5 - so return error.  */
+        -:  711:          return false;
+        -:  712:        }
+        -:  713:      return true;
+        -:  714:    }
+        -:  715:
+        -:  716:  while (inlen--)
+        -:  717:    {
+        -:  718:      if (ignore_lines && *in == '\n')
+        -:  719:        {
+        -:  720:          ++in;
+        -:  721:          continue;
+        -:  722:        }
+        -:  723:
+        -:  724:      /* z85 decoding */
+        -:  725:      unsigned char c = *in;
+        -:  726:
+        -:  727:      if (c >= 33 && c <= 125)
+        -:  728:        {
+        -:  729:          signed char ch = z85_decoding[c - 33];
+        -:  730:          if (ch < 0)
+        -:  731:            return false; /* garbage - return false */
+        -:  732:          c = ch;
+        -:  733:        }
+        -:  734:      else
+        -:  735:        return false; /* garbage - return false */
+        -:  736:
+        -:  737:      ++in;
+        -:  738:
+        -:  739:      ctx->ctx.z85.octets[ctx->ctx.z85.i++] = c;
+        -:  740:      if (ctx->ctx.z85.i == 5)
+        -:  741:        {
+        -:  742:          /* decode the lowest 4 octets, then check for overflows.  */
+        -:  743:          int_fast64_t val = Z85_LO_CTX_TO_32BIT_VAL (ctx);
+        -:  744:
+        -:  745:          /* The Z85 spec and the reference implementation say nothing
+        -:  746:             about overflows. To be on the safe side, reject them.  */
+        -:  747:
+        -:  748:          val += Z85_HI_CTX_TO_32BIT_VAL (ctx);
+        -:  749:          if ((val >> 24) & ~0xFF)
+        -:  750:            return false;
+        -:  751:
+        -:  752:          *out++ = val >> 24;
+        -:  753:          *out++ = (val >> 16) & 0xFF;
+        -:  754:          *out++ = (val >> 8) & 0xFF;
+        -:  755:          *out++ = val & 0xFF;
+        -:  756:
+        -:  757:          *outlen += 4;
+        -:  758:
+        -:  759:          ctx->ctx.z85.i = 0;
+        -:  760:        }
+        -:  761:    }
+        -:  762:  ctx->i = ctx->ctx.z85.i;
+        -:  763:  return true;
+        -:  764:}
+        -:  765:
+        -:  766:
+        -:  767:inline static bool
+        -:  768:isbase2 (char ch)
+        -:  769:{
+        -:  770:  return ch == '0' || ch == '1';
+        -:  771:}
+        -:  772:
+        -:  773:static int
+        -:  774:base2_length (int len)
+        -:  775:{
+        -:  776:  return len * 8;
+        -:  777:}
+        -:  778:
+        -:  779:
+        -:  780:inline static void
+        -:  781:base2msbf_encode (char const *restrict in, idx_t inlen,
+        -:  782:                  char *restrict out, idx_t outlen)
+        -:  783:{
+        -:  784:  while (inlen--)
+        -:  785:    {
+        -:  786:      unsigned char c = *in;
+        -:  787:      for (int i = 0; i < 8; i++)
+        -:  788:        {
+        -:  789:          *out++ = c & 0x80 ? '1' : '0';
+        -:  790:          c <<= 1;
+        -:  791:        }
+        -:  792:      outlen -= 8;
+        -:  793:      ++in;
+        -:  794:    }
+        -:  795:}
+        -:  796:
+        -:  797:inline static void
+        -:  798:base2lsbf_encode (char const *restrict in, idx_t inlen,
+        -:  799:                  char *restrict out, idx_t outlen)
+        -:  800:{
+        -:  801:  while (inlen--)
+        -:  802:    {
+        -:  803:      unsigned char c = *in;
+        -:  804:      for (int i = 0; i < 8; i++)
+        -:  805:        {
+        -:  806:          *out++ = c & 0x01 ? '1' : '0';
+        -:  807:          c >>= 1;
+        -:  808:        }
+        -:  809:      outlen -= 8;
+        -:  810:      ++in;
+        -:  811:    }
+        -:  812:}
+        -:  813:
+        -:  814:
+        -:  815:static void
+        -:  816:base2_decode_ctx_init (struct base_decode_context *ctx)
+        -:  817:{
+        -:  818:  init_inbuf (ctx);
+        -:  819:  ctx->ctx.base2.octet = 0;
+        -:  820:  ctx->i = 0;
+        -:  821:}
+        -:  822:
+        -:  823:
+        -:  824:static bool
+        -:  825:base2lsbf_decode_ctx (struct base_decode_context *ctx,
+        -:  826:                      char const *restrict in, idx_t inlen,
+        -:  827:                      char *restrict out, idx_t *outlen)
+        -:  828:{
+        -:  829:  bool ignore_lines = true;  /* for now, always ignore them */
+        -:  830:
+        -:  831:  *outlen = 0;
+        -:  832:
+        -:  833:  /* inlen==0 is request to flush output.
+        -:  834:     if there is a dangling bit - we are missing some bits,
+        -:  835:     so return false - indicating an invalid input.  */
+        -:  836:  if (inlen == 0)
+        -:  837:    return ctx->i == 0;
+        -:  838:
+        -:  839:  while (inlen--)
+        -:  840:    {
+        -:  841:      if (ignore_lines && *in == '\n')
+        -:  842:        {
+        -:  843:          ++in;
+        -:  844:          continue;
+        -:  845:        }
+        -:  846:
+        -:  847:      if (!isbase2 (*in))
+        -:  848:        return false;
+        -:  849:
+        -:  850:      bool bit = (*in == '1');
+        -:  851:      ctx->ctx.base2.octet |= bit << ctx->i;
+        -:  852:      ++ctx->i;
+        -:  853:
+        -:  854:      if (ctx->i == 8)
+        -:  855:        {
+        -:  856:          *out++ = ctx->ctx.base2.octet;
+        -:  857:          ctx->ctx.base2.octet = 0;
+        -:  858:          ++*outlen;
+        -:  859:          ctx->i = 0;
+        -:  860:        }
+        -:  861:
+        -:  862:      ++in;
+        -:  863:    }
+        -:  864:
+        -:  865:  return true;
+        -:  866:}
+        -:  867:
+        -:  868:static bool
+        -:  869:base2msbf_decode_ctx (struct base_decode_context *ctx,
+        -:  870:                      char const *restrict in, idx_t inlen,
+        -:  871:                      char *restrict out, idx_t *outlen)
+        -:  872:{
+        -:  873:  bool ignore_lines = true;  /* for now, always ignore them */
+        -:  874:
+        -:  875:  *outlen = 0;
+        -:  876:
+        -:  877:  /* inlen==0 is request to flush output.
+        -:  878:     if there is a dangling bit - we are missing some bits,
+        -:  879:     so return false - indicating an invalid input.  */
+        -:  880:  if (inlen == 0)
+        -:  881:    return ctx->i == 0;
+        -:  882:
+        -:  883:  while (inlen--)
+        -:  884:    {
+        -:  885:      if (ignore_lines && *in == '\n')
+        -:  886:        {
+        -:  887:          ++in;
+        -:  888:          continue;
+        -:  889:        }
+        -:  890:
+        -:  891:      if (!isbase2 (*in))
+        -:  892:        return false;
+        -:  893:
+        -:  894:      bool bit = (*in == '1');
+        -:  895:      if (ctx->i == 0)
+        -:  896:        ctx->i = 8;
+        -:  897:      --ctx->i;
+        -:  898:      ctx->ctx.base2.octet |= bit << ctx->i;
+        -:  899:
+        -:  900:      if (ctx->i == 0)
+        -:  901:        {
+        -:  902:          *out++ = ctx->ctx.base2.octet;
+        -:  903:          ctx->ctx.base2.octet = 0;
+        -:  904:          ++*outlen;
+        -:  905:          ctx->i = 0;
+        -:  906:        }
+        -:  907:
+        -:  908:      ++in;
+        -:  909:    }
+        -:  910:
+        -:  911:  return true;
+        -:  912:}
+        -:  913:
+        -:  914:#endif /* BASE_TYPE == 42, i.e., "basenc"*/
+        -:  915:
+        -:  916:
+        -:  917:
+        -:  918:static void
+function wrap_write called 3 returned 100% blocks executed 50%
+        3:  919:wrap_write (char const *buffer, idx_t len,
+        -:  920:            idx_t wrap_column, idx_t *current_column, FILE *out)
+        -:  921:{
+        3:  922:  if (wrap_column == 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  923:    {
+        -:  924:      /* Simple write. */
+    #####:  925:      if (fwrite (buffer, 1, len, stdout) < len)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  926:        write_error ();
+call    0 never executed
+        -:  927:    }
+        -:  928:  else
+        6:  929:    for (idx_t written = 0; written < len; )
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -:  930:      {
+        3:  931:        idx_t to_write = MIN (wrap_column - *current_column, len - written);
+        -:  932:
+        3:  933:        if (to_write == 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  934:          {
+    #####:  935:            if (fputc ('\n', out) == EOF)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  936:              write_error ();
+call    0 never executed
+    #####:  937:            *current_column = 0;
+        -:  938:          }
+        -:  939:        else
+        -:  940:          {
+        3:  941:            if (fwrite (buffer + written, 1, to_write, stdout) < to_write)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  942:              write_error ();
+call    0 never executed
+        3:  943:            *current_column += to_write;
+        3:  944:            written += to_write;
+        -:  945:          }
+        -:  946:      }
+        3:  947:}
+        -:  948:
+        -:  949:static _Noreturn void
+function finish_and_exit called 2 returned 0% blocks executed 23%
+        2:  950:finish_and_exit (FILE *in, char const *infile)
+        -:  951:{
+        2:  952:  if (fclose (in) != 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+        -:  953:    {
+    #####:  954:      if (STREQ (infile, "-"))
+branch  0 never executed
+branch  1 never executed
+    #####:  955:        error (EXIT_FAILURE, errno, _("closing standard input"));
+call    0 never executed
+        -:  956:      else
+    #####:  957:        error (EXIT_FAILURE, errno, "%s", quotef (infile));
+call    0 never executed
+call    1 never executed
+        -:  958:    }
+        -:  959:
+        2:  960:  exit (EXIT_SUCCESS);
+        -:  961:}
+        -:  962:
+        -:  963:static _Noreturn void
+function do_encode called 5 returned 0% blocks executed 83%
+        5:  964:do_encode (FILE *in, char const *infile, FILE *out, idx_t wrap_column)
+        -:  965:{
+        5:  966:  idx_t current_column = 0;
+        -:  967:  char *inbuf, *outbuf;
+        -:  968:  idx_t sum;
+        -:  969:
+        5:  970:  inbuf = xmalloc (ENC_BLOCKSIZE);
+call    0 returned 100%
+        5:  971:  outbuf = xmalloc (BASE_LENGTH (ENC_BLOCKSIZE));
+call    0 returned 100%
+        -:  972:
+        -:  973:  do
+        -:  974:    {
+        -:  975:      idx_t n;
+        -:  976:
+        5:  977:      sum = 0;
+        -:  978:      do
+        -:  979:        {
+        5:  980:          n = fread (inbuf + sum, 1, ENC_BLOCKSIZE - sum, in);
+call    0 returned 100%
+        5:  981:          sum += n;
+        -:  982:        }
+       5*:  983:      while (!feof (in) && !ferror (in) && sum < ENC_BLOCKSIZE);
+call    0 returned 100%
+branch  1 taken 60% (fallthrough)
+branch  2 taken 40%
+call    3 returned 100%
+branch  4 taken 0% (fallthrough)
+branch  5 taken 100%
+branch  6 never executed
+branch  7 never executed
+        -:  984:
+        5:  985:      if (sum > 0)
+branch  0 taken 60% (fallthrough)
+branch  1 taken 40%
+        -:  986:        {
+        -:  987:          /* Process input one block at a time.  Note that ENC_BLOCKSIZE
+        -:  988:             is sized so that no pad chars will appear in output. */
+        3:  989:          base_encode (inbuf, sum, outbuf, BASE_LENGTH (sum));
+call    0 returned 100%
+        -:  990:
+        3:  991:          wrap_write (outbuf, BASE_LENGTH (sum), wrap_column,
+call    0 returned 100%
+        -:  992:                      &current_column, out);
+        -:  993:        }
+        -:  994:    }
+       5*:  995:  while (!feof (in) && !ferror (in) && sum == ENC_BLOCKSIZE);
+call    0 returned 100%
+branch  1 taken 60% (fallthrough)
+branch  2 taken 40%
+call    3 returned 100%
+branch  4 taken 0% (fallthrough)
+branch  5 taken 100%
+branch  6 never executed
+branch  7 never executed
+        -:  996:
+        -:  997:  /* When wrapping, terminate last line. */
+        5:  998:  if (wrap_column && current_column > 0 && fputc ('\n', out) == EOF)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 60% (fallthrough)
+branch  3 taken 40%
+call    4 returned 100%
+branch  5 taken 0% (fallthrough)
+branch  6 taken 100%
+    #####:  999:    write_error ();
+call    0 never executed
+        -: 1000:
+        5: 1001:  if (ferror (in))
+call    0 returned 100%
+branch  1 taken 60% (fallthrough)
+branch  2 taken 40%
+       3*: 1002:    error (EXIT_FAILURE, errno, _("read error"));
+call    0 never executed
+        -: 1003:
+        2: 1004:  finish_and_exit (in, infile);
+        -: 1005:}
+        -: 1006:
+        -: 1007:static _Noreturn void
+function do_decode called 0 returned 0% blocks executed 0%
+    #####: 1008:do_decode (FILE *in, char const *infile, FILE *out, bool ignore_garbage)
+        -: 1009:{
+        -: 1010:  char *inbuf, *outbuf;
+        -: 1011:  idx_t sum;
+        -: 1012:  struct base_decode_context ctx;
+        -: 1013:
+    #####: 1014:  inbuf = xmalloc (BASE_LENGTH (DEC_BLOCKSIZE));
+call    0 never executed
+    #####: 1015:  outbuf = xmalloc (DEC_BLOCKSIZE);
+call    0 never executed
+        -: 1016:
+        -: 1017:#if BASE_TYPE == 42
+        -: 1018:  ctx.inbuf = nullptr;
+        -: 1019:#endif
+    #####: 1020:  base_decode_ctx_init (&ctx);
+call    0 never executed
+        -: 1021:
+        -: 1022:  do
+        -: 1023:    {
+        -: 1024:      bool ok;
+        -: 1025:
+    #####: 1026:      sum = 0;
+        -: 1027:      do
+        -: 1028:        {
+    #####: 1029:          idx_t n = fread (inbuf + sum,
+call    0 never executed
+        -: 1030:                           1, BASE_LENGTH (DEC_BLOCKSIZE) - sum, in);
+        -: 1031:
+    #####: 1032:          if (ignore_garbage)
+branch  0 never executed
+branch  1 never executed
+        -: 1033:            {
+    #####: 1034:              for (idx_t i = 0; n > 0 && i < n;)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1035:                {
+    #####: 1036:                  if (isbase (inbuf[sum + i]) || inbuf[sum + i] == '=')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1037:                    i++;
+        -: 1038:                  else
+    #####: 1039:                    memmove (inbuf + sum + i, inbuf + sum + i + 1, --n - i);
+        -: 1040:                }
+        -: 1041:            }
+        -: 1042:
+    #####: 1043:          sum += n;
+        -: 1044:
+    #####: 1045:          if (ferror (in))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1046:            error (EXIT_FAILURE, errno, _("read error"));
+call    0 never executed
+        -: 1047:        }
+    #####: 1048:      while (sum < BASE_LENGTH (DEC_BLOCKSIZE) && !feof (in));
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -: 1049:
+        -: 1050:      /* The following "loop" is usually iterated just once.
+        -: 1051:         However, when it processes the final input buffer, we want
+        -: 1052:         to iterate it one additional time, but with an indicator
+        -: 1053:         telling it to flush what is in CTX.  */
+    #####: 1054:      for (int k = 0; k < 1 + !!feof (in); k++)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+        -: 1055:        {
+    #####: 1056:          if (k == 1 && ctx.i == 0)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1057:            break;
+    #####: 1058:          idx_t n = DEC_BLOCKSIZE;
+    #####: 1059:          ok = base_decode_ctx (&ctx, inbuf, (k == 0 ? sum : 0), outbuf, &n);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -: 1060:
+    #####: 1061:          if (fwrite (outbuf, 1, n, out) < n)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1062:            write_error ();
+call    0 never executed
+        -: 1063:
+    #####: 1064:          if (!ok)
+branch  0 never executed
+branch  1 never executed
+    #####: 1065:            error (EXIT_FAILURE, 0, _("invalid input"));
+call    0 never executed
+        -: 1066:        }
+        -: 1067:    }
+    #####: 1068:  while (!feof (in));
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1069:
+    #####: 1070:  finish_and_exit (in, infile);
+        -: 1071:}
+        -: 1072:
+        -: 1073:int
+function main called 44 returned 0% blocks executed 57%
+       44: 1074:main (int argc, char **argv)
+        -: 1075:{
+        -: 1076:  int opt;
+        -: 1077:  FILE *input_fh;
+        -: 1078:  char const *infile;
+        -: 1079:
+        -: 1080:  /* True if --decode has been given and we should decode data. */
+       44: 1081:  bool decode = false;
+        -: 1082:  /* True if we should ignore non-base-alphabetic characters. */
+       44: 1083:  bool ignore_garbage = false;
+        -: 1084:  /* Wrap encoded data around the 76th column, by default. */
+       44: 1085:  idx_t wrap_column = 76;
+        -: 1086:
+        -: 1087:#if BASE_TYPE == 42
+        -: 1088:  int base_type = 0;
+        -: 1089:#endif
+        -: 1090:
+        -: 1091:  initialize_main (&argc, &argv);
+       44: 1092:  set_program_name (argv[0]);
+call    0 returned 100%
+       44: 1093:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -: 1094:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -: 1095:  textdomain (PACKAGE);
+        -: 1096:
+       44: 1097:  atexit (close_stdout);
+call    0 returned 100%
+        -: 1098:
+       44: 1099:  while ((opt = getopt_long (argc, argv, "diw:", long_options, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 2%
+branch  2 taken 98% (fallthrough)
+        1: 1100:    switch (opt)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 100%
+        -: 1101:      {
+    #####: 1102:      case 'd':
+    #####: 1103:        decode = true;
+    #####: 1104:        break;
+        -: 1105:
+    #####: 1106:      case 'w':
+        -: 1107:        {
+        -: 1108:          intmax_t w;
+    #####: 1109:          strtol_error s_err = xstrtoimax (optarg, nullptr, 10, &w, "");
+call    0 never executed
+    #####: 1110:          if (LONGINT_OVERFLOW < s_err || w < 0)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1111:            error (EXIT_FAILURE, 0, "%s: %s",
+call    0 never executed
+call    1 never executed
+        -: 1112:                   _("invalid wrap size"), quote (optarg));
+    #####: 1113:          wrap_column = s_err == LONGINT_OVERFLOW || IDX_MAX < w ? 0 : w;
+branch  0 never executed
+branch  1 never executed
+        -: 1114:        }
+    #####: 1115:        break;
+        -: 1116:
+    #####: 1117:      case 'i':
+    #####: 1118:        ignore_garbage = true;
+    #####: 1119:        break;
+        -: 1120:
+        -: 1121:#if BASE_TYPE == 42
+        -: 1122:      case BASE64_OPTION:
+        -: 1123:      case BASE64URL_OPTION:
+        -: 1124:      case BASE32_OPTION:
+        -: 1125:      case BASE32HEX_OPTION:
+        -: 1126:      case BASE16_OPTION:
+        -: 1127:      case BASE2MSBF_OPTION:
+        -: 1128:      case BASE2LSBF_OPTION:
+        -: 1129:      case Z85_OPTION:
+        -: 1130:        base_type = opt;
+        -: 1131:        break;
+        -: 1132:#endif
+        -: 1133:
+    #####: 1134:      case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -: 1135:
+    #####: 1136:      case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -: 1137:
+        1: 1138:      default:
+        1: 1139:        usage (EXIT_FAILURE);
+call    0 returned 0%
+        -: 1140:        break;
+        -: 1141:      }
+        -: 1142:
+        -: 1143:#if BASE_TYPE == 42
+        -: 1144:  switch (base_type)
+        -: 1145:    {
+        -: 1146:    case BASE64_OPTION:
+        -: 1147:      base_length = base64_length_wrapper;
+        -: 1148:      isbase = isbase64;
+        -: 1149:      base_encode = base64_encode;
+        -: 1150:      base_decode_ctx_init = base64_decode_ctx_init_wrapper;
+        -: 1151:      base_decode_ctx = base64_decode_ctx_wrapper;
+        -: 1152:      break;
+        -: 1153:
+        -: 1154:    case BASE64URL_OPTION:
+        -: 1155:      base_length = base64_length_wrapper;
+        -: 1156:      isbase = isbase64url;
+        -: 1157:      base_encode = base64url_encode;
+        -: 1158:      base_decode_ctx_init = base64url_decode_ctx_init_wrapper;
+        -: 1159:      base_decode_ctx = base64url_decode_ctx_wrapper;
+        -: 1160:      break;
+        -: 1161:
+        -: 1162:    case BASE32_OPTION:
+        -: 1163:      base_length = base32_length_wrapper;
+        -: 1164:      isbase = isbase32;
+        -: 1165:      base_encode = base32_encode;
+        -: 1166:      base_decode_ctx_init = base32_decode_ctx_init_wrapper;
+        -: 1167:      base_decode_ctx = base32_decode_ctx_wrapper;
+        -: 1168:      break;
+        -: 1169:
+        -: 1170:    case BASE32HEX_OPTION:
+        -: 1171:      base_length = base32_length_wrapper;
+        -: 1172:      isbase = isbase32hex;
+        -: 1173:      base_encode = base32hex_encode;
+        -: 1174:      base_decode_ctx_init = base32hex_decode_ctx_init_wrapper;
+        -: 1175:      base_decode_ctx = base32hex_decode_ctx_wrapper;
+        -: 1176:      break;
+        -: 1177:
+        -: 1178:    case BASE16_OPTION:
+        -: 1179:      base_length = base16_length;
+        -: 1180:      isbase = isbase16;
+        -: 1181:      base_encode = base16_encode;
+        -: 1182:      base_decode_ctx_init = base16_decode_ctx_init;
+        -: 1183:      base_decode_ctx = base16_decode_ctx;
+        -: 1184:      break;
+        -: 1185:
+        -: 1186:    case BASE2MSBF_OPTION:
+        -: 1187:      base_length = base2_length;
+        -: 1188:      isbase = isbase2;
+        -: 1189:      base_encode = base2msbf_encode;
+        -: 1190:      base_decode_ctx_init = base2_decode_ctx_init;
+        -: 1191:      base_decode_ctx = base2msbf_decode_ctx;
+        -: 1192:      break;
+        -: 1193:
+        -: 1194:    case BASE2LSBF_OPTION:
+        -: 1195:      base_length = base2_length;
+        -: 1196:      isbase = isbase2;
+        -: 1197:      base_encode = base2lsbf_encode;
+        -: 1198:      base_decode_ctx_init = base2_decode_ctx_init;
+        -: 1199:      base_decode_ctx = base2lsbf_decode_ctx;
+        -: 1200:      break;
+        -: 1201:
+        -: 1202:    case Z85_OPTION:
+        -: 1203:      base_length = z85_length;
+        -: 1204:      isbase = isz85;
+        -: 1205:      base_encode = z85_encode;
+        -: 1206:      base_decode_ctx_init = z85_decode_ctx_init;
+        -: 1207:      base_decode_ctx = z85_decode_ctx;
+        -: 1208:      break;
+        -: 1209:
+        -: 1210:    default:
+        -: 1211:      error (0, 0, _("missing encoding type"));
+        -: 1212:      usage (EXIT_FAILURE);
+        -: 1213:    }
+        -: 1214:#endif
+        -: 1215:
+       43: 1216:  if (argc - optind > 1)
+branch  0 taken 49% (fallthrough)
+branch  1 taken 51%
+        -: 1217:    {
+       21: 1218:      error (0, 0, _("extra operand %s"), quote (argv[optind + 1]));
+call    0 returned 100%
+       21: 1219:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -: 1220:    }
+        -: 1221:
+       22: 1222:  if (optind < argc)
+branch  0 taken 95% (fallthrough)
+branch  1 taken 5%
+       21: 1223:    infile = argv[optind];
+        -: 1224:  else
+        1: 1225:    infile = "-";
+        -: 1226:
+       22: 1227:  if (STREQ (infile, "-"))
+branch  0 taken 5% (fallthrough)
+branch  1 taken 95%
+        -: 1228:    {
+        1: 1229:      xset_binary_mode (STDIN_FILENO, O_BINARY);
+call    0 returned 100%
+        1: 1230:      input_fh = stdin;
+        -: 1231:    }
+        -: 1232:  else
+        -: 1233:    {
+       21: 1234:      input_fh = fopen (infile, "rb");
+call    0 returned 100%
+       21: 1235:      if (input_fh == nullptr)
+branch  0 taken 81% (fallthrough)
+branch  1 taken 19%
+      17*: 1236:        error (EXIT_FAILURE, errno, "%s", quotef (infile));
+call    0 returned 100%
+call    1 never executed
+        -: 1237:    }
+        -: 1238:
+        5: 1239:  fadvise (input_fh, FADVISE_SEQUENTIAL);
+call    0 returned 100%
+        -: 1240:
+        5: 1241:  if (decode)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1242:    do_decode (input_fh, infile, stdout, ignore_garbage);
+call    0 never executed
+        -: 1243:  else
+        5: 1244:    do_encode (input_fh, infile, stdout, wrap_column);
+        -: 1245:}

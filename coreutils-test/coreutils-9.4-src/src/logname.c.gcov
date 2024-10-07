@@ -1,0 +1,108 @@
+        -:    0:Source:src/logname.c
+        -:    0:Graph:logname.gcno
+        -:    0:Data:logname.gcda
+        -:    0:Runs:23
+        -:    1:/* logname -- print user's login name
+        -:    2:   Copyright (C) 1990-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:#include <config.h>
+        -:   18:#include <stdio.h>
+        -:   19:#include <sys/types.h>
+        -:   20:
+        -:   21:#include "system.h"
+        -:   22:#include "long-options.h"
+        -:   23:#include "quote.h"
+        -:   24:
+        -:   25:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   26:#define PROGRAM_NAME "logname"
+        -:   27:
+        -:   28:#define AUTHORS proper_name ("FIXME: unknown")
+        -:   29:
+        -:   30:void
+function usage called 22 returned 0% blocks executed 38%
+       22:   31:usage (int status)
+        -:   32:{
+       22:   33:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       22:   34:    emit_try_help ();
+call    0 returned 100%
+        -:   35:  else
+        -:   36:    {
+    #####:   37:      printf (_("Usage: %s [OPTION]\n"), program_name);
+call    0 never executed
+    #####:   38:      fputs (_("\
+call    0 never executed
+        -:   39:Print the user's login name.\n\
+        -:   40:\n\
+        -:   41:"), stdout);
+    #####:   42:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   43:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   44:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   45:    }
+       22:   46:  exit (status);
+        -:   47:}
+        -:   48:
+        -:   49:int
+function main called 23 returned 0% blocks executed 80%
+       23:   50:main (int argc, char **argv)
+        -:   51:{
+        -:   52:  char *cp;
+        -:   53:
+        -:   54:  initialize_main (&argc, &argv);
+       23:   55:  set_program_name (argv[0]);
+call    0 returned 100%
+       23:   56:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:   57:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:   58:  textdomain (PACKAGE);
+        -:   59:
+       23:   60:  atexit (close_stdout);
+call    0 returned 100%
+        -:   61:
+       23:   62:  parse_gnu_standard_options_only (argc, argv, PROGRAM_NAME, PACKAGE_NAME,
+call    0 returned 100%
+call    1 returned 96%
+        -:   63:                                   Version, true, usage, AUTHORS,
+        -:   64:                                   (char const *) nullptr);
+        -:   65:
+       22:   66:  if (optind < argc)
+branch  0 taken 95% (fallthrough)
+branch  1 taken 5%
+        -:   67:    {
+       21:   68:      error (0, 0, _("extra operand %s"), quote (argv[optind]));
+call    0 returned 100%
+       21:   69:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:   70:    }
+        -:   71:
+        -:   72:  /* POSIX requires using getlogin (or equivalent code) and prohibits
+        -:   73:     using a fallback technique.  */
+        1:   74:  cp = getlogin ();
+call    0 returned 100%
+        1:   75:  if (! cp)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+    #####:   76:    error (EXIT_FAILURE, 0, _("no login name"));
+call    0 never executed
+        -:   77:
+    #####:   78:  puts (cp);
+call    0 never executed
+    #####:   79:  return EXIT_SUCCESS;
+        -:   80:}

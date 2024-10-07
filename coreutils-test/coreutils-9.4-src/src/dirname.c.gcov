@@ -1,0 +1,178 @@
+        -:    0:Source:src/dirname.c
+        -:    0:Graph:dirname.gcno
+        -:    0:Data:dirname.gcda
+        -:    0:Runs:13
+        -:    1:/* dirname -- strip suffix from file name
+        -:    2:
+        -:    3:   Copyright (C) 1990-2023 Free Software Foundation, Inc.
+        -:    4:
+        -:    5:   This program is free software: you can redistribute it and/or modify
+        -:    6:   it under the terms of the GNU General Public License as published by
+        -:    7:   the Free Software Foundation, either version 3 of the License, or
+        -:    8:   (at your option) any later version.
+        -:    9:
+        -:   10:   This program is distributed in the hope that it will be useful,
+        -:   11:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   12:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   13:   GNU General Public License for more details.
+        -:   14:
+        -:   15:   You should have received a copy of the GNU General Public License
+        -:   16:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   17:
+        -:   18:/* Written by David MacKenzie and Jim Meyering. */
+        -:   19:
+        -:   20:#include <config.h>
+        -:   21:#include <getopt.h>
+        -:   22:#include <stdio.h>
+        -:   23:#include <sys/types.h>
+        -:   24:
+        -:   25:#include "system.h"
+        -:   26:
+        -:   27:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   28:#define PROGRAM_NAME "dirname"
+        -:   29:
+        -:   30:#define AUTHORS \
+        -:   31:  proper_name ("David MacKenzie"), \
+        -:   32:  proper_name ("Jim Meyering")
+        -:   33:
+        -:   34:static struct option const longopts[] =
+        -:   35:{
+        -:   36:  {"zero", no_argument, nullptr, 'z'},
+        -:   37:  {GETOPT_HELP_OPTION_DECL},
+        -:   38:  {GETOPT_VERSION_OPTION_DECL},
+        -:   39:  {nullptr, 0, nullptr, 0}
+        -:   40:};
+        -:   41:
+        -:   42:void
+function usage called 2 returned 0% blocks executed 30%
+        2:   43:usage (int status)
+        -:   44:{
+        2:   45:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        2:   46:    emit_try_help ();
+call    0 returned 100%
+        -:   47:  else
+        -:   48:    {
+    #####:   49:      printf (_("\
+call    0 never executed
+        -:   50:Usage: %s [OPTION] NAME...\n\
+        -:   51:"),
+        -:   52:              program_name);
+    #####:   53:      fputs (_("\
+call    0 never executed
+        -:   54:Output each NAME with its last non-slash component and trailing slashes\n\
+        -:   55:removed; if NAME contains no /'s, output '.' (meaning the current directory).\n\
+        -:   56:\n\
+        -:   57:"), stdout);
+    #####:   58:      fputs (_("\
+call    0 never executed
+        -:   59:  -z, --zero     end each output line with NUL, not newline\n\
+        -:   60:"), stdout);
+    #####:   61:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   62:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   63:      printf (_("\
+call    0 never executed
+        -:   64:\n\
+        -:   65:Examples:\n\
+        -:   66:  %s /usr/bin/          -> \"/usr\"\n\
+        -:   67:  %s dir1/str dir2/str  -> \"dir1\" followed by \"dir2\"\n\
+        -:   68:  %s stdio.h            -> \".\"\n\
+        -:   69:"),
+        -:   70:              program_name, program_name, program_name);
+    #####:   71:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   72:    }
+        2:   73:  exit (status);
+        -:   74:}
+        -:   75:
+        -:   76:int
+function main called 13 returned 85% blocks executed 75%
+       13:   77:main (int argc, char **argv)
+        -:   78:{
+        -:   79:  static char const dot = '.';
+       13:   80:  bool use_nuls = false;
+        -:   81:  char const *result;
+        -:   82:  size_t len;
+        -:   83:
+        -:   84:  initialize_main (&argc, &argv);
+       13:   85:  set_program_name (argv[0]);
+call    0 returned 100%
+       13:   86:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:   87:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:   88:  textdomain (PACKAGE);
+        -:   89:
+       13:   90:  atexit (close_stdout);
+call    0 returned 100%
+        -:   91:
+        -:   92:  while (true)
+    #####:   93:    {
+       13:   94:      int c = getopt_long (argc, argv, "z", longopts, nullptr);
+call    0 returned 100%
+        -:   95:
+       13:   96:      if (c == -1)
+branch  0 taken 92% (fallthrough)
+branch  1 taken 8%
+       12:   97:        break;
+        -:   98:
+        1:   99:      switch (c)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 100%
+        -:  100:        {
+    #####:  101:        case 'z':
+    #####:  102:          use_nuls = true;
+    #####:  103:          break;
+        -:  104:
+    #####:  105:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  106:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+        -:  107:
+        1:  108:        default:
+        1:  109:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  110:        }
+        -:  111:    }
+        -:  112:
+       12:  113:  if (argc < optind + 1)
+branch  0 taken 8% (fallthrough)
+branch  1 taken 92%
+        -:  114:    {
+        -:  115:      error (0, 0, _("missing operand"));
+        1:  116:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  117:    }
+        -:  118:
+       26:  119:  for (; optind < argc; optind++)
+branch  0 taken 58%
+branch  1 taken 42% (fallthrough)
+        -:  120:    {
+       15:  121:      result = argv[optind];
+       15:  122:      len = dir_len (result);
+        -:  123:
+       15:  124:      if (! len)
+branch  0 taken 33% (fallthrough)
+branch  1 taken 67%
+        -:  125:        {
+        5:  126:          result = &dot;
+        5:  127:          len = 1;
+        -:  128:        }
+        -:  129:
+       15:  130:      fwrite (result, 1, len, stdout);
+call    0 returned 100%
+      15*:  131:      putchar (use_nuls ? '\0' :'\n');
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 returned 100%
+        -:  132:    }
+        -:  133:
+       11:  134:  return EXIT_SUCCESS;
+        -:  135:}
