@@ -1,0 +1,422 @@
+        -:    0:Source:src/fold.c
+        -:    0:Graph:fold.gcno
+        -:    0:Data:fold.gcda
+        -:    0:Runs:6
+        -:    1:/* fold -- wrap each input line to fit in specified width.
+        -:    2:   Copyright (C) 1991-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by David MacKenzie, djm@gnu.ai.mit.edu. */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:
+        -:   21:#include <stdio.h>
+        -:   22:#include <getopt.h>
+        -:   23:#include <sys/types.h>
+        -:   24:
+        -:   25:#include "system.h"
+        -:   26:#include "fadvise.h"
+        -:   27:#include "xdectoint.h"
+        -:   28:
+        -:   29:#define TAB_WIDTH 8
+        -:   30:
+        -:   31:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   32:#define PROGRAM_NAME "fold"
+        -:   33:
+        -:   34:#define AUTHORS proper_name ("David MacKenzie")
+        -:   35:
+        -:   36:/* If nonzero, try to break on whitespace. */
+        -:   37:static bool break_spaces;
+        -:   38:
+        -:   39:/* If nonzero, count bytes, not column positions. */
+        -:   40:static bool count_bytes;
+        -:   41:
+        -:   42:/* If nonzero, at least one of the files we read was standard input. */
+        -:   43:static bool have_read_stdin;
+        -:   44:
+        -:   45:static char const shortopts[] = "bsw:0::1::2::3::4::5::6::7::8::9::";
+        -:   46:
+        -:   47:static struct option const longopts[] =
+        -:   48:{
+        -:   49:  {"bytes", no_argument, nullptr, 'b'},
+        -:   50:  {"spaces", no_argument, nullptr, 's'},
+        -:   51:  {"width", required_argument, nullptr, 'w'},
+        -:   52:  {GETOPT_HELP_OPTION_DECL},
+        -:   53:  {GETOPT_VERSION_OPTION_DECL},
+        -:   54:  {nullptr, 0, nullptr, 0}
+        -:   55:};
+        -:   56:
+        -:   57:void
+function usage called 1 returned 0% blocks executed 27%
+        1:   58:usage (int status)
+        -:   59:{
+        1:   60:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:   61:    emit_try_help ();
+call    0 returned 100%
+        -:   62:  else
+        -:   63:    {
+    #####:   64:      printf (_("\
+call    0 never executed
+        -:   65:Usage: %s [OPTION]... [FILE]...\n\
+        -:   66:"),
+        -:   67:              program_name);
+    #####:   68:      fputs (_("\
+call    0 never executed
+        -:   69:Wrap input lines in each FILE, writing to standard output.\n\
+        -:   70:"), stdout);
+        -:   71:
+    #####:   72:      emit_stdin_note ();
+call    0 never executed
+    #####:   73:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:   74:
+    #####:   75:      fputs (_("\
+call    0 never executed
+        -:   76:  -b, --bytes         count bytes rather than columns\n\
+        -:   77:  -s, --spaces        break at spaces\n\
+        -:   78:  -w, --width=WIDTH   use WIDTH columns instead of 80\n\
+        -:   79:"), stdout);
+    #####:   80:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   81:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   82:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   83:    }
+        1:   84:  exit (status);
+        -:   85:}
+        -:   86:
+        -:   87:/* Assuming the current column is COLUMN, return the column that
+        -:   88:   printing C will move the cursor to.
+        -:   89:   The first column is 0. */
+        -:   90:
+        -:   91:static size_t
+function adjust_column called 8 returned 100% blocks executed 58%
+        8:   92:adjust_column (size_t column, char c)
+        -:   93:{
+        8:   94:  if (!count_bytes)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:   95:    {
+        8:   96:      if (c == '\b')
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:   97:        {
+    #####:   98:          if (column > 0)
+branch  0 never executed
+branch  1 never executed
+    #####:   99:            column--;
+        -:  100:        }
+        8:  101:      else if (c == '\r')
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  102:        column = 0;
+        8:  103:      else if (c == '\t')
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  104:        column += TAB_WIDTH - column % TAB_WIDTH;
+        -:  105:      else /* if (isprint (c)) */
+        8:  106:        column++;
+        -:  107:    }
+        -:  108:  else
+    #####:  109:    column++;
+        8:  110:  return column;
+        -:  111:}
+        -:  112:
+        -:  113:/* Fold file FILENAME, or standard input if FILENAME is "-",
+        -:  114:   to stdout, with maximum line length WIDTH.
+        -:  115:   Return true if successful.  */
+        -:  116:
+        -:  117:static bool
+function fold_file called 9 returned 100% blocks executed 52%
+        9:  118:fold_file (char const *filename, size_t width)
+        -:  119:{
+        -:  120:  FILE *istream;
+        -:  121:  int c;
+        9:  122:  size_t column = 0;		/* Screen column where next char will go. */
+        9:  123:  size_t offset_out = 0;	/* Index in 'line_out' for next char. */
+        -:  124:  static char *line_out = nullptr;
+        -:  125:  static size_t allocated_out = 0;
+        -:  126:  int saved_errno;
+        -:  127:
+        9:  128:  if (STREQ (filename, "-"))
+branch  0 taken 11% (fallthrough)
+branch  1 taken 89%
+        -:  129:    {
+        1:  130:      istream = stdin;
+        1:  131:      have_read_stdin = true;
+        -:  132:    }
+        -:  133:  else
+        8:  134:    istream = fopen (filename, "r");
+call    0 returned 100%
+        -:  135:
+        9:  136:  if (istream == nullptr)
+branch  0 taken 89% (fallthrough)
+branch  1 taken 11%
+        -:  137:    {
+        8:  138:      error (0, errno, "%s", quotef (filename));
+call    0 returned 100%
+        8:  139:      return false;
+        -:  140:    }
+        -:  141:
+        1:  142:  fadvise (istream, FADVISE_SEQUENTIAL);
+call    0 returned 100%
+        -:  143:
+        9:  144:  while ((c = getc (istream)) != EOF)
+call    0 returned 100%
+branch  1 taken 89%
+branch  2 taken 11% (fallthrough)
+        -:  145:    {
+        8:  146:      if (offset_out + 1 >= allocated_out)
+branch  0 taken 12% (fallthrough)
+branch  1 taken 88%
+        1:  147:        line_out = X2REALLOC (line_out, &allocated_out);
+call    0 returned 100%
+        -:  148:
+       8*:  149:      if (c == '\n')
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  150:        {
+    #####:  151:          line_out[offset_out++] = c;
+    #####:  152:          fwrite (line_out, sizeof (char), offset_out, stdout);
+call    0 never executed
+    #####:  153:          column = offset_out = 0;
+    #####:  154:          continue;
+        -:  155:        }
+        -:  156:
+        8:  157:    rescan:
+        8:  158:      column = adjust_column (column, c);
+call    0 returned 100%
+        -:  159:
+        8:  160:      if (column > width)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  161:        {
+        -:  162:          /* This character would make the line too long.
+        -:  163:             Print the line plus a newline, and make this character
+        -:  164:             start the next line. */
+    #####:  165:          if (break_spaces)
+branch  0 never executed
+branch  1 never executed
+        -:  166:            {
+    #####:  167:              bool found_blank = false;
+    #####:  168:              size_t logical_end = offset_out;
+        -:  169:
+        -:  170:              /* Look for the last blank. */
+    #####:  171:              while (logical_end)
+branch  0 never executed
+branch  1 never executed
+        -:  172:                {
+    #####:  173:                  --logical_end;
+    #####:  174:                  if (isblank (to_uchar (line_out[logical_end])))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  175:                    {
+    #####:  176:                      found_blank = true;
+    #####:  177:                      break;
+        -:  178:                    }
+        -:  179:                }
+        -:  180:
+    #####:  181:              if (found_blank)
+branch  0 never executed
+branch  1 never executed
+        -:  182:                {
+        -:  183:                  size_t i;
+        -:  184:
+        -:  185:                  /* Found a blank.  Don't output the part after it. */
+    #####:  186:                  logical_end++;
+    #####:  187:                  fwrite (line_out, sizeof (char), (size_t) logical_end,
+call    0 never executed
+        -:  188:                          stdout);
+    #####:  189:                  putchar ('\n');
+call    0 never executed
+        -:  190:                  /* Move the remainder to the beginning of the next line.
+        -:  191:                     The areas being copied here might overlap. */
+    #####:  192:                  memmove (line_out, line_out + logical_end,
+        -:  193:                           offset_out - logical_end);
+    #####:  194:                  offset_out -= logical_end;
+    #####:  195:                  for (column = i = 0; i < offset_out; i++)
+branch  0 never executed
+branch  1 never executed
+    #####:  196:                    column = adjust_column (column, line_out[i]);
+call    0 never executed
+    #####:  197:                  goto rescan;
+        -:  198:                }
+        -:  199:            }
+        -:  200:
+    #####:  201:          if (offset_out == 0)
+branch  0 never executed
+branch  1 never executed
+        -:  202:            {
+    #####:  203:              line_out[offset_out++] = c;
+    #####:  204:              continue;
+        -:  205:            }
+        -:  206:
+    #####:  207:          line_out[offset_out++] = '\n';
+    #####:  208:          fwrite (line_out, sizeof (char), (size_t) offset_out, stdout);
+call    0 never executed
+    #####:  209:          column = offset_out = 0;
+    #####:  210:          goto rescan;
+        -:  211:        }
+        -:  212:
+        8:  213:      line_out[offset_out++] = c;
+        -:  214:    }
+        -:  215:
+        1:  216:  saved_errno = errno;
+        1:  217:  if (!ferror (istream))
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+        1:  218:    saved_errno = 0;
+        -:  219:
+        1:  220:  if (offset_out)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  221:    fwrite (line_out, sizeof (char), (size_t) offset_out, stdout);
+call    0 returned 100%
+        -:  222:
+        1:  223:  if (STREQ (filename, "-"))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  224:    clearerr (istream);
+call    0 returned 100%
+    #####:  225:  else if (fclose (istream) != 0 && !saved_errno)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  226:    saved_errno = errno;
+        -:  227:
+        1:  228:  if (saved_errno)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  229:    {
+    #####:  230:      error (0, saved_errno, "%s", quotef (filename));
+call    0 never executed
+    #####:  231:      return false;
+        -:  232:    }
+        -:  233:
+        1:  234:  return true;
+        -:  235:}
+        -:  236:
+        -:  237:int
+function main called 6 returned 83% blocks executed 54%
+        6:  238:main (int argc, char **argv)
+        -:  239:{
+        6:  240:  size_t width = 80;
+        -:  241:  int i;
+        -:  242:  int optc;
+        -:  243:  bool ok;
+        -:  244:
+        -:  245:  initialize_main (&argc, &argv);
+        6:  246:  set_program_name (argv[0]);
+call    0 returned 100%
+        6:  247:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  248:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  249:  textdomain (PACKAGE);
+        -:  250:
+        6:  251:  atexit (close_stdout);
+call    0 returned 100%
+        -:  252:
+        6:  253:  break_spaces = count_bytes = have_read_stdin = false;
+        -:  254:
+        6:  255:  while ((optc = getopt_long (argc, argv, shortopts, longopts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 17%
+branch  2 taken 83% (fallthrough)
+        -:  256:    {
+        -:  257:      char optargbuf[2];
+        -:  258:
+        1:  259:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 100%
+        -:  260:        {
+    #####:  261:        case 'b':		/* Count bytes rather than columns. */
+    #####:  262:          count_bytes = true;
+    #####:  263:          break;
+        -:  264:
+    #####:  265:        case 's':		/* Break at word boundaries. */
+    #####:  266:          break_spaces = true;
+    #####:  267:          break;
+        -:  268:
+    #####:  269:        case '0': case '1': case '2': case '3': case '4':
+        -:  270:        case '5': case '6': case '7': case '8': case '9':
+    #####:  271:          if (optarg)
+branch  0 never executed
+branch  1 never executed
+    #####:  272:            optarg--;
+        -:  273:          else
+        -:  274:            {
+    #####:  275:              optargbuf[0] = optc;
+    #####:  276:              optargbuf[1] = '\0';
+    #####:  277:              optarg = optargbuf;
+        -:  278:            }
+        -:  279:          FALLTHROUGH;
+        -:  280:        case 'w':		/* Line width. */
+    #####:  281:          width = xdectoumax (optarg, 1, SIZE_MAX - TAB_WIDTH - 1, "",
+call    0 never executed
+        -:  282:                              _("invalid number of columns"), 0);
+    #####:  283:          break;
+        -:  284:
+    #####:  285:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  286:
+    #####:  287:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  288:
+        1:  289:        default:
+        1:  290:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  291:        }
+        -:  292:    }
+        -:  293:
+        5:  294:  if (argc == optind)
+branch  0 taken 20% (fallthrough)
+branch  1 taken 80%
+        1:  295:    ok = fold_file ("-", width);
+call    0 returned 100%
+        -:  296:  else
+        -:  297:    {
+        4:  298:      ok = true;
+       12:  299:      for (i = optind; i < argc; i++)
+branch  0 taken 67%
+branch  1 taken 33% (fallthrough)
+        8:  300:        ok &= fold_file (argv[i], width);
+call    0 returned 100%
+        -:  301:    }
+        -:  302:
+        5:  303:  if (have_read_stdin && fclose (stdin) == EOF)
+branch  0 taken 20% (fallthrough)
+branch  1 taken 80%
+call    2 returned 100%
+branch  3 taken 0% (fallthrough)
+branch  4 taken 100%
+    #####:  304:    error (EXIT_FAILURE, errno, "-");
+call    0 never executed
+        -:  305:
+        5:  306:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -:  307:}

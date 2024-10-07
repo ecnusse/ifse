@@ -1,0 +1,1398 @@
+        -:    0:Source:src/fmt.c
+        -:    0:Graph:fmt.gcno
+        -:    0:Data:fmt.gcda
+        -:    0:Runs:26
+        -:    1:/* GNU fmt -- simple text formatter.
+        -:    2:   Copyright (C) 1994-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Ross Paterson <rap@doc.ic.ac.uk>.  */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <stdio.h>
+        -:   21:#include <sys/types.h>
+        -:   22:#include <getopt.h>
+        -:   23:
+        -:   24:/* Redefine.  Otherwise, systems (Unicos for one) with headers that define
+        -:   25:   it to be a type get syntax errors for the variable declaration below.  */
+        -:   26:#define word unused_word_type
+        -:   27:
+        -:   28:#include "c-ctype.h"
+        -:   29:#include "system.h"
+        -:   30:#include "fadvise.h"
+        -:   31:#include "xdectoint.h"
+        -:   32:
+        -:   33:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   34:#define PROGRAM_NAME "fmt"
+        -:   35:
+        -:   36:#define AUTHORS proper_name ("Ross Paterson")
+        -:   37:
+        -:   38:/* The following parameters represent the program's idea of what is
+        -:   39:   "best".  Adjust to taste, subject to the caveats given.  */
+        -:   40:
+        -:   41:/* Default longest permitted line length (max_width).  */
+        -:   42:#define WIDTH	75
+        -:   43:
+        -:   44:/* Prefer lines to be LEEWAY % shorter than the maximum width, giving
+        -:   45:   room for optimization.  */
+        -:   46:#define LEEWAY	7
+        -:   47:
+        -:   48:/* The default secondary indent of tagged paragraph used for unindented
+        -:   49:   one-line paragraphs not preceded by any multi-line paragraphs.  */
+        -:   50:#define DEF_INDENT 3
+        -:   51:
+        -:   52:/* Costs and bonuses are expressed as the equivalent departure from the
+        -:   53:   optimal line length, multiplied by 10.  e.g. assigning something a
+        -:   54:   cost of 50 means that it is as bad as a line 5 characters too short
+        -:   55:   or too long.  The definition of SHORT_COST(n) should not be changed.
+        -:   56:   However, EQUIV(n) may need tuning.  */
+        -:   57:
+        -:   58:/* FIXME: "fmt" misbehaves given large inputs or options.  One
+        -:   59:   possible workaround for part of the problem is to change COST to be
+        -:   60:   a floating-point type.  There are other problems besides COST,
+        -:   61:   though; see MAXWORDS below.  */
+        -:   62:
+        -:   63:typedef long int COST;
+        -:   64:
+        -:   65:#define MAXCOST	TYPE_MAXIMUM (COST)
+        -:   66:
+        -:   67:#define SQR(n)		((n) * (n))
+        -:   68:#define EQUIV(n)	SQR ((COST) (n))
+        -:   69:
+        -:   70:/* Cost of a filled line n chars longer or shorter than goal_width.  */
+        -:   71:#define SHORT_COST(n)	EQUIV ((n) * 10)
+        -:   72:
+        -:   73:/* Cost of the difference between adjacent filled lines.  */
+        -:   74:#define RAGGED_COST(n)	(SHORT_COST (n) / 2)
+        -:   75:
+        -:   76:/* Basic cost per line.  */
+        -:   77:#define LINE_COST	EQUIV (70)
+        -:   78:
+        -:   79:/* Cost of breaking a line after the first word of a sentence, where
+        -:   80:   the length of the word is N.  */
+        -:   81:#define WIDOW_COST(n)	(EQUIV (200) / ((n) + 2))
+        -:   82:
+        -:   83:/* Cost of breaking a line before the last word of a sentence, where
+        -:   84:   the length of the word is N.  */
+        -:   85:#define ORPHAN_COST(n)	(EQUIV (150) / ((n) + 2))
+        -:   86:
+        -:   87:/* Bonus for breaking a line at the end of a sentence.  */
+        -:   88:#define SENTENCE_BONUS	EQUIV (50)
+        -:   89:
+        -:   90:/* Cost of breaking a line after a period not marking end of a sentence.
+        -:   91:   With the definition of sentence we are using (borrowed from emacs, see
+        -:   92:   get_line()) such a break would then look like a sentence break.  Hence
+        -:   93:   we assign a very high cost -- it should be avoided unless things are
+        -:   94:   really bad.  */
+        -:   95:#define NOBREAK_COST	EQUIV (600)
+        -:   96:
+        -:   97:/* Bonus for breaking a line before open parenthesis.  */
+        -:   98:#define PAREN_BONUS	EQUIV (40)
+        -:   99:
+        -:  100:/* Bonus for breaking a line after other punctuation.  */
+        -:  101:#define PUNCT_BONUS	EQUIV(40)
+        -:  102:
+        -:  103:/* Credit for breaking a long paragraph one line later.  */
+        -:  104:#define LINE_CREDIT	EQUIV(3)
+        -:  105:
+        -:  106:/* Size of paragraph buffer, in words and characters.  Longer paragraphs
+        -:  107:   are handled neatly (cf. flush_paragraph()), so long as these values
+        -:  108:   are considerably greater than required by the width.  These values
+        -:  109:   cannot be extended indefinitely: doing so would run into size limits
+        -:  110:   and/or cause more overflows in cost calculations.  FIXME: Remove these
+        -:  111:   arbitrary limits.  */
+        -:  112:
+        -:  113:#define MAXWORDS	1000
+        -:  114:#define MAXCHARS	5000
+        -:  115:
+        -:  116:/* Extra ctype(3)-style macros.  */
+        -:  117:
+        -:  118:#define isopen(c)	(strchr ("(['`\"", c) != nullptr)
+        -:  119:#define isclose(c)	(strchr (")]'\"", c) != nullptr)
+        -:  120:#define isperiod(c)	(strchr (".?!", c) != nullptr)
+        -:  121:
+        -:  122:/* Size of a tab stop, for expansion on input and re-introduction on
+        -:  123:   output.  */
+        -:  124:#define TABWIDTH	8
+        -:  125:
+        -:  126:/* Word descriptor structure.  */
+        -:  127:
+        -:  128:typedef struct Word WORD;
+        -:  129:
+        -:  130:struct Word
+        -:  131:  {
+        -:  132:
+        -:  133:    /* Static attributes determined during input.  */
+        -:  134:
+        -:  135:    char const *text;		/* the text of the word */
+        -:  136:    int length;			/* length of this word */
+        -:  137:    int space;			/* the size of the following space */
+        -:  138:    unsigned int paren:1;	/* starts with open paren */
+        -:  139:    unsigned int period:1;	/* ends in [.?!])* */
+        -:  140:    unsigned int punct:1;	/* ends in punctuation */
+        -:  141:    unsigned int final:1;	/* end of sentence */
+        -:  142:
+        -:  143:    /* The remaining fields are computed during the optimization.  */
+        -:  144:
+        -:  145:    int line_length;		/* length of the best line starting here */
+        -:  146:    COST best_cost;		/* cost of best paragraph starting here */
+        -:  147:    WORD *next_break;		/* break which achieves best_cost */
+        -:  148:  };
+        -:  149:
+        -:  150:/* Forward declarations.  */
+        -:  151:
+        -:  152:static void set_prefix (char *p);
+        -:  153:static bool fmt (FILE *f, char const *);
+        -:  154:static bool get_paragraph (FILE *f);
+        -:  155:static int get_line (FILE *f, int c);
+        -:  156:static int get_prefix (FILE *f);
+        -:  157:static int get_space (FILE *f, int c);
+        -:  158:static int copy_rest (FILE *f, int c);
+        -:  159:static bool same_para (int c);
+        -:  160:static void flush_paragraph (void);
+        -:  161:static void fmt_paragraph (void);
+        -:  162:static void check_punctuation (WORD *w);
+        -:  163:static COST base_cost (WORD *this);
+        -:  164:static COST line_cost (WORD *next, int len);
+        -:  165:static void put_paragraph (WORD *finish);
+        -:  166:static void put_line (WORD *w, int indent);
+        -:  167:static void put_word (WORD *w);
+        -:  168:static void put_space (int space);
+        -:  169:
+        -:  170:/* Option values.  */
+        -:  171:
+        -:  172:/* If true, first 2 lines may have different indent (default false).  */
+        -:  173:static bool crown;
+        -:  174:
+        -:  175:/* If true, first 2 lines _must_ have different indent (default false).  */
+        -:  176:static bool tagged;
+        -:  177:
+        -:  178:/* If true, each line is a paragraph on its own (default false).  */
+        -:  179:static bool split;
+        -:  180:
+        -:  181:/* If true, don't preserve inter-word spacing (default false).  */
+        -:  182:static bool uniform;
+        -:  183:
+        -:  184:/* Prefix minus leading and trailing spaces (default "").  */
+        -:  185:static char const *prefix;
+        -:  186:
+        -:  187:/* User-supplied maximum line width (default WIDTH).  The only output
+        -:  188:   lines longer than this will each comprise a single word.  */
+        -:  189:static int max_width;
+        -:  190:
+        -:  191:/* Values derived from the option values.  */
+        -:  192:
+        -:  193:/* The length of prefix minus leading space.  */
+        -:  194:static int prefix_full_length;
+        -:  195:
+        -:  196:/* The length of the leading space trimmed from the prefix.  */
+        -:  197:static int prefix_lead_space;
+        -:  198:
+        -:  199:/* The length of prefix minus leading and trailing space.  */
+        -:  200:static int prefix_length;
+        -:  201:
+        -:  202:/* The preferred width of text lines, set to LEEWAY % less than max_width.  */
+        -:  203:static int goal_width;
+        -:  204:
+        -:  205:/* Dynamic variables.  */
+        -:  206:
+        -:  207:/* Start column of the character most recently read from the input file.  */
+        -:  208:static int in_column;
+        -:  209:
+        -:  210:/* Start column of the next character to be written to stdout.  */
+        -:  211:static int out_column;
+        -:  212:
+        -:  213:/* Space for the paragraph text -- longer paragraphs are handled neatly
+        -:  214:   (cf. flush_paragraph()).  */
+        -:  215:static char parabuf[MAXCHARS];
+        -:  216:
+        -:  217:/* A pointer into parabuf, indicating the first unused character position.  */
+        -:  218:static char *wptr;
+        -:  219:
+        -:  220:/* The words of a paragraph -- longer paragraphs are handled neatly
+        -:  221:   (cf. flush_paragraph()).  */
+        -:  222:static WORD word[MAXWORDS];
+        -:  223:
+        -:  224:/* A pointer into the above word array, indicating the first position
+        -:  225:   after the last complete word.  Sometimes it will point at an incomplete
+        -:  226:   word.  */
+        -:  227:static WORD *word_limit;
+        -:  228:
+        -:  229:/* If true, current input file contains tab characters, and so tabs can be
+        -:  230:   used for white space on output.  */
+        -:  231:static bool tabs;
+        -:  232:
+        -:  233:/* Space before trimmed prefix on each line of the current paragraph.  */
+        -:  234:static int prefix_indent;
+        -:  235:
+        -:  236:/* Indentation of the first line of the current paragraph.  */
+        -:  237:static int first_indent;
+        -:  238:
+        -:  239:/* Indentation of other lines of the current paragraph */
+        -:  240:static int other_indent;
+        -:  241:
+        -:  242:/* To detect the end of a paragraph, we need to look ahead to the first
+        -:  243:   non-blank character after the prefix on the next line, or the first
+        -:  244:   character on the following line that failed to match the prefix.
+        -:  245:   We can reconstruct the lookahead from that character (next_char), its
+        -:  246:   position on the line (in_column) and the amount of space before the
+        -:  247:   prefix (next_prefix_indent).  See get_paragraph() and copy_rest().  */
+        -:  248:
+        -:  249:/* The last character read from the input file.  */
+        -:  250:static int next_char;
+        -:  251:
+        -:  252:/* The space before the trimmed prefix (or part of it) on the next line
+        -:  253:   after the current paragraph.  */
+        -:  254:static int next_prefix_indent;
+        -:  255:
+        -:  256:/* If nonzero, the length of the last line output in the current
+        -:  257:   paragraph, used to charge for raggedness at the split point for long
+        -:  258:   paragraphs chosen by fmt_paragraph().  */
+        -:  259:static int last_line_length;
+        -:  260:
+        -:  261:void
+function usage called 1 returned 0% blocks executed 25%
+        1:  262:usage (int status)
+        -:  263:{
+        1:  264:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  265:    emit_try_help ();
+call    0 returned 100%
+        -:  266:  else
+        -:  267:    {
+    #####:  268:      printf (_("Usage: %s [-WIDTH] [OPTION]... [FILE]...\n"), program_name);
+call    0 never executed
+    #####:  269:      fputs (_("\
+call    0 never executed
+        -:  270:Reformat each paragraph in the FILE(s), writing to standard output.\n\
+        -:  271:The option -WIDTH is an abbreviated form of --width=DIGITS.\n\
+        -:  272:"), stdout);
+        -:  273:
+    #####:  274:      emit_stdin_note ();
+call    0 never executed
+    #####:  275:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  276:
+    #####:  277:      fputs (_("\
+call    0 never executed
+        -:  278:  -c, --crown-margin        preserve indentation of first two lines\n\
+        -:  279:  -p, --prefix=STRING       reformat only lines beginning with STRING,\n\
+        -:  280:                              reattaching the prefix to reformatted lines\n\
+        -:  281:  -s, --split-only          split long lines, but do not refill\n\
+        -:  282:"),
+        -:  283:             stdout);
+        -:  284:      /* Tell xgettext that the "% o" below is not a printf-style
+        -:  285:         format string:  xgettext:no-c-format */
+    #####:  286:      fputs (_("\
+call    0 never executed
+        -:  287:  -t, --tagged-paragraph    indentation of first line different from second\n\
+        -:  288:  -u, --uniform-spacing     one space between words, two after sentences\n\
+        -:  289:  -w, --width=WIDTH         maximum line width (default of 75 columns)\n\
+        -:  290:  -g, --goal=WIDTH          goal width (default of 93% of width)\n\
+        -:  291:"), stdout);
+    #####:  292:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  293:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  294:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  295:    }
+        1:  296:  exit (status);
+        -:  297:}
+        -:  298:
+        -:  299:/* Decode options and launch execution.  */
+        -:  300:
+        -:  301:static struct option const long_options[] =
+        -:  302:{
+        -:  303:  {"crown-margin", no_argument, nullptr, 'c'},
+        -:  304:  {"prefix", required_argument, nullptr, 'p'},
+        -:  305:  {"split-only", no_argument, nullptr, 's'},
+        -:  306:  {"tagged-paragraph", no_argument, nullptr, 't'},
+        -:  307:  {"uniform-spacing", no_argument, nullptr, 'u'},
+        -:  308:  {"width", required_argument, nullptr, 'w'},
+        -:  309:  {"goal", required_argument, nullptr, 'g'},
+        -:  310:  {GETOPT_HELP_OPTION_DECL},
+        -:  311:  {GETOPT_VERSION_OPTION_DECL},
+        -:  312:  {nullptr, 0, nullptr, 0},
+        -:  313:};
+        -:  314:
+        -:  315:int
+function main called 26 returned 12% blocks executed 56%
+       26:  316:main (int argc, char **argv)
+        -:  317:{
+        -:  318:  int optchar;
+       26:  319:  bool ok = true;
+       26:  320:  char const *max_width_option = nullptr;
+       26:  321:  char const *goal_width_option = nullptr;
+        -:  322:
+        -:  323:  initialize_main (&argc, &argv);
+       26:  324:  set_program_name (argv[0]);
+call    0 returned 100%
+       26:  325:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  326:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  327:  textdomain (PACKAGE);
+        -:  328:
+       26:  329:  atexit (close_stdout);
+call    0 returned 100%
+        -:  330:
+       26:  331:  crown = tagged = split = uniform = false;
+       26:  332:  max_width = WIDTH;
+       26:  333:  prefix = "";
+       26:  334:  prefix_length = prefix_lead_space = prefix_full_length = 0;
+        -:  335:
+       26:  336:  if (argc > 1 && argv[1][0] == '-' && ISDIGIT (argv[1][1]))
+branch  0 taken 96% (fallthrough)
+branch  1 taken 4%
+branch  2 taken 92% (fallthrough)
+branch  3 taken 8%
+branch  4 taken 96% (fallthrough)
+branch  5 taken 4%
+        -:  337:    {
+        -:  338:      /* Old option syntax; a dash followed by one or more digits.  */
+       22:  339:      max_width_option = argv[1] + 1;
+        -:  340:
+        -:  341:      /* Make the option we just parsed invisible to getopt.  */
+       22:  342:      argv[1] = argv[0];
+       22:  343:      argv++;
+       22:  344:      argc--;
+        -:  345:    }
+        -:  346:
+       26:  347:  while ((optchar = getopt_long (argc, argv, "0123456789cstuw:p:g:",
+call    0 returned 100%
+        -:  348:                                 long_options, nullptr))
+       26:  349:         != -1)
+branch  0 taken 4%
+branch  1 taken 96% (fallthrough)
+        1:  350:    switch (optchar)
+branch  0 taken 100%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+        -:  351:      {
+        1:  352:      default:
+        1:  353:        if (ISDIGIT (optchar))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  354:          error (0, 0, _("invalid option -- %c; -WIDTH is recognized\
+        -:  355: only when it is the first\noption; use -w N instead"),
+        -:  356:                 optchar);
+        1:  357:        usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  358:
+    #####:  359:      case 'c':
+    #####:  360:        crown = true;
+    #####:  361:        break;
+        -:  362:
+    #####:  363:      case 's':
+    #####:  364:        split = true;
+    #####:  365:        break;
+        -:  366:
+    #####:  367:      case 't':
+    #####:  368:        tagged = true;
+    #####:  369:        break;
+        -:  370:
+    #####:  371:      case 'u':
+    #####:  372:        uniform = true;
+    #####:  373:        break;
+        -:  374:
+    #####:  375:      case 'w':
+    #####:  376:        max_width_option = optarg;
+    #####:  377:        break;
+        -:  378:
+    #####:  379:      case 'g':
+    #####:  380:        goal_width_option = optarg;
+    #####:  381:        break;
+        -:  382:
+    #####:  383:      case 'p':
+    #####:  384:        set_prefix (optarg);
+call    0 never executed
+    #####:  385:        break;
+        -:  386:
+    #####:  387:      case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  388:
+    #####:  389:      case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  390:
+        -:  391:      }
+        -:  392:
+       25:  393:  if (max_width_option)
+branch  0 taken 88% (fallthrough)
+branch  1 taken 12%
+        -:  394:    {
+        -:  395:      /* Limit max_width to MAXCHARS / 2; otherwise, the resulting
+        -:  396:         output can be quite ugly.  */
+      22*:  397:      max_width = xdectoumax (max_width_option, 0, MAXCHARS / 2, "",
+call    0 returned 0%
+        -:  398:                              _("invalid width"), 0);
+        -:  399:    }
+        -:  400:
+        3:  401:  if (goal_width_option)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  402:    {
+        -:  403:      /* Limit goal_width to max_width.  */
+    #####:  404:      goal_width = xdectoumax (goal_width_option, 0, max_width, "",
+call    0 never executed
+        -:  405:                               _("invalid width"), 0);
+    #####:  406:      if (max_width_option == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  407:        max_width = goal_width + 10;
+        -:  408:    }
+        -:  409:  else
+        -:  410:    {
+        3:  411:      goal_width = max_width * (2 * (100 - LEEWAY) + 1) / 200;
+        -:  412:    }
+        -:  413:
+        3:  414:  bool have_read_stdin = false;
+        -:  415:
+        3:  416:  if (optind == argc)
+branch  0 taken 33% (fallthrough)
+branch  1 taken 67%
+        -:  417:    {
+        1:  418:      have_read_stdin = true;
+        1:  419:      ok = fmt (stdin, "-");
+call    0 returned 100%
+        -:  420:    }
+        -:  421:  else
+        -:  422:    {
+        5:  423:      for (; optind < argc; optind++)
+branch  0 taken 60%
+branch  1 taken 40% (fallthrough)
+        -:  424:        {
+        3:  425:          char *file = argv[optind];
+        3:  426:          if (STREQ (file, "-"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  427:            {
+    #####:  428:              ok &= fmt (stdin, file);
+call    0 never executed
+    #####:  429:              have_read_stdin = true;
+        -:  430:            }
+        -:  431:          else
+        -:  432:            {
+        -:  433:              FILE *in_stream;
+        3:  434:              in_stream = fopen (file, "r");
+call    0 returned 100%
+        3:  435:              if (in_stream != nullptr)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  436:                ok &= fmt (in_stream, file);
+call    0 never executed
+        -:  437:              else
+        -:  438:                {
+        3:  439:                  error (0, errno, _("cannot open %s for reading"),
+call    0 returned 100%
+        -:  440:                         quoteaf (file));
+        3:  441:                  ok = false;
+        -:  442:                }
+        -:  443:            }
+        -:  444:        }
+        -:  445:    }
+        -:  446:
+        3:  447:  if (have_read_stdin && fclose (stdin) != 0)
+branch  0 taken 33% (fallthrough)
+branch  1 taken 67%
+call    2 returned 100%
+branch  3 taken 0% (fallthrough)
+branch  4 taken 100%
+    #####:  448:    error (EXIT_FAILURE, errno, "%s", _("closing standard input"));
+call    0 never executed
+        -:  449:
+        3:  450:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -:  451:}
+        -:  452:
+        -:  453:/* Trim space from the front and back of the string P, yielding the prefix,
+        -:  454:   and record the lengths of the prefix and the space trimmed.  */
+        -:  455:
+        -:  456:static void
+function set_prefix called 0 returned 0% blocks executed 0%
+    #####:  457:set_prefix (char *p)
+        -:  458:{
+        -:  459:  char *s;
+        -:  460:
+    #####:  461:  prefix_lead_space = 0;
+    #####:  462:  while (*p == ' ')
+branch  0 never executed
+branch  1 never executed
+        -:  463:    {
+    #####:  464:      prefix_lead_space++;
+    #####:  465:      p++;
+        -:  466:    }
+    #####:  467:  prefix = p;
+    #####:  468:  prefix_full_length = strlen (p);
+    #####:  469:  s = p + prefix_full_length;
+    #####:  470:  while (s > p && s[-1] == ' ')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  471:    s--;
+    #####:  472:  *s = '\0';
+    #####:  473:  prefix_length = s - p;
+    #####:  474:}
+        -:  475:
+        -:  476:/* Read F and send formatted output to stdout.
+        -:  477:   Close F when done, unless F is stdin.  Diagnose input errors, using FILE.
+        -:  478:   If !F, assume F resulted from an fopen failure and diagnose that.
+        -:  479:   Return true if successful.  */
+        -:  480:
+        -:  481:static bool
+function fmt called 1 returned 100% blocks executed 54%
+        1:  482:fmt (FILE *f, char const *file)
+        -:  483:{
+        1:  484:  fadvise (f, FADVISE_SEQUENTIAL);
+call    0 returned 100%
+        1:  485:  tabs = false;
+        1:  486:  other_indent = 0;
+        1:  487:  next_char = get_prefix (f);
+call    0 returned 100%
+        2:  488:  while (get_paragraph (f))
+call    0 returned 100%
+branch  1 taken 50%
+branch  2 taken 50% (fallthrough)
+        -:  489:    {
+        1:  490:      fmt_paragraph ();
+call    0 returned 100%
+        1:  491:      put_paragraph (word_limit);
+call    0 returned 100%
+        -:  492:    }
+        -:  493:
+       1*:  494:  int err = ferror (f) ? 0 : -1;
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+        1:  495:  if (f == stdin)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  496:    clearerr (f);
+call    0 returned 100%
+    #####:  497:  else if (fclose (f) != 0 && err < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  498:    err = errno;
+        1:  499:  if (0 <= err)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  500:    error (0, err, err ? "%s" : _("read error"), quotef (file));
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        1:  501:  return err < 0;
+        -:  502:}
+        -:  503:
+        -:  504:/* Set the global variable 'other_indent' according to SAME_PARAGRAPH
+        -:  505:   and other global variables.  */
+        -:  506:
+        -:  507:static void
+function set_other_indent called 1 returned 100% blocks executed 26%
+        1:  508:set_other_indent (bool same_paragraph)
+        -:  509:{
+        1:  510:  if (split)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  511:    other_indent = first_indent;
+        1:  512:  else if (crown)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  513:    {
+    #####:  514:      other_indent = (same_paragraph ? in_column : first_indent);
+branch  0 never executed
+branch  1 never executed
+        -:  515:    }
+        1:  516:  else if (tagged)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  517:    {
+    #####:  518:      if (same_paragraph && in_column != first_indent)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  519:        {
+    #####:  520:          other_indent = in_column;
+        -:  521:        }
+        -:  522:
+        -:  523:      /* Only one line: use the secondary indent from last time if it
+        -:  524:         splits, or 0 if there have been no multi-line paragraphs in the
+        -:  525:         input so far.  But if these rules make the two indents the same,
+        -:  526:         pick a new secondary indent.  */
+        -:  527:
+    #####:  528:      else if (other_indent == first_indent)
+branch  0 never executed
+branch  1 never executed
+    #####:  529:        other_indent = first_indent == 0 ? DEF_INDENT : 0;
+branch  0 never executed
+branch  1 never executed
+        -:  530:    }
+        -:  531:  else
+        -:  532:    {
+        1:  533:      other_indent = first_indent;
+        -:  534:    }
+        1:  535:}
+        -:  536:
+        -:  537:/* Read a paragraph from input file F.  A paragraph consists of a
+        -:  538:   maximal number of non-blank (excluding any prefix) lines subject to:
+        -:  539:   * In split mode, a paragraph is a single non-blank line.
+        -:  540:   * In crown mode, the second and subsequent lines must have the
+        -:  541:   same indentation, but possibly different from the indent of the
+        -:  542:   first line.
+        -:  543:   * Tagged mode is similar, but the first and second lines must have
+        -:  544:   different indentations.
+        -:  545:   * Otherwise, all lines of a paragraph must have the same indent.
+        -:  546:   If a prefix is in effect, it must be present at the same indent for
+        -:  547:   each line in the paragraph.
+        -:  548:
+        -:  549:   Return false if end-of-file was encountered before the start of a
+        -:  550:   paragraph, else true.  */
+        -:  551:
+        -:  552:static bool
+function get_paragraph called 2 returned 100% blocks executed 53%
+        2:  553:get_paragraph (FILE *f)
+        -:  554:{
+        -:  555:  int c;
+        -:  556:
+        2:  557:  last_line_length = 0;
+        2:  558:  c = next_char;
+        -:  559:
+        -:  560:  /* Scan (and copy) blank lines, and lines not introduced by the prefix.  */
+        -:  561:
+        4:  562:  while (c == '\n' || c == EOF
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        1:  563:         || next_prefix_indent < prefix_lead_space
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+        3:  564:         || in_column < next_prefix_indent + prefix_full_length)
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+branch  3 taken 100% (fallthrough)
+        -:  565:    {
+        1:  566:      c = copy_rest (f, c);
+call    0 returned 100%
+        1:  567:      if (c == EOF)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  568:        {
+        1:  569:          next_char = EOF;
+        1:  570:          return false;
+        -:  571:        }
+    #####:  572:      putchar ('\n');
+call    0 never executed
+    #####:  573:      c = get_prefix (f);
+call    0 never executed
+        -:  574:    }
+        -:  575:
+        -:  576:  /* Got a suitable first line for a paragraph.  */
+        -:  577:
+        1:  578:  prefix_indent = next_prefix_indent;
+        1:  579:  first_indent = in_column;
+        1:  580:  wptr = parabuf;
+        1:  581:  word_limit = word;
+        1:  582:  c = get_line (f, c);
+call    0 returned 100%
+        1:  583:  set_other_indent (same_para (c));
+call    0 returned 100%
+call    1 returned 100%
+        -:  584:
+        -:  585:  /* Read rest of paragraph (unless split is specified).  */
+        -:  586:
+        1:  587:  if (split)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  588:    {
+        -:  589:      /* empty */
+        -:  590:    }
+        1:  591:  else if (crown)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  592:    {
+    #####:  593:      if (same_para (c))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  594:        {
+        -:  595:          do
+        -:  596:            {			/* for each line till the end of the para */
+    #####:  597:              c = get_line (f, c);
+call    0 never executed
+        -:  598:            }
+    #####:  599:          while (same_para (c) && in_column == other_indent);
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  600:        }
+        -:  601:    }
+        1:  602:  else if (tagged)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  603:    {
+    #####:  604:      if (same_para (c) && in_column != first_indent)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  605:        {
+        -:  606:          do
+        -:  607:            {			/* for each line till the end of the para */
+    #####:  608:              c = get_line (f, c);
+call    0 never executed
+        -:  609:            }
+    #####:  610:          while (same_para (c) && in_column == other_indent);
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  611:        }
+        -:  612:    }
+        -:  613:  else
+        -:  614:    {
+       1*:  615:      while (same_para (c) && in_column == other_indent)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+branch  3 never executed
+branch  4 never executed
+    #####:  616:        c = get_line (f, c);
+call    0 never executed
+        -:  617:    }
+        -:  618:
+        1:  619:  (word_limit - 1)->period = (word_limit - 1)->final = true;
+        1:  620:  next_char = c;
+        1:  621:  return true;
+        -:  622:}
+        -:  623:
+        -:  624:/* Copy to the output a line that failed to match the prefix, or that
+        -:  625:   was blank after the prefix.  In the former case, C is the character
+        -:  626:   that failed to match the prefix.  In the latter, C is \n or EOF.
+        -:  627:   Return the character (\n or EOF) ending the line.  */
+        -:  628:
+        -:  629:static int
+function copy_rest called 1 returned 100% blocks executed 36%
+        1:  630:copy_rest (FILE *f, int c)
+        -:  631:{
+        -:  632:  char const *s;
+        -:  633:
+        1:  634:  out_column = 0;
+        1:  635:  if (in_column > next_prefix_indent || (c != '\n' && c != EOF))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 0% (fallthrough)
+branch  5 taken 100%
+        -:  636:    {
+    #####:  637:      put_space (next_prefix_indent);
+call    0 never executed
+    #####:  638:      for (s = prefix; out_column != in_column && *s; out_column++)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  639:        putchar (*s++);
+call    0 never executed
+    #####:  640:      if (c != EOF && c != '\n')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  641:        put_space (in_column - out_column);
+call    0 never executed
+    #####:  642:      if (c == EOF && in_column >= next_prefix_indent + prefix_length)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  643:        putchar ('\n');
+call    0 never executed
+        -:  644:    }
+        1:  645:  while (c != '\n' && c != EOF)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 100% (fallthrough)
+        -:  646:    {
+    #####:  647:      putchar (c);
+call    0 never executed
+    #####:  648:      c = getc (f);
+call    0 never executed
+        -:  649:    }
+        1:  650:  return c;
+        -:  651:}
+        -:  652:
+        -:  653:/* Return true if a line whose first non-blank character after the
+        -:  654:   prefix (if any) is C could belong to the current paragraph,
+        -:  655:   otherwise false.  */
+        -:  656:
+        -:  657:static bool
+function same_para called 2 returned 100% blocks executed 88%
+        2:  658:same_para (int c)
+        -:  659:{
+        2:  660:  return (next_prefix_indent == prefix_indent
+        2:  661:          && in_column >= next_prefix_indent + prefix_full_length
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       4*:  662:          && c != '\n' && c != EOF);
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 0% (fallthrough)
+branch  5 taken 100%
+        -:  663:}
+        -:  664:
+        -:  665:/* Read a line from input file F, given first non-blank character C
+        -:  666:   after the prefix, and the following indent, and break it into words.
+        -:  667:   A word is a maximal non-empty string of non-white characters.  A word
+        -:  668:   ending in [.?!][])"']* and followed by end-of-line or at least two
+        -:  669:   spaces ends a sentence, as in emacs.
+        -:  670:
+        -:  671:   Return the first non-blank character of the next line.  */
+        -:  672:
+        -:  673:static int
+function get_line called 1 returned 100% blocks executed 68%
+        1:  674:get_line (FILE *f, int c)
+        -:  675:{
+        -:  676:  int start;
+        -:  677:  char *end_of_parabuf;
+        -:  678:  WORD *end_of_word;
+        -:  679:
+        1:  680:  end_of_parabuf = &parabuf[MAXCHARS];
+        1:  681:  end_of_word = &word[MAXWORDS - 2];
+        -:  682:
+        -:  683:  do
+        -:  684:    {				/* for each word in a line */
+        -:  685:
+        -:  686:      /* Scan word.  */
+        -:  687:
+        1:  688:      word_limit->text = wptr;
+        -:  689:      do
+        -:  690:        {
+        8:  691:          if (wptr == end_of_parabuf)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  692:            {
+    #####:  693:              set_other_indent (true);
+call    0 never executed
+    #####:  694:              flush_paragraph ();
+call    0 never executed
+        -:  695:            }
+        8:  696:          *wptr++ = c;
+        8:  697:          c = getc (f);
+call    0 returned 100%
+        -:  698:        }
+        8:  699:      while (c != EOF && !c_isspace (c));
+branch  0 taken 88% (fallthrough)
+branch  1 taken 12%
+call    2 returned 100%
+branch  3 taken 100%
+branch  4 taken 0% (fallthrough)
+        1:  700:      in_column += word_limit->length = wptr - word_limit->text;
+        1:  701:      check_punctuation (word_limit);
+call    0 returned 100%
+        -:  702:
+        -:  703:      /* Scan inter-word space.  */
+        -:  704:
+        1:  705:      start = in_column;
+        1:  706:      c = get_space (f, c);
+call    0 returned 100%
+        1:  707:      word_limit->space = in_column - start;
+        1:  708:      word_limit->final = (c == EOF
+       1*:  709:                           || (word_limit->period
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  710:                               && (c == '\n' || word_limit->space > 1)));
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+       1*:  711:      if (c == '\n' || c == EOF || uniform)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+branch  4 never executed
+branch  5 never executed
+       1*:  712:        word_limit->space = word_limit->final ? 2 : 1;
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  713:      if (word_limit == end_of_word)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  714:        {
+    #####:  715:          set_other_indent (true);
+call    0 never executed
+    #####:  716:          flush_paragraph ();
+call    0 never executed
+        -:  717:        }
+        1:  718:      word_limit++;
+        -:  719:    }
+        1:  720:  while (c != '\n' && c != EOF);
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 100% (fallthrough)
+        1:  721:  return get_prefix (f);
+call    0 returned 100%
+        -:  722:}
+        -:  723:
+        -:  724:/* Read a prefix from input file F.  Return either first non-matching
+        -:  725:   character, or first non-blank character after the prefix.  */
+        -:  726:
+        -:  727:static int
+function get_prefix called 2 returned 100% blocks executed 46%
+        2:  728:get_prefix (FILE *f)
+        -:  729:{
+        -:  730:  int c;
+        -:  731:
+        2:  732:  in_column = 0;
+        2:  733:  c = get_space (f, getc (f));
+call    0 returned 100%
+call    1 returned 100%
+        2:  734:  if (prefix_length == 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        2:  735:    next_prefix_indent = prefix_lead_space < in_column ?
+        2:  736:      prefix_lead_space : in_column;
+        -:  737:  else
+        -:  738:    {
+        -:  739:      char const *p;
+    #####:  740:      next_prefix_indent = in_column;
+    #####:  741:      for (p = prefix; *p != '\0'; p++)
+branch  0 never executed
+branch  1 never executed
+        -:  742:        {
+    #####:  743:          unsigned char pc = *p;
+    #####:  744:          if (c != pc)
+branch  0 never executed
+branch  1 never executed
+    #####:  745:            return c;
+    #####:  746:          in_column++;
+    #####:  747:          c = getc (f);
+call    0 never executed
+        -:  748:        }
+    #####:  749:      c = get_space (f, c);
+call    0 never executed
+        -:  750:    }
+        2:  751:  return c;
+        -:  752:}
+        -:  753:
+        -:  754:/* Read blank characters from input file F, starting with C, and keeping
+        -:  755:   in_column up-to-date.  Return first non-blank character.  */
+        -:  756:
+        -:  757:static int
+function get_space called 3 returned 100% blocks executed 50%
+        3:  758:get_space (FILE *f, int c)
+        -:  759:{
+        -:  760:  while (true)
+        -:  761:    {
+        3:  762:      if (c == ' ')
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  763:        in_column++;
+        3:  764:      else if (c == '\t')
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  765:        {
+    #####:  766:          tabs = true;
+    #####:  767:          in_column = (in_column / TABWIDTH + 1) * TABWIDTH;
+        -:  768:        }
+        -:  769:      else
+        3:  770:        return c;
+    #####:  771:      c = getc (f);
+call    0 never executed
+        -:  772:    }
+        -:  773:}
+        -:  774:
+        -:  775:/* Set extra fields in word W describing any attached punctuation.  */
+        -:  776:
+        -:  777:static void
+function check_punctuation called 1 returned 100% blocks executed 100%
+        1:  778:check_punctuation (WORD *w)
+        -:  779:{
+        1:  780:  char const *start = w->text;
+        1:  781:  char const *finish = start + (w->length - 1);
+        1:  782:  unsigned char fin = *finish;
+        -:  783:
+        1:  784:  w->paren = isopen (*start);
+        1:  785:  w->punct = !! ispunct (fin);
+        8:  786:  while (start < finish && isclose (*finish))
+branch  0 taken 88% (fallthrough)
+branch  1 taken 12%
+branch  2 taken 100%
+branch  3 taken 0% (fallthrough)
+        7:  787:    finish--;
+        1:  788:  w->period = isperiod (*finish);
+        1:  789:}
+        -:  790:
+        -:  791:/* Flush part of the paragraph to make room.  This function is called on
+        -:  792:   hitting the limit on the number of words or characters.  */
+        -:  793:
+        -:  794:static void
+function flush_paragraph called 0 returned 0% blocks executed 0%
+    #####:  795:flush_paragraph (void)
+        -:  796:{
+        -:  797:  WORD *split_point;
+        -:  798:  WORD *w;
+        -:  799:  int shift;
+        -:  800:  COST best_break;
+        -:  801:
+        -:  802:  /* In the special case where it's all one word, just flush it.  */
+        -:  803:
+    #####:  804:  if (word_limit == word)
+branch  0 never executed
+branch  1 never executed
+        -:  805:    {
+    #####:  806:      fwrite (parabuf, sizeof *parabuf, wptr - parabuf, stdout);
+call    0 never executed
+    #####:  807:      wptr = parabuf;
+    #####:  808:      return;
+        -:  809:    }
+        -:  810:
+        -:  811:  /* Otherwise:
+        -:  812:     - format what you have so far as a paragraph,
+        -:  813:     - find a low-cost line break near the end,
+        -:  814:     - output to there,
+        -:  815:     - make that the start of the paragraph.  */
+        -:  816:
+    #####:  817:  fmt_paragraph ();
+call    0 never executed
+        -:  818:
+        -:  819:  /* Choose a good split point.  */
+        -:  820:
+    #####:  821:  split_point = word_limit;
+    #####:  822:  best_break = MAXCOST;
+    #####:  823:  for (w = word->next_break; w != word_limit; w = w->next_break)
+branch  0 never executed
+branch  1 never executed
+        -:  824:    {
+    #####:  825:      if (w->best_cost - w->next_break->best_cost < best_break)
+branch  0 never executed
+branch  1 never executed
+        -:  826:        {
+    #####:  827:          split_point = w;
+    #####:  828:          best_break = w->best_cost - w->next_break->best_cost;
+        -:  829:        }
+    #####:  830:      if (best_break <= MAXCOST - LINE_CREDIT)
+branch  0 never executed
+branch  1 never executed
+    #####:  831:        best_break += LINE_CREDIT;
+        -:  832:    }
+    #####:  833:  put_paragraph (split_point);
+call    0 never executed
+        -:  834:
+        -:  835:  /* Copy text of words down to start of parabuf -- we use memmove because
+        -:  836:     the source and target may overlap.  */
+        -:  837:
+    #####:  838:  memmove (parabuf, split_point->text, wptr - split_point->text);
+    #####:  839:  shift = split_point->text - parabuf;
+    #####:  840:  wptr -= shift;
+        -:  841:
+        -:  842:  /* Adjust text pointers.  */
+        -:  843:
+    #####:  844:  for (w = split_point; w <= word_limit; w++)
+branch  0 never executed
+branch  1 never executed
+    #####:  845:    w->text -= shift;
+        -:  846:
+        -:  847:  /* Copy words from split_point down to word -- we use memmove because
+        -:  848:     the source and target may overlap.  */
+        -:  849:
+    #####:  850:  memmove (word, split_point, (word_limit - split_point + 1) * sizeof *word);
+    #####:  851:  word_limit -= split_point - word;
+        -:  852:}
+        -:  853:
+        -:  854:/* Compute the optimal formatting for the whole paragraph by computing
+        -:  855:   and remembering the optimal formatting for each suffix from the empty
+        -:  856:   one to the whole paragraph.  */
+        -:  857:
+        -:  858:static void
+function fmt_paragraph called 1 returned 100% blocks executed 83%
+        1:  859:fmt_paragraph (void)
+        -:  860:{
+        -:  861:  WORD *start, *w;
+        -:  862:  int len;
+        -:  863:  COST wcost, best;
+        -:  864:  int saved_length;
+        -:  865:
+        1:  866:  word_limit->best_cost = 0;
+        1:  867:  saved_length = word_limit->length;
+        1:  868:  word_limit->length = max_width;	/* sentinel */
+        -:  869:
+        2:  870:  for (start = word_limit - 1; start >= word; start--)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -:  871:    {
+        1:  872:      best = MAXCOST;
+       1*:  873:      len = start == word ? first_indent : other_indent;
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  874:
+        -:  875:      /* At least one word, however long, in the line.  */
+        -:  876:
+        1:  877:      w = start;
+        1:  878:      len += w->length;
+        -:  879:      do
+        -:  880:        {
+        1:  881:          w++;
+        -:  882:
+        -:  883:          /* Consider breaking before w.  */
+        -:  884:
+        1:  885:          wcost = line_cost (w, len) + w->best_cost;
+call    0 returned 100%
+        1:  886:          if (start == word && last_line_length > 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+    #####:  887:            wcost += RAGGED_COST (len - last_line_length);
+        1:  888:          if (wcost < best)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  889:            {
+        1:  890:              best = wcost;
+        1:  891:              start->next_break = w;
+        1:  892:              start->line_length = len;
+        -:  893:            }
+        -:  894:
+        -:  895:          /* This is a kludge to keep us from computing 'len' as the
+        -:  896:             sum of the sentinel length and some non-zero number.
+        -:  897:             Since the sentinel w->length may be INT_MAX, adding
+        -:  898:             to that would give a negative result.  */
+        1:  899:          if (w == word_limit)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  900:            break;
+        -:  901:
+    #####:  902:          len += (w - 1)->space + w->length;	/* w > start >= word */
+        -:  903:        }
+    #####:  904:      while (len < max_width);
+branch  0 never executed
+branch  1 never executed
+        1:  905:      start->best_cost = best + base_cost (start);
+call    0 returned 100%
+        -:  906:    }
+        -:  907:
+        1:  908:  word_limit->length = saved_length;
+        1:  909:}
+        -:  910:
+        -:  911:/* Work around <https://gcc.gnu.org/bugzilla/show_bug.cgi?id=109628>.  */
+        -:  912:#if 13 <= __GNUC__
+        -:  913:# pragma GCC diagnostic ignored "-Wanalyzer-use-of-uninitialized-value"
+        -:  914:#endif
+        -:  915:
+        -:  916:/* Return the constant component of the cost of breaking before the
+        -:  917:   word THIS.  */
+        -:  918:
+        -:  919:static COST
+function base_cost called 1 returned 100% blocks executed 31%
+        1:  920:base_cost (WORD *this)
+        -:  921:{
+        -:  922:  COST cost;
+        -:  923:
+        1:  924:  cost = LINE_COST;
+        -:  925:
+        1:  926:  if (this > word)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  927:    {
+    #####:  928:      if ((this - 1)->period)
+branch  0 never executed
+branch  1 never executed
+        -:  929:        {
+    #####:  930:          if ((this - 1)->final)
+branch  0 never executed
+branch  1 never executed
+    #####:  931:            cost -= SENTENCE_BONUS;
+        -:  932:          else
+    #####:  933:            cost += NOBREAK_COST;
+        -:  934:        }
+    #####:  935:      else if ((this - 1)->punct)
+branch  0 never executed
+branch  1 never executed
+    #####:  936:        cost -= PUNCT_BONUS;
+    #####:  937:      else if (this > word + 1 && (this - 2)->final)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  938:        cost += WIDOW_COST ((this - 1)->length);
+        -:  939:    }
+        -:  940:
+        1:  941:  if (this->paren)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  942:    cost -= PAREN_BONUS;
+    #####:  943:  else if (this->final)
+branch  0 never executed
+branch  1 never executed
+    #####:  944:    cost += ORPHAN_COST (this->length);
+        -:  945:
+        1:  946:  return cost;
+        -:  947:}
+        -:  948:
+        -:  949:/* Return the component of the cost of breaking before word NEXT that
+        -:  950:   depends on LEN, the length of the line beginning there.  */
+        -:  951:
+        -:  952:static COST
+function line_cost called 1 returned 100% blocks executed 50%
+        1:  953:line_cost (WORD *next, int len)
+        -:  954:{
+        -:  955:  int n;
+        -:  956:  COST cost;
+        -:  957:
+        1:  958:  if (next == word_limit)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  959:    return 0;
+    #####:  960:  n = goal_width - len;
+    #####:  961:  cost = SHORT_COST (n);
+    #####:  962:  if (next->next_break != word_limit)
+branch  0 never executed
+branch  1 never executed
+        -:  963:    {
+    #####:  964:      n = len - next->line_length;
+    #####:  965:      cost += RAGGED_COST (n);
+        -:  966:    }
+    #####:  967:  return cost;
+        -:  968:}
+        -:  969:
+        -:  970:/* Output to stdout a paragraph from word up to (but not including)
+        -:  971:   FINISH, which must be in the next_break chain from word.  */
+        -:  972:
+        -:  973:static void
+function put_paragraph called 1 returned 100% blocks executed 67%
+        1:  974:put_paragraph (WORD *finish)
+        -:  975:{
+        -:  976:  WORD *w;
+        -:  977:
+        1:  978:  put_line (word, first_indent);
+call    0 returned 100%
+       1*:  979:  for (w = word->next_break; w != finish; w = w->next_break)
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+    #####:  980:    put_line (w, other_indent);
+call    0 never executed
+        1:  981:}
+        -:  982:
+        -:  983:/* Output to stdout the line beginning with word W, beginning in column
+        -:  984:   INDENT, including the prefix (if any).  */
+        -:  985:
+        -:  986:static void
+function put_line called 1 returned 100% blocks executed 73%
+        1:  987:put_line (WORD *w, int indent)
+        -:  988:{
+        -:  989:  WORD *endline;
+        -:  990:
+        1:  991:  out_column = 0;
+        1:  992:  put_space (prefix_indent);
+call    0 returned 100%
+        1:  993:  fputs (prefix, stdout);
+call    0 returned 100%
+        1:  994:  out_column += prefix_length;
+        1:  995:  put_space (indent - out_column);
+call    0 returned 100%
+        -:  996:
+        1:  997:  endline = w->next_break - 1;
+       1*:  998:  for (; w != endline; w++)
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+        -:  999:    {
+    #####: 1000:      put_word (w);
+call    0 never executed
+    #####: 1001:      put_space (w->space);
+call    0 never executed
+        -: 1002:    }
+        1: 1003:  put_word (w);
+call    0 returned 100%
+        1: 1004:  last_line_length = out_column;
+        1: 1005:  putchar ('\n');
+call    0 returned 100%
+        1: 1006:}
+        -: 1007:
+        -: 1008:/* Output to stdout the word W.  */
+        -: 1009:
+        -: 1010:static void
+function put_word called 1 returned 100% blocks executed 100%
+        1: 1011:put_word (WORD *w)
+        -: 1012:{
+        -: 1013:  char const *s;
+        -: 1014:  int n;
+        -: 1015:
+        1: 1016:  s = w->text;
+        9: 1017:  for (n = w->length; n != 0; n--)
+branch  0 taken 89%
+branch  1 taken 11% (fallthrough)
+        8: 1018:    putchar (*s++);
+call    0 returned 100%
+        1: 1019:  out_column += w->length;
+        1: 1020:}
+        -: 1021:
+        -: 1022:/* Output to stdout SPACE spaces, or equivalent tabs.  */
+        -: 1023:
+        -: 1024:static void
+function put_space called 2 returned 100% blocks executed 36%
+        2: 1025:put_space (int space)
+        -: 1026:{
+        -: 1027:  int space_target, tab_target;
+        -: 1028:
+        2: 1029:  space_target = out_column + space;
+        2: 1030:  if (tabs)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1031:    {
+    #####: 1032:      tab_target = space_target / TABWIDTH * TABWIDTH;
+    #####: 1033:      if (out_column + 1 < tab_target)
+branch  0 never executed
+branch  1 never executed
+    #####: 1034:        while (out_column < tab_target)
+branch  0 never executed
+branch  1 never executed
+        -: 1035:          {
+    #####: 1036:            putchar ('\t');
+call    0 never executed
+    #####: 1037:            out_column = (out_column / TABWIDTH + 1) * TABWIDTH;
+        -: 1038:          }
+        -: 1039:    }
+        2: 1040:  while (out_column < space_target)
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+        -: 1041:    {
+    #####: 1042:      putchar (' ');
+call    0 never executed
+    #####: 1043:      out_column++;
+        -: 1044:    }
+        2: 1045:}

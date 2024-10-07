@@ -1,0 +1,173 @@
+        -:    0:Source:src/tty.c
+        -:    0:Graph:tty.gcno
+        -:    0:Data:tty.gcda
+        -:    0:Runs:24
+        -:    1:/* tty -- print the name of the terminal connected to standard input
+        -:    2:   Copyright (C) 1990-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Displays "not a tty" if stdin is not a terminal.
+        -:   18:   Displays nothing if -s option is given.
+        -:   19:   Exit status 0 if stdin is a tty, 1 if not a tty, 2 if usage error,
+        -:   20:   3 if write error.
+        -:   21:
+        -:   22:   Written by David MacKenzie <djm@gnu.ai.mit.edu>.  */
+        -:   23:
+        -:   24:#include <config.h>
+        -:   25:#include <stdio.h>
+        -:   26:#include <getopt.h>
+        -:   27:#include <sys/types.h>
+        -:   28:
+        -:   29:#include "system.h"
+        -:   30:#include "quote.h"
+        -:   31:
+        -:   32:/* Exit statuses.  */
+        -:   33:enum
+        -:   34:  {
+        -:   35:    TTY_STDIN_NOTTY = 1,
+        -:   36:    TTY_FAILURE = 2,
+        -:   37:    TTY_WRITE_ERROR = 3
+        -:   38:  };
+        -:   39:
+        -:   40:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   41:#define PROGRAM_NAME "tty"
+        -:   42:
+        -:   43:#define AUTHORS proper_name ("David MacKenzie")
+        -:   44:
+        -:   45:/* If true, return an exit status but produce no output. */
+        -:   46:static bool silent;
+        -:   47:
+        -:   48:static struct option const longopts[] =
+        -:   49:{
+        -:   50:  {"silent", no_argument, nullptr, 's'},
+        -:   51:  {"quiet", no_argument, nullptr, 's'},
+        -:   52:  {GETOPT_HELP_OPTION_DECL},
+        -:   53:  {GETOPT_VERSION_OPTION_DECL},
+        -:   54:  {nullptr, 0, nullptr, 0}
+        -:   55:};
+        -:   56:
+        -:   57:void
+function usage called 22 returned 0% blocks executed 38%
+       22:   58:usage (int status)
+        -:   59:{
+       22:   60:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       22:   61:    emit_try_help ();
+call    0 returned 100%
+        -:   62:  else
+        -:   63:    {
+    #####:   64:      printf (_("Usage: %s [OPTION]...\n"), program_name);
+call    0 never executed
+    #####:   65:      fputs (_("\
+call    0 never executed
+        -:   66:Print the file name of the terminal connected to standard input.\n\
+        -:   67:\n\
+        -:   68:  -s, --silent, --quiet   print nothing, only return an exit status\n\
+        -:   69:"), stdout);
+    #####:   70:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   71:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   72:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   73:    }
+       22:   74:  exit (status);
+        -:   75:}
+        -:   76:
+        -:   77:int
+function main called 24 returned 8% blocks executed 76%
+       24:   78:main (int argc, char **argv)
+        -:   79:{
+        -:   80:  int optc;
+        -:   81:
+        -:   82:  initialize_main (&argc, &argv);
+       24:   83:  set_program_name (argv[0]);
+call    0 returned 100%
+       24:   84:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:   85:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:   86:  textdomain (PACKAGE);
+        -:   87:
+       24:   88:  initialize_exit_failure (TTY_WRITE_ERROR);
+call    0 returned 100%
+       24:   89:  atexit (close_stdout);
+call    0 returned 100%
+        -:   90:
+       24:   91:  silent = false;
+        -:   92:
+       24:   93:  while ((optc = getopt_long (argc, argv, "s", longopts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 4%
+branch  2 taken 96% (fallthrough)
+        -:   94:    {
+        1:   95:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 100%
+        -:   96:        {
+    #####:   97:        case 's':
+    #####:   98:          silent = true;
+    #####:   99:          break;
+        -:  100:
+    #####:  101:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  102:
+    #####:  103:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  104:
+        1:  105:        default:
+        1:  106:          usage (TTY_FAILURE);
+call    0 returned 0%
+        -:  107:        }
+        -:  108:    }
+        -:  109:
+       23:  110:  if (optind < argc)
+branch  0 taken 91% (fallthrough)
+branch  1 taken 9%
+        -:  111:    {
+       21:  112:      error (0, 0, _("extra operand %s"), quote (argv[optind]));
+call    0 returned 100%
+       21:  113:      usage (TTY_FAILURE);
+call    0 returned 0%
+        -:  114:    }
+        -:  115:
+        2:  116:  errno = ENOENT;
+        -:  117:
+        2:  118:  if (silent)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  119:    return isatty (STDIN_FILENO) ? EXIT_SUCCESS : TTY_STDIN_NOTTY;
+call    0 never executed
+        -:  120:
+        2:  121:  int status = EXIT_SUCCESS;
+        2:  122:  char const *tty = ttyname (STDIN_FILENO);
+call    0 returned 100%
+        -:  123:
+        2:  124:  if (! tty)
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+        -:  125:    {
+        1:  126:      tty = _("not a tty");
+        1:  127:      status = TTY_STDIN_NOTTY;
+        -:  128:    }
+        -:  129:
+        2:  130:  puts (tty);
+call    0 returned 100%
+        2:  131:  return status;
+        -:  132:}

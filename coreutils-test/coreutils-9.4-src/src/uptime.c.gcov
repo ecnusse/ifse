@@ -1,0 +1,296 @@
+        -:    0:Source:src/uptime.c
+        -:    0:Graph:uptime.gcno
+        -:    0:Data:uptime.gcda
+        -:    0:Runs:23
+        -:    1:/* GNU's uptime.
+        -:    2:   Copyright (C) 1992-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Created by hacking who.c by Kaveh Ghazi ghazi@caip.rutgers.edu.  */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:
+        -:   21:#include <stdckdint.h>
+        -:   22:#include <stdio.h>
+        -:   23:#include <sys/types.h>
+        -:   24:
+        -:   25:#include "system.h"
+        -:   26:
+        -:   27:#include "long-options.h"
+        -:   28:#include "quote.h"
+        -:   29:#include "readutmp.h"
+        -:   30:#include "fprintftime.h"
+        -:   31:
+        -:   32:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   33:#define PROGRAM_NAME "uptime"
+        -:   34:
+        -:   35:#define AUTHORS \
+        -:   36:  proper_name ("Joseph Arceneaux"), \
+        -:   37:  proper_name ("David MacKenzie"), \
+        -:   38:  proper_name ("Kaveh Ghazi")
+        -:   39:
+        -:   40:static int
+function print_uptime called 1 returned 100% blocks executed 74%
+        1:   41:print_uptime (idx_t n, struct gl_utmp const *utmp_buf)
+        -:   42:{
+        1:   43:  int status = EXIT_SUCCESS;
+        1:   44:  time_t boot_time = 0;
+        -:   45:
+        -:   46:  /* Loop through all the utmp entries we just read and count up the valid
+        -:   47:     ones, also in the process possibly gleaning boottime. */
+        1:   48:  idx_t entries = 0;
+        2:   49:  for (idx_t i = 0; i < n; i++)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -:   50:    {
+        1:   51:      struct gl_utmp const *this = &utmp_buf[i];
+       1*:   52:      entries += IS_USER_PROCESS (this);
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+        1:   53:      if (UT_TYPE_BOOT_TIME (this))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:   54:        boot_time = this->ut_ts.tv_sec;
+        -:   55:    }
+        -:   56:  /* The gnulib module 'readutmp' is supposed to provide a BOOT_TIME entry
+        -:   57:     on all platforms.  */
+        1:   58:  if (boot_time == 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:   59:    {
+    #####:   60:      error (0, errno, _("couldn't get boot time"));
+    #####:   61:      status = EXIT_FAILURE;
+        -:   62:    }
+        -:   63:
+        1:   64:  time_t time_now = time (nullptr);
+call    0 returned 100%
+       1*:   65:  struct tm *tmn = time_now == (time_t) -1 ? nullptr : localtime (&time_now);
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+call    2 returned 100%
+        -:   66:  /* procps' version of uptime also prints the seconds field, but
+        -:   67:     previous versions of coreutils don't. */
+        1:   68:  if (tmn)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:   69:    /* TRANSLATORS: This prints the current clock time. */
+        1:   70:    fprintftime (stdout, _(" %H:%M:%S  "), tmn, 0, 0);
+call    0 returned 100%
+        -:   71:  else
+        -:   72:    {
+    #####:   73:      printf (_(" ??:????  "));
+call    0 never executed
+    #####:   74:      status = EXIT_FAILURE;
+        -:   75:    }
+        -:   76:
+        -:   77:  intmax_t uptime;
+        1:   78:  if (time_now == (time_t) -1 || boot_time == 0
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        1:   79:      || ckd_sub (&uptime, time_now, boot_time) || uptime < 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+        -:   80:    {
+    #####:   81:      printf (_("up ???? days ??:??,  "));
+call    0 never executed
+    #####:   82:      status = EXIT_FAILURE;
+        -:   83:    }
+        -:   84:  else
+        -:   85:    {
+        1:   86:      intmax_t updays = uptime / 86400;
+        1:   87:      int uphours = uptime % 86400 / 3600;
+        1:   88:      int upmins = uptime % 86400 % 3600 / 60;
+        1:   89:      if (0 < updays)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       1*:   90:        printf (ngettext ("up %"PRIdMAX" day %2d:%02d,  ",
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+call    3 returned 100%
+        -:   91:                          "up %"PRIdMAX" days %2d:%02d,  ",
+        -:   92:                          select_plural (updays)),
+        -:   93:                updays, uphours, upmins);
+        -:   94:      else
+    #####:   95:        printf (_("up  %2d:%02d,  "), uphours, upmins);
+call    0 never executed
+        -:   96:    }
+        -:   97:
+       1*:   98:  printf (ngettext ("%td user", "%td users", select_plural (entries)),
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+call    3 returned 100%
+        -:   99:          entries);
+        -:  100:
+        -:  101:  double avg[3];
+        1:  102:  int loads = getloadavg (avg, 3);
+call    0 returned 100%
+        -:  103:
+        1:  104:  if (loads == -1)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  105:    putchar ('\n');
+call    0 never executed
+        -:  106:  else
+        -:  107:    {
+        1:  108:      if (loads > 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  109:        printf (_(",  load average: %.2f"), avg[0]);
+call    0 returned 100%
+        1:  110:      if (loads > 1)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  111:        printf (", %.2f", avg[1]);
+call    0 returned 100%
+        1:  112:      if (loads > 2)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  113:        printf (", %.2f", avg[2]);
+call    0 returned 100%
+        1:  114:      if (loads > 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  115:        putchar ('\n');
+call    0 returned 100%
+        -:  116:    }
+        -:  117:
+        1:  118:  return status;
+        -:  119:}
+        -:  120:
+        -:  121:/* Display the system uptime and the number of users on the system,
+        -:  122:   according to utmp file FILENAME.  Use read_utmp OPTIONS to read the
+        -:  123:   utmp file.  */
+        -:  124:
+        -:  125:static _Noreturn void
+function uptime called 1 returned 0% blocks executed 44%
+        1:  126:uptime (char const *filename, int options)
+        -:  127:{
+        -:  128:  idx_t n_users;
+        -:  129:  struct gl_utmp *utmp_buf;
+        1:  130:  int read_utmp_status = (read_utmp (filename, &n_users, &utmp_buf, options) < 0
+call    0 returned 100%
+        1:  131:                          ? EXIT_FAILURE : EXIT_SUCCESS);
+        1:  132:  if (read_utmp_status != EXIT_SUCCESS)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  133:    {
+    #####:  134:      error (0, errno, "%s", quotef (filename));
+call    0 never executed
+    #####:  135:      n_users = 0;
+    #####:  136:      utmp_buf = nullptr;
+        -:  137:    }
+        -:  138:
+        1:  139:  int print_uptime_status = print_uptime (n_users, utmp_buf);
+call    0 returned 100%
+        1:  140:  exit (MAX (read_utmp_status, print_uptime_status));
+        -:  141:}
+        -:  142:
+        -:  143:void
+function usage called 22 returned 0% blocks executed 30%
+       22:  144:usage (int status)
+        -:  145:{
+       22:  146:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       22:  147:    emit_try_help ();
+call    0 returned 100%
+        -:  148:  else
+        -:  149:    {
+    #####:  150:      printf (_("Usage: %s [OPTION]... [FILE]\n"), program_name);
+call    0 never executed
+    #####:  151:      printf (_("\
+call    0 never executed
+        -:  152:Print the current time, the length of time the system has been up,\n\
+        -:  153:the number of users on the system, and the average number of jobs\n\
+        -:  154:in the run queue over the last 1, 5 and 15 minutes."));
+        -:  155:#ifdef __linux__
+        -:  156:      /* It would be better to introduce a configure test for this,
+        -:  157:         but such a test is hard to write.  For the moment then, we
+        -:  158:         have a hack which depends on the preprocessor used at compile
+        -:  159:         time to tell us what the running kernel is.  Ugh.  */
+    #####:  160:      printf (_("  \
+call    0 never executed
+        -:  161:Processes in\n\
+        -:  162:an uninterruptible sleep state also contribute to the load average.\n"));
+        -:  163:#else
+        -:  164:      printf (_("\n"));
+        -:  165:#endif
+    #####:  166:      printf (_("\
+call    0 never executed
+        -:  167:If FILE is not specified, use %s.  %s as FILE is common.\n\
+        -:  168:\n"),
+        -:  169:              UTMP_FILE, WTMP_FILE);
+    #####:  170:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  171:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  172:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  173:    }
+       22:  174:  exit (status);
+        -:  175:}
+        -:  176:
+        -:  177:int
+function main called 23 returned 0% blocks executed 93%
+       23:  178:main (int argc, char **argv)
+        -:  179:{
+        -:  180:  initialize_main (&argc, &argv);
+       23:  181:  set_program_name (argv[0]);
+call    0 returned 100%
+       23:  182:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  183:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  184:  textdomain (PACKAGE);
+        -:  185:
+       23:  186:  atexit (close_stdout);
+call    0 returned 100%
+        -:  187:
+       23:  188:  parse_gnu_standard_options_only (argc, argv, PROGRAM_NAME, PACKAGE_NAME,
+call    0 returned 100%
+call    1 returned 100%
+call    2 returned 100%
+call    3 returned 96%
+        -:  189:                                   Version, true, usage, AUTHORS,
+        -:  190:                                   (char const *) nullptr);
+        -:  191:
+       22:  192:  switch (argc - optind)
+branch  0 taken 5%
+branch  1 taken 0%
+branch  2 taken 95%
+        -:  193:    {
+        1:  194:    case 0:			/* uptime */
+        1:  195:      uptime (UTMP_FILE, READ_UTMP_CHECK_PIDS);
+call    0 returned 0%
+        -:  196:      break;
+        -:  197:
+    #####:  198:    case 1:			/* uptime <utmp file> */
+    #####:  199:      uptime (argv[optind], 0);
+call    0 never executed
+        -:  200:      break;
+        -:  201:
+       21:  202:    default:			/* lose */
+       21:  203:      error (0, 0, _("extra operand %s"), quote (argv[optind + 1]));
+call    0 returned 100%
+       21:  204:      usage (EXIT_FAILURE);
+        -:  205:    }
+        -:  206:}

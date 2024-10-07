@@ -1,0 +1,825 @@
+        -:    0:Source:src/chcon.c
+        -:    0:Graph:chcon.gcno
+        -:    0:Data:chcon.gcda
+        -:    0:Runs:25
+        -:    1:/* chcon -- change security context of files
+        -:    2:   Copyright (C) 2005-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:#include <config.h>
+        -:   18:#include <stdio.h>
+        -:   19:#include <sys/types.h>
+        -:   20:#include <getopt.h>
+        -:   21:#include <selinux/selinux.h>
+        -:   22:
+        -:   23:#include "system.h"
+        -:   24:#include "dev-ino.h"
+        -:   25:#include "ignore-value.h"
+        -:   26:#include "quote.h"
+        -:   27:#include "root-dev-ino.h"
+        -:   28:#include "selinux-at.h"
+        -:   29:#include "xfts.h"
+        -:   30:
+        -:   31:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   32:#define PROGRAM_NAME "chcon"
+        -:   33:
+        -:   34:#define AUTHORS \
+        -:   35:  proper_name ("Russell Coker"), \
+        -:   36:  proper_name ("Jim Meyering")
+        -:   37:
+        -:   38:/* If nonzero, and the systems has support for it, change the context
+        -:   39:   of symbolic links rather than any files they point to.  */
+        -:   40:static bool affect_symlink_referent;
+        -:   41:
+        -:   42:/* If true, change the modes of directories recursively. */
+        -:   43:static bool recurse;
+        -:   44:
+        -:   45:/* Level of verbosity. */
+        -:   46:static bool verbose;
+        -:   47:
+        -:   48:/* Pointer to the device and inode numbers of '/', when --recursive.
+        -:   49:   Otherwise nullptr.  */
+        -:   50:static struct dev_ino *root_dev_ino;
+        -:   51:
+        -:   52:/* The name of the context file is being given. */
+        -:   53:static char const *specified_context;
+        -:   54:
+        -:   55:/* Specific components of the context */
+        -:   56:static char const *specified_user;
+        -:   57:static char const *specified_role;
+        -:   58:static char const *specified_range;
+        -:   59:static char const *specified_type;
+        -:   60:
+        -:   61:/* For long options that have no equivalent short option, use a
+        -:   62:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:   63:enum
+        -:   64:{
+        -:   65:  DEREFERENCE_OPTION = CHAR_MAX + 1,
+        -:   66:  NO_PRESERVE_ROOT,
+        -:   67:  PRESERVE_ROOT,
+        -:   68:  REFERENCE_FILE_OPTION
+        -:   69:};
+        -:   70:
+        -:   71:static struct option const long_options[] =
+        -:   72:{
+        -:   73:  {"recursive", no_argument, nullptr, 'R'},
+        -:   74:  {"dereference", no_argument, nullptr, DEREFERENCE_OPTION},
+        -:   75:  {"no-dereference", no_argument, nullptr, 'h'},
+        -:   76:  {"no-preserve-root", no_argument, nullptr, NO_PRESERVE_ROOT},
+        -:   77:  {"preserve-root", no_argument, nullptr, PRESERVE_ROOT},
+        -:   78:  {"reference", required_argument, nullptr, REFERENCE_FILE_OPTION},
+        -:   79:  {"user", required_argument, nullptr, 'u'},
+        -:   80:  {"role", required_argument, nullptr, 'r'},
+        -:   81:  {"type", required_argument, nullptr, 't'},
+        -:   82:  {"range", required_argument, nullptr, 'l'},
+        -:   83:  {"verbose", no_argument, nullptr, 'v'},
+        -:   84:  {GETOPT_HELP_OPTION_DECL},
+        -:   85:  {GETOPT_VERSION_OPTION_DECL},
+        -:   86:  {nullptr, 0, nullptr, 0}
+        -:   87:};
+        -:   88:
+        -:   89:/* Given a security context, CONTEXT, derive a context_t (*RET),
+        -:   90:   setting any portions selected via the global variables, specified_user,
+        -:   91:   specified_role, etc.  */
+        -:   92:static int
+function compute_context_from_mask called 0 returned 0% blocks executed 0%
+    #####:   93:compute_context_from_mask (char const *context, context_t *ret)
+        -:   94:{
+    #####:   95:  bool ok = true;
+    #####:   96:  context_t new_context = context_new (context);
+call    0 never executed
+    #####:   97:  if (!new_context)
+branch  0 never executed
+branch  1 never executed
+        -:   98:    {
+    #####:   99:      error (0, errno, _("failed to create security context: %s"),
+call    0 never executed
+        -:  100:             quote (context));
+    #####:  101:      return 1;
+        -:  102:    }
+        -:  103:
+        -:  104:#define SET_COMPONENT(C, comp)						\
+        -:  105:   do									\
+        -:  106:     {									\
+        -:  107:       if (specified_ ## comp						\
+        -:  108:           && context_ ## comp ## _set ((C), specified_ ## comp))	\
+        -:  109:         {								\
+        -:  110:            error (0, errno,						\
+        -:  111:                   _("failed to set %s security context component to %s"), \
+        -:  112:                   #comp, quote (specified_ ## comp));			\
+        -:  113:           ok = false;							\
+        -:  114:         }								\
+        -:  115:     }									\
+        -:  116:   while (0)
+        -:  117:
+    #####:  118:  SET_COMPONENT (new_context, user);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+call    5 never executed
+    #####:  119:  SET_COMPONENT (new_context, range);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+call    5 never executed
+    #####:  120:  SET_COMPONENT (new_context, role);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+call    5 never executed
+    #####:  121:  SET_COMPONENT (new_context, type);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+call    5 never executed
+        -:  122:
+    #####:  123:  if (!ok)
+branch  0 never executed
+branch  1 never executed
+        -:  124:    {
+    #####:  125:      int saved_errno = errno;
+    #####:  126:      context_free (new_context);
+call    0 never executed
+    #####:  127:      errno = saved_errno;
+    #####:  128:      return 1;
+        -:  129:    }
+        -:  130:
+    #####:  131:  *ret = new_context;
+    #####:  132:  return 0;
+        -:  133:}
+        -:  134:
+        -:  135:/* Change the context of FILE, using specified components.
+        -:  136:   If it is a directory and -R is given, recurse.
+        -:  137:   Return 0 if successful, 1 if errors occurred. */
+        -:  138:
+        -:  139:static int
+function change_file_context called 0 returned 0% blocks executed 0%
+    #####:  140:change_file_context (int fd, char const *file)
+        -:  141:{
+    #####:  142:  char *file_context = nullptr;
+        -:  143:  context_t context IF_LINT (= 0);
+        -:  144:  char const * context_string;
+    #####:  145:  int errors = 0;
+        -:  146:
+    #####:  147:  if (specified_context == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  148:    {
+    #####:  149:      int status = (affect_symlink_referent
+    #####:  150:                    ? getfileconat (fd, file, &file_context)
+call    0 never executed
+    #####:  151:                    : lgetfileconat (fd, file, &file_context));
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  152:
+    #####:  153:      if (status < 0 && errno != ENODATA)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  154:        {
+    #####:  155:          error (0, errno, _("failed to get security context of %s"),
+call    0 never executed
+        -:  156:                 quoteaf (file));
+    #####:  157:          return 1;
+        -:  158:        }
+        -:  159:
+        -:  160:      /* If the file doesn't have a context, and we're not setting all of
+        -:  161:         the context components, there isn't really an obvious default.
+        -:  162:         Thus, we just give up. */
+    #####:  163:      if (file_context == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  164:        {
+    #####:  165:          error (0, 0, _("can't apply partial context to unlabeled file %s"),
+call    0 never executed
+        -:  166:                 quoteaf (file));
+    #####:  167:          return 1;
+        -:  168:        }
+        -:  169:
+    #####:  170:      if (compute_context_from_mask (file_context, &context))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  171:        return 1;
+        -:  172:
+    #####:  173:      context_string = context_str (context);
+call    0 never executed
+        -:  174:    }
+        -:  175:  else
+        -:  176:    {
+    #####:  177:      context_string = specified_context;
+        -:  178:    }
+        -:  179:
+    #####:  180:  if (file_context == nullptr || ! STREQ (context_string, file_context))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  181:    {
+    #####:  182:      int fail = (affect_symlink_referent
+    #####:  183:                  ?  setfileconat (fd, file, context_string)
+call    0 never executed
+    #####:  184:                  : lsetfileconat (fd, file, context_string));
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  185:
+    #####:  186:      if (fail)
+branch  0 never executed
+branch  1 never executed
+        -:  187:        {
+    #####:  188:          errors = 1;
+    #####:  189:          error (0, errno, _("failed to change context of %s to %s"),
+call    0 never executed
+call    1 never executed
+        -:  190:                 quoteaf_n (0, file), quote_n (1, context_string));
+        -:  191:        }
+        -:  192:    }
+        -:  193:
+    #####:  194:  if (specified_context == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  195:    {
+    #####:  196:      context_free (context);
+call    0 never executed
+    #####:  197:      freecon (file_context);
+call    0 never executed
+        -:  198:    }
+        -:  199:
+    #####:  200:  return errors;
+        -:  201:}
+        -:  202:
+        -:  203:/* Change the context of FILE.
+        -:  204:   Return true if successful.  This function is called
+        -:  205:   once for every file system object that fts encounters.  */
+        -:  206:
+        -:  207:static bool
+function process_file called 10 returned 100% blocks executed 18%
+       10:  208:process_file (FTS *fts, FTSENT *ent)
+        -:  209:{
+       10:  210:  char const *file_full_name = ent->fts_path;
+       10:  211:  char const *file = ent->fts_accpath;
+       10:  212:  const struct stat *file_stats = ent->fts_statp;
+       10:  213:  bool ok = true;
+        -:  214:
+       10:  215:  switch (ent->fts_info)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 100%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+        -:  216:    {
+    #####:  217:    case FTS_D:
+    #####:  218:      if (recurse)
+branch  0 never executed
+branch  1 never executed
+        -:  219:        {
+    #####:  220:          if (ROOT_DEV_INO_CHECK (root_dev_ino, ent->fts_statp))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  221:            {
+        -:  222:              /* This happens e.g., with "chcon -R --preserve-root ... /"
+        -:  223:                 and with "chcon -RH --preserve-root ... symlink-to-root".  */
+    #####:  224:              ROOT_DEV_INO_WARN (file_full_name);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+call    4 never executed
+        -:  225:              /* Tell fts not to traverse into this hierarchy.  */
+    #####:  226:              fts_set (fts, ent, FTS_SKIP);
+call    0 never executed
+        -:  227:              /* Ensure that we do not process "/" on the second visit.  */
+    #####:  228:              ignore_value (fts_read (fts));
+call    0 never executed
+    #####:  229:              return false;
+        -:  230:            }
+    #####:  231:          return true;
+        -:  232:        }
+    #####:  233:      break;
+        -:  234:
+    #####:  235:    case FTS_DP:
+    #####:  236:      if (! recurse)
+branch  0 never executed
+branch  1 never executed
+    #####:  237:        return true;
+    #####:  238:      break;
+        -:  239:
+       10:  240:    case FTS_NS:
+        -:  241:      /* For a top-level file or directory, this FTS_NS (stat failed)
+        -:  242:         indicator is determined at the time of the initial fts_open call.
+        -:  243:         With programs like chmod, chown, and chgrp, that modify
+        -:  244:         permissions, it is possible that the file in question is
+        -:  245:         accessible when control reaches this point.  So, if this is
+        -:  246:         the first time we've seen the FTS_NS for this file, tell
+        -:  247:         fts_read to stat it "again".  */
+       10:  248:      if (ent->fts_level == 0 && ent->fts_number == 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 50% (fallthrough)
+branch  3 taken 50%
+        -:  249:        {
+        5:  250:          ent->fts_number = 1;
+        5:  251:          fts_set (fts, ent, FTS_AGAIN);
+call    0 returned 100%
+        5:  252:          return true;
+        -:  253:        }
+        5:  254:      error (0, ent->fts_errno, _("cannot access %s"),
+call    0 returned 100%
+        -:  255:             quoteaf (file_full_name));
+        5:  256:      ok = false;
+        5:  257:      break;
+        -:  258:
+    #####:  259:    case FTS_ERR:
+    #####:  260:      error (0, ent->fts_errno, "%s", quotef (file_full_name));
+call    0 never executed
+    #####:  261:      ok = false;
+    #####:  262:      break;
+        -:  263:
+    #####:  264:    case FTS_DNR:
+    #####:  265:      error (0, ent->fts_errno, _("cannot read directory %s"),
+call    0 never executed
+        -:  266:             quoteaf (file_full_name));
+    #####:  267:      ok = false;
+    #####:  268:      break;
+        -:  269:
+    #####:  270:    case FTS_DC:		/* directory that causes cycles */
+    #####:  271:      if (cycle_warning_required (fts, ent))
+branch  0 never executed
+branch  1 never executed
+        -:  272:        {
+    #####:  273:          emit_cycle_warning (file_full_name);
+call    0 never executed
+    #####:  274:          return false;
+        -:  275:        }
+    #####:  276:      break;
+        -:  277:
+    #####:  278:    default:
+    #####:  279:      break;
+        -:  280:    }
+        -:  281:
+        5:  282:  if (ent->fts_info == FTS_DP
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  283:      && ok && ROOT_DEV_INO_CHECK (root_dev_ino, file_stats))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+        -:  284:    {
+    #####:  285:      ROOT_DEV_INO_WARN (file_full_name);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+call    4 never executed
+    #####:  286:      ok = false;
+        -:  287:    }
+        -:  288:
+        5:  289:  if (ok)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  290:    {
+    #####:  291:      if (verbose)
+branch  0 never executed
+branch  1 never executed
+    #####:  292:        printf (_("changing security context of %s\n"),
+call    0 never executed
+call    1 never executed
+        -:  293:                quoteaf (file_full_name));
+        -:  294:
+    #####:  295:      if (change_file_context (fts->fts_cwd_fd, file) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  296:        ok = false;
+        -:  297:    }
+        -:  298:
+        5:  299:  if ( ! recurse)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        5:  300:    fts_set (fts, ent, FTS_SKIP);
+call    0 returned 100%
+        -:  301:
+        5:  302:  return ok;
+        -:  303:}
+        -:  304:
+        -:  305:/* Recursively operate on the specified FILES (the last entry
+        -:  306:   of which is null).  BIT_FLAGS controls how fts works.
+        -:  307:   Return true if successful.  */
+        -:  308:
+        -:  309:static bool
+function process_files called 4 returned 100% blocks executed 58%
+        4:  310:process_files (char **files, int bit_flags)
+        -:  311:{
+        4:  312:  bool ok = true;
+        -:  313:
+        4:  314:  FTS *fts = xfts_open (files, bit_flags, nullptr);
+call    0 returned 100%
+        -:  315:
+        -:  316:  while (true)
+       10:  317:    {
+        -:  318:      FTSENT *ent;
+        -:  319:
+       14:  320:      ent = fts_read (fts);
+call    0 returned 100%
+       14:  321:      if (ent == nullptr)
+branch  0 taken 29% (fallthrough)
+branch  1 taken 71%
+        -:  322:        {
+        4:  323:          if (errno != 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  324:            {
+        -:  325:              /* FIXME: try to give a better message  */
+    #####:  326:              error (0, errno, _("fts_read failed"));
+    #####:  327:              ok = false;
+        -:  328:            }
+        4:  329:          break;
+        -:  330:        }
+        -:  331:
+       10:  332:      ok &= process_file (fts, ent);
+call    0 returned 100%
+        -:  333:    }
+        -:  334:
+        4:  335:  if (fts_close (fts) != 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+        -:  336:    {
+    #####:  337:      error (0, errno, _("fts_close failed"));
+    #####:  338:      ok = false;
+        -:  339:    }
+        -:  340:
+        4:  341:  return ok;
+        -:  342:}
+        -:  343:
+        -:  344:void
+function usage called 21 returned 0% blocks executed 19%
+       21:  345:usage (int status)
+        -:  346:{
+       21:  347:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       21:  348:    emit_try_help ();
+call    0 returned 100%
+        -:  349:  else
+        -:  350:    {
+    #####:  351:      printf (_("\
+call    0 never executed
+        -:  352:Usage: %s [OPTION]... CONTEXT FILE...\n\
+        -:  353:  or:  %s [OPTION]... [-u USER] [-r ROLE] [-l RANGE] [-t TYPE] FILE...\n\
+        -:  354:  or:  %s [OPTION]... --reference=RFILE FILE...\n\
+        -:  355:"),
+        -:  356:        program_name, program_name, program_name);
+    #####:  357:      fputs (_("\
+call    0 never executed
+        -:  358:Change the SELinux security context of each FILE to CONTEXT.\n\
+        -:  359:With --reference, change the security context of each FILE to that of RFILE.\n\
+        -:  360:"), stdout);
+        -:  361:
+    #####:  362:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  363:
+    #####:  364:      fputs (_("\
+call    0 never executed
+        -:  365:      --dereference      affect the referent of each symbolic link (this is\n\
+        -:  366:                         the default), rather than the symbolic link itself\n\
+        -:  367:  -h, --no-dereference   affect symbolic links instead of any referenced file\n\
+        -:  368:"), stdout);
+    #####:  369:      fputs (_("\
+call    0 never executed
+        -:  370:  -u, --user=USER        set user USER in the target security context\n\
+        -:  371:  -r, --role=ROLE        set role ROLE in the target security context\n\
+        -:  372:  -t, --type=TYPE        set type TYPE in the target security context\n\
+        -:  373:  -l, --range=RANGE      set range RANGE in the target security context\n\
+        -:  374:"), stdout);
+    #####:  375:      fputs (_("\
+call    0 never executed
+        -:  376:      --no-preserve-root  do not treat '/' specially (the default)\n\
+        -:  377:      --preserve-root    fail to operate recursively on '/'\n\
+        -:  378:"), stdout);
+    #####:  379:      fputs (_("\
+call    0 never executed
+        -:  380:      --reference=RFILE  use RFILE's security context rather than specifying\n\
+        -:  381:                         a CONTEXT value\n\
+        -:  382:"), stdout);
+    #####:  383:      fputs (_("\
+call    0 never executed
+        -:  384:  -R, --recursive        operate on files and directories recursively\n\
+        -:  385:"), stdout);
+    #####:  386:      fputs (_("\
+call    0 never executed
+        -:  387:  -v, --verbose          output a diagnostic for every file processed\n\
+        -:  388:"), stdout);
+    #####:  389:      fputs (_("\
+call    0 never executed
+        -:  390:\n\
+        -:  391:The following options modify how a hierarchy is traversed when the -R\n\
+        -:  392:option is also specified.  If more than one is specified, only the final\n\
+        -:  393:one takes effect.\n\
+        -:  394:\n\
+        -:  395:  -H                     if a command line argument is a symbolic link\n\
+        -:  396:                         to a directory, traverse it\n\
+        -:  397:  -L                     traverse every symbolic link to a directory\n\
+        -:  398:                         encountered\n\
+        -:  399:  -P                     do not traverse any symbolic links (default)\n\
+        -:  400:\n\
+        -:  401:"), stdout);
+    #####:  402:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  403:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  404:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  405:    }
+       21:  406:  exit (status);
+        -:  407:}
+        -:  408:
+        -:  409:int
+function main called 25 returned 16% blocks executed 37%
+       25:  410:main (int argc, char **argv)
+        -:  411:{
+        -:  412:  /* Bit flags that control how fts works.  */
+       25:  413:  int bit_flags = FTS_PHYSICAL;
+        -:  414:
+        -:  415:  /* 1 if --dereference, 0 if --no-dereference, -1 if neither has been
+        -:  416:     specified.  */
+       25:  417:  int dereference = -1;
+        -:  418:
+        -:  419:  bool ok;
+       25:  420:  bool preserve_root = false;
+       25:  421:  bool component_specified = false;
+       25:  422:  char *reference_file = nullptr;
+        -:  423:  int optc;
+        -:  424:
+        -:  425:  initialize_main (&argc, &argv);
+       25:  426:  set_program_name (argv[0]);
+call    0 returned 100%
+       25:  427:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  428:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  429:  textdomain (PACKAGE);
+        -:  430:
+       25:  431:  atexit (close_stdout);
+call    0 returned 100%
+        -:  432:
+       25:  433:  while ((optc = getopt_long (argc, argv, "HLPRhvu:r:t:l:",
+call    0 returned 100%
+        -:  434:                              long_options, nullptr))
+       25:  435:         != -1)
+branch  0 taken 4%
+branch  1 taken 96% (fallthrough)
+        -:  436:    {
+        1:  437:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 0%
+branch 13 taken 0%
+branch 14 taken 0%
+branch 15 taken 0%
+branch 16 taken 0%
+branch 17 taken 100%
+        -:  438:        {
+    #####:  439:        case 'H': /* Traverse command-line symlinks-to-directories.  */
+    #####:  440:          bit_flags = FTS_COMFOLLOW | FTS_PHYSICAL;
+    #####:  441:          break;
+        -:  442:
+    #####:  443:        case 'L': /* Traverse all symlinks-to-directories.  */
+    #####:  444:          bit_flags = FTS_LOGICAL;
+    #####:  445:          break;
+        -:  446:
+    #####:  447:        case 'P': /* Traverse no symlinks-to-directories.  */
+    #####:  448:          bit_flags = FTS_PHYSICAL;
+    #####:  449:          break;
+        -:  450:
+    #####:  451:        case 'h': /* --no-dereference: affect symlinks */
+    #####:  452:          dereference = 0;
+    #####:  453:          break;
+        -:  454:
+    #####:  455:        case DEREFERENCE_OPTION: /* --dereference: affect the referent
+        -:  456:                                    of each symlink */
+    #####:  457:          dereference = 1;
+    #####:  458:          break;
+        -:  459:
+    #####:  460:        case NO_PRESERVE_ROOT:
+    #####:  461:          preserve_root = false;
+    #####:  462:          break;
+        -:  463:
+    #####:  464:        case PRESERVE_ROOT:
+    #####:  465:          preserve_root = true;
+    #####:  466:          break;
+        -:  467:
+    #####:  468:        case REFERENCE_FILE_OPTION:
+    #####:  469:          reference_file = optarg;
+    #####:  470:          break;
+        -:  471:
+    #####:  472:        case 'R':
+    #####:  473:          recurse = true;
+    #####:  474:          break;
+        -:  475:
+    #####:  476:        case 'f':
+        -:  477:          /* ignore */
+    #####:  478:          break;
+        -:  479:
+    #####:  480:        case 'v':
+    #####:  481:          verbose = true;
+    #####:  482:          break;
+        -:  483:
+    #####:  484:        case 'u':
+    #####:  485:          specified_user = optarg;
+    #####:  486:          component_specified = true;
+    #####:  487:          break;
+        -:  488:
+    #####:  489:        case 'r':
+    #####:  490:          specified_role = optarg;
+    #####:  491:          component_specified = true;
+    #####:  492:          break;
+        -:  493:
+    #####:  494:        case 't':
+    #####:  495:          specified_type = optarg;
+    #####:  496:          component_specified = true;
+    #####:  497:          break;
+        -:  498:
+    #####:  499:        case 'l':
+    #####:  500:          specified_range = optarg;
+    #####:  501:          component_specified = true;
+    #####:  502:          break;
+        -:  503:
+    #####:  504:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  505:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+        1:  506:        default:
+        1:  507:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  508:        }
+        -:  509:    }
+        -:  510:
+       24:  511:  if (recurse)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  512:    {
+    #####:  513:      if (bit_flags == FTS_PHYSICAL)
+branch  0 never executed
+branch  1 never executed
+        -:  514:        {
+    #####:  515:          if (dereference == 1)
+branch  0 never executed
+branch  1 never executed
+    #####:  516:            error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  517:                   _("-R --dereference requires either -H or -L"));
+    #####:  518:          affect_symlink_referent = false;
+        -:  519:        }
+        -:  520:      else
+        -:  521:        {
+    #####:  522:          if (dereference == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  523:            error (EXIT_FAILURE, 0, _("-R -h requires -P"));
+call    0 never executed
+    #####:  524:          affect_symlink_referent = true;
+        -:  525:        }
+        -:  526:    }
+        -:  527:  else
+        -:  528:    {
+       24:  529:      bit_flags = FTS_PHYSICAL;
+       24:  530:      affect_symlink_referent = (dereference != 0);
+        -:  531:    }
+        -:  532:
+      24*:  533:  if (argc - optind < (reference_file || component_specified ? 1 : 2))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+branch  4 taken 83% (fallthrough)
+branch  5 taken 17%
+        -:  534:    {
+       20:  535:      if (argc <= optind)
+branch  0 taken 5% (fallthrough)
+branch  1 taken 95%
+        -:  536:        error (0, 0, _("missing operand"));
+        -:  537:      else
+       19:  538:        error (0, 0, _("missing operand after %s"), quote (argv[argc - 1]));
+call    0 returned 100%
+       20:  539:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  540:    }
+        -:  541:
+        4:  542:  if (reference_file)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  543:    {
+    #####:  544:      char *ref_context = nullptr;
+        -:  545:
+    #####:  546:      if (getfilecon (reference_file, &ref_context) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  547:        error (EXIT_FAILURE, errno, _("failed to get security context of %s"),
+call    0 never executed
+call    1 never executed
+        -:  548:               quoteaf (reference_file));
+        -:  549:
+    #####:  550:      specified_context = ref_context;
+        -:  551:    }
+        4:  552:  else if (component_specified)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  553:    {
+        -:  554:      /* FIXME: it's already null, so this is a no-op. */
+    #####:  555:      specified_context = nullptr;
+        -:  556:    }
+        -:  557:  else
+        -:  558:    {
+        4:  559:      specified_context = argv[optind++];
+        -:  560:      if (0 < is_selinux_enabled ()
+        -:  561:          && security_check_context (specified_context) < 0)
+        -:  562:        error (EXIT_FAILURE, errno, _("invalid context: %s"),
+        -:  563:               quote (specified_context));
+        -:  564:    }
+        -:  565:
+       4*:  566:  if (reference_file && component_specified)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  567:    {
+        -:  568:      error (0, 0, _("conflicting security context specifiers given"));
+    #####:  569:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  570:    }
+        -:  571:
+       4*:  572:  if (recurse && preserve_root)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  573:    {
+        -:  574:      static struct dev_ino dev_ino_buf;
+    #####:  575:      root_dev_ino = get_root_dev_ino (&dev_ino_buf);
+call    0 never executed
+    #####:  576:      if (root_dev_ino == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  577:        error (EXIT_FAILURE, errno, _("failed to get attributes of %s"),
+call    0 never executed
+call    1 never executed
+        -:  578:               quoteaf ("/"));
+        -:  579:    }
+        -:  580:  else
+        -:  581:    {
+        4:  582:      root_dev_ino = nullptr;
+        -:  583:    }
+        -:  584:
+        4:  585:  ok = process_files (argv + optind, bit_flags | FTS_NOSTAT);
+call    0 returned 100%
+        -:  586:
+        4:  587:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -:  588:}

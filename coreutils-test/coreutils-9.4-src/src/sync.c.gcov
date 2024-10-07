@@ -1,0 +1,323 @@
+        -:    0:Source:src/sync.c
+        -:    0:Graph:sync.gcno
+        -:    0:Data:sync.gcda
+        -:    0:Runs:35
+        -:    1:/* sync - update the super block
+        -:    2:   Copyright (C) 1994-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Jim Meyering */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <getopt.h>
+        -:   21:#include <stdio.h>
+        -:   22:#include <sys/types.h>
+        -:   23:
+        -:   24:#include "system.h"
+        -:   25:
+        -:   26:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   27:#define PROGRAM_NAME "sync"
+        -:   28:
+        -:   29:#define AUTHORS                                 \
+        -:   30:  proper_name ("Jim Meyering"),                 \
+        -:   31:  proper_name ("Giuseppe Scrivano")
+        -:   32:
+        -:   33:#ifndef HAVE_SYNCFS
+        -:   34:# define HAVE_SYNCFS 0
+        -:   35:#endif
+        -:   36:
+        -:   37:enum sync_mode
+        -:   38:{
+        -:   39:  MODE_FILE,
+        -:   40:  MODE_DATA,
+        -:   41:  MODE_FILE_SYSTEM,
+        -:   42:  MODE_SYNC
+        -:   43:};
+        -:   44:
+        -:   45:static struct option const long_options[] =
+        -:   46:{
+        -:   47:  {"data", no_argument, nullptr, 'd'},
+        -:   48:  {"file-system", no_argument, nullptr, 'f'},
+        -:   49:  {GETOPT_HELP_OPTION_DECL},
+        -:   50:  {GETOPT_VERSION_OPTION_DECL},
+        -:   51:  {nullptr, 0, nullptr, 0}
+        -:   52:};
+        -:   53:
+        -:   54:void
+function usage called 1 returned 0% blocks executed 30%
+        1:   55:usage (int status)
+        -:   56:{
+        1:   57:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:   58:    emit_try_help ();
+call    0 returned 100%
+        -:   59:  else
+        -:   60:    {
+    #####:   61:      printf (_("Usage: %s [OPTION] [FILE]...\n"), program_name);
+call    0 never executed
+    #####:   62:      fputs (_("\
+call    0 never executed
+        -:   63:Synchronize cached writes to persistent storage\n\
+        -:   64:\n\
+        -:   65:If one or more files are specified, sync only them,\n\
+        -:   66:or their containing file systems.\n\
+        -:   67:\n\
+        -:   68:"), stdout);
+        -:   69:
+    #####:   70:      fputs (_("\
+call    0 never executed
+        -:   71:  -d, --data             sync only file data, no unneeded metadata\n\
+        -:   72:"), stdout);
+    #####:   73:      fputs (_("\
+call    0 never executed
+        -:   74:  -f, --file-system      sync the file systems that contain the files\n\
+        -:   75:"), stdout);
+        -:   76:
+    #####:   77:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   78:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   79:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   80:    }
+        1:   81:  exit (status);
+        -:   82:}
+        -:   83:
+        -:   84:/* Sync the specified FILE, or file systems associated with FILE.
+        -:   85:   Return 1 on success.  */
+        -:   86:
+        -:   87:static bool
+function sync_arg called 37 returned 100% blocks executed 53%
+       37:   88:sync_arg (enum sync_mode mode, char const *file)
+        -:   89:{
+       37:   90:  bool ret = true;
+       37:   91:  int open_flags = O_RDONLY | O_NONBLOCK;
+        -:   92:  int fd;
+        -:   93:
+        -:   94:#if defined _AIX || defined __CYGWIN__
+        -:   95:  /* AIX 7.1, CYGWIN 2.9.0, fsync requires write access to file.  */
+        -:   96:  if (mode == MODE_FILE)
+        -:   97:    open_flags = O_WRONLY | O_NONBLOCK;
+        -:   98:#endif
+        -:   99:
+        -:  100:  /* Note O_PATH might be supported with syncfs(),
+        -:  101:     though as of Linux 3.18 is not.  */
+       37:  102:  fd = open (file, open_flags);
+call    0 returned 100%
+       37:  103:  if (fd < 0)
+branch  0 taken 76% (fallthrough)
+branch  1 taken 24%
+        -:  104:    {
+        -:  105:      /* Use the O_RDONLY errno, which is significant
+        -:  106:         with directories for example.  */
+       28:  107:      int rd_errno = errno;
+       28:  108:      if (open_flags != (O_WRONLY | O_NONBLOCK))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       28:  109:        fd = open (file, O_WRONLY | O_NONBLOCK);
+call    0 returned 100%
+       28:  110:      if (fd < 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  111:        {
+       28:  112:          error (0, rd_errno, _("error opening %s"), quoteaf (file));
+call    0 returned 100%
+       28:  113:          return false;
+        -:  114:        }
+        -:  115:    }
+        -:  116:
+        -:  117:  /* We used O_NONBLOCK above to not hang with fifos,
+        -:  118:     so reset that here.  */
+        9:  119:  int fdflags = fcntl (fd, F_GETFL);
+call    0 returned 100%
+        9:  120:  if (fdflags == -1
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        9:  121:      || fcntl (fd, F_SETFL, fdflags & ~O_NONBLOCK) < 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+        -:  122:    {
+    #####:  123:      error (0, errno, _("couldn't reset non-blocking mode %s"),
+call    0 never executed
+        -:  124:             quoteaf (file));
+    #####:  125:      ret = false;
+        -:  126:    }
+        -:  127:
+        9:  128:  if (ret == true)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  129:    {
+        9:  130:      int sync_status = -1;
+        -:  131:
+        9:  132:      switch (mode)
+branch  0 taken 0%
+branch  1 taken 100%
+branch  2 taken 0%
+branch  3 taken 0%
+        -:  133:        {
+    #####:  134:        case MODE_DATA:
+    #####:  135:          sync_status = fdatasync (fd);
+call    0 never executed
+    #####:  136:          break;
+        -:  137:
+        9:  138:        case MODE_FILE:
+        9:  139:          sync_status = fsync (fd);
+call    0 returned 100%
+        9:  140:          break;
+        -:  141:
+        -:  142:#if HAVE_SYNCFS
+    #####:  143:        case MODE_FILE_SYSTEM:
+    #####:  144:          sync_status = syncfs (fd);
+call    0 never executed
+    #####:  145:          break;
+        -:  146:#endif
+        -:  147:
+    #####:  148:        default:
+    #####:  149:          unreachable ();
+call    0 never executed
+        -:  150:        }
+        -:  151:
+        9:  152:      if (sync_status < 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  153:        {
+    #####:  154:          error (0, errno, _("error syncing %s"), quoteaf (file));
+call    0 never executed
+    #####:  155:          ret = false;
+        -:  156:        }
+        -:  157:    }
+        -:  158:
+        9:  159:  if (close (fd) < 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+        -:  160:    {
+    #####:  161:      error (0, errno, _("failed to close %s"), quoteaf (file));
+call    0 never executed
+    #####:  162:      ret = false;
+        -:  163:    }
+        -:  164:
+        9:  165:  return ret;
+        -:  166:}
+        -:  167:
+        -:  168:int
+function main called 35 returned 97% blocks executed 57%
+       35:  169:main (int argc, char **argv)
+        -:  170:{
+        -:  171:  int c;
+        -:  172:  bool args_specified;
+       35:  173:  bool arg_data = false, arg_file_system = false;
+        -:  174:  enum sync_mode mode;
+       35:  175:  bool ok = true;
+        -:  176:
+        -:  177:  initialize_main (&argc, &argv);
+       35:  178:  set_program_name (argv[0]);
+call    0 returned 100%
+       35:  179:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  180:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  181:  textdomain (PACKAGE);
+        -:  182:
+       35:  183:  atexit (close_stdout);
+call    0 returned 100%
+        -:  184:
+       35:  185:  while ((c = getopt_long (argc, argv, "df", long_options, nullptr))
+call    0 returned 100%
+       35:  186:         != -1)
+branch  0 taken 3%
+branch  1 taken 97% (fallthrough)
+        -:  187:    {
+        1:  188:      switch (c)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 100%
+        -:  189:        {
+    #####:  190:        case 'd':
+    #####:  191:          arg_data = true;
+    #####:  192:          break;
+        -:  193:
+    #####:  194:        case 'f':
+    #####:  195:          arg_file_system = true;
+    #####:  196:          break;
+        -:  197:
+    #####:  198:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  199:
+    #####:  200:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+        -:  201:
+        1:  202:        default:
+        1:  203:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  204:        }
+        -:  205:    }
+        -:  206:
+       34:  207:  args_specified = optind < argc;
+        -:  208:
+      34*:  209:  if (arg_data && arg_file_system)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  210:    error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  211:           _("cannot specify both --data and --file-system"));
+        -:  212:
+       34:  213:  if (!args_specified && arg_data)
+branch  0 taken 3% (fallthrough)
+branch  1 taken 97%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+    #####:  214:    error (EXIT_FAILURE, 0, _("--data needs at least one argument"));
+call    0 never executed
+        -:  215:
+       34:  216:  if (! args_specified || (arg_file_system && ! HAVE_SYNCFS))
+branch  0 taken 3% (fallthrough)
+branch  1 taken 97%
+        1:  217:    mode = MODE_SYNC;
+       33:  218:  else if (arg_file_system)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  219:    mode = MODE_FILE_SYSTEM;
+       33:  220:  else if (! arg_data)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       33:  221:    mode = MODE_FILE;
+        -:  222:  else
+    #####:  223:    mode = MODE_DATA;
+        -:  224:
+       34:  225:  if (mode == MODE_SYNC)
+branch  0 taken 3% (fallthrough)
+branch  1 taken 97%
+        1:  226:    sync ();
+call    0 returned 100%
+        -:  227:  else
+        -:  228:    {
+       70:  229:      for (; optind < argc; optind++)
+branch  0 taken 53%
+branch  1 taken 47% (fallthrough)
+       37:  230:        ok &= sync_arg (mode, argv[optind]);
+call    0 returned 100%
+        -:  231:    }
+        -:  232:
+       34:  233:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -:  234:}

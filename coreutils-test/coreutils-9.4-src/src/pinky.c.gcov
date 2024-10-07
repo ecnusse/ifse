@@ -1,0 +1,848 @@
+        -:    0:Source:src/pinky.c
+        -:    0:Graph:pinky.gcno
+        -:    0:Data:pinky.gcda
+        -:    0:Runs:2
+        -:    1:/* GNU's pinky.
+        -:    2:   Copyright (C) 1992-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Created by hacking who.c by Kaveh Ghazi ghazi@caip.rutgers.edu */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <getopt.h>
+        -:   21:#include <pwd.h>
+        -:   22:#include <stdckdint.h>
+        -:   23:#include <stdio.h>
+        -:   24:
+        -:   25:#include <sys/types.h>
+        -:   26:#include "system.h"
+        -:   27:
+        -:   28:#include "canon-host.h"
+        -:   29:#include "hard-locale.h"
+        -:   30:#include "readutmp.h"
+        -:   31:
+        -:   32:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   33:#define PROGRAM_NAME "pinky"
+        -:   34:
+        -:   35:#define AUTHORS \
+        -:   36:  proper_name ("Joseph Arceneaux"), \
+        -:   37:  proper_name ("David MacKenzie"), \
+        -:   38:  proper_name ("Kaveh Ghazi")
+        -:   39:
+        -:   40:/* If true, display the hours:minutes since each user has touched
+        -:   41:   the keyboard, or blank if within the last minute, or days followed
+        -:   42:   by a 'd' if not within the last day. */
+        -:   43:static bool include_idle = true;
+        -:   44:
+        -:   45:/* If true, display a line at the top describing each field. */
+        -:   46:static bool include_heading = true;
+        -:   47:
+        -:   48:/* if true, display the user's full name from pw_gecos. */
+        -:   49:static bool include_fullname = true;
+        -:   50:
+        -:   51:/* if true, display the user's ~/.project file when doing long format. */
+        -:   52:static bool include_project = true;
+        -:   53:
+        -:   54:/* if true, display the user's ~/.plan file when doing long format. */
+        -:   55:static bool include_plan = true;
+        -:   56:
+        -:   57:/* if true, display the user's home directory and shell
+        -:   58:   when doing long format. */
+        -:   59:static bool include_home_and_shell = true;
+        -:   60:
+        -:   61:/* if true, use the "short" output format. */
+        -:   62:static bool do_short_format = true;
+        -:   63:
+        -:   64:/* if true, display the ut_host field. */
+        -:   65:#if HAVE_STRUCT_XTMP_UT_HOST
+        -:   66:static bool include_where = true;
+        -:   67:#endif
+        -:   68:
+        -:   69:/* The strftime format to use for login times, and its expected
+        -:   70:   output width.  */
+        -:   71:static char const *time_format;
+        -:   72:static int time_format_width;
+        -:   73:
+        -:   74:static struct option const longopts[] =
+        -:   75:{
+        -:   76:  {GETOPT_HELP_OPTION_DECL},
+        -:   77:  {GETOPT_VERSION_OPTION_DECL},
+        -:   78:  {nullptr, 0, nullptr, 0}
+        -:   79:};
+        -:   80:
+        -:   81:/* Count and return the number of ampersands in STR.  */
+        -:   82:
+        -:   83:ATTRIBUTE_PURE
+        -:   84:static size_t
+function count_ampersands called 0 returned 0% blocks executed 0%
+    #####:   85:count_ampersands (char const *str)
+        -:   86:{
+    #####:   87:  size_t count = 0;
+        -:   88:  do
+        -:   89:    {
+    #####:   90:      if (*str == '&')
+branch  0 never executed
+branch  1 never executed
+    #####:   91:        count++;
+    #####:   92:    } while (*str++);
+branch  0 never executed
+branch  1 never executed
+    #####:   93:  return count;
+        -:   94:}
+        -:   95:
+        -:   96:/* Create a string (via xmalloc) which contains a full name by substituting
+        -:   97:   for each ampersand in GECOS_NAME the USER_NAME string with its first
+        -:   98:   character capitalized.  The caller must ensure that GECOS_NAME contains
+        -:   99:   no ','s.  The caller also is responsible for free'ing the return value of
+        -:  100:   this function.  */
+        -:  101:
+        -:  102:static char *
+function create_fullname called 0 returned 0% blocks executed 0%
+    #####:  103:create_fullname (char const *gecos_name, char const *user_name)
+        -:  104:{
+    #####:  105:  size_t rsize = strlen (gecos_name) + 1;
+        -:  106:  char *result;
+        -:  107:  char *r;
+    #####:  108:  size_t ampersands = count_ampersands (gecos_name);
+        -:  109:
+    #####:  110:  if (ampersands != 0)
+branch  0 never executed
+branch  1 never executed
+        -:  111:    {
+    #####:  112:      size_t ulen = strlen (user_name);
+        -:  113:      size_t product;
+    #####:  114:      if (ckd_mul (&product, ulen, ampersands - 1)
+branch  0 never executed
+branch  1 never executed
+    #####:  115:          || ckd_add (&rsize, rsize, product))
+branch  0 never executed
+branch  1 never executed
+    #####:  116:        xalloc_die ();
+call    0 never executed
+        -:  117:    }
+        -:  118:
+    #####:  119:  r = result = xmalloc (rsize);
+call    0 never executed
+        -:  120:
+    #####:  121:  while (*gecos_name)
+branch  0 never executed
+branch  1 never executed
+        -:  122:    {
+    #####:  123:      if (*gecos_name == '&')
+branch  0 never executed
+branch  1 never executed
+        -:  124:        {
+    #####:  125:          char const *uname = user_name;
+    #####:  126:          if (islower (to_uchar (*uname)))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  127:            *r++ = toupper (to_uchar (*uname++));
+call    0 never executed
+    #####:  128:          while (*uname)
+branch  0 never executed
+branch  1 never executed
+    #####:  129:            *r++ = *uname++;
+        -:  130:        }
+        -:  131:      else
+        -:  132:        {
+    #####:  133:          *r++ = *gecos_name;
+        -:  134:        }
+        -:  135:
+    #####:  136:      gecos_name++;
+        -:  137:    }
+    #####:  138:  *r = 0;
+        -:  139:
+    #####:  140:  return result;
+        -:  141:}
+        -:  142:
+        -:  143:/* Return a string representing the time between WHEN and the time
+        -:  144:   that this function is first run. */
+        -:  145:
+        -:  146:static char const *
+function idle_string called 0 returned 0% blocks executed 0%
+    #####:  147:idle_string (time_t when)
+        -:  148:{
+        -:  149:  static time_t now = 0;
+        -:  150:  static char buf[INT_STRLEN_BOUND (intmax_t) + sizeof "d"];
+        -:  151:  time_t seconds_idle;
+        -:  152:
+    #####:  153:  if (now == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  154:    time (&now);
+call    0 never executed
+        -:  155:
+    #####:  156:  seconds_idle = now - when;
+    #####:  157:  if (seconds_idle < 60)	/* One minute. */
+branch  0 never executed
+branch  1 never executed
+    #####:  158:    return "     ";
+    #####:  159:  if (seconds_idle < (24 * 60 * 60))	/* One day. */
+branch  0 never executed
+branch  1 never executed
+        -:  160:    {
+    #####:  161:      int hours = seconds_idle / (60 * 60);
+    #####:  162:      int minutes = (seconds_idle % (60 * 60)) / 60;
+    #####:  163:      sprintf (buf, "%02d:%02d", hours, minutes);
+        -:  164:    }
+        -:  165:  else
+        -:  166:    {
+    #####:  167:      intmax_t days = seconds_idle / (24 * 60 * 60);
+    #####:  168:      sprintf (buf, "%"PRIdMAX"d", days);
+        -:  169:    }
+    #####:  170:  return buf;
+        -:  171:}
+        -:  172:
+        -:  173:/* Return a time string.  */
+        -:  174:static char const *
+function time_string called 0 returned 0% blocks executed 0%
+    #####:  175:time_string (struct gl_utmp const *utmp_ent)
+        -:  176:{
+        -:  177:  static char buf[INT_STRLEN_BOUND (intmax_t) + sizeof "-%m-%d %H:%M"];
+    #####:  178:  struct tm *tmp = localtime (&utmp_ent->ut_ts.tv_sec);
+call    0 never executed
+        -:  179:
+    #####:  180:  if (tmp)
+branch  0 never executed
+branch  1 never executed
+        -:  181:    {
+    #####:  182:      strftime (buf, sizeof buf, time_format, tmp);
+    #####:  183:      return buf;
+        -:  184:    }
+        -:  185:  else
+    #####:  186:    return timetostr (utmp_ent->ut_ts.tv_sec, buf);
+call    0 never executed
+        -:  187:}
+        -:  188:
+        -:  189:/* Display a line of information about UTMP_ENT. */
+        -:  190:
+        -:  191:static void
+function print_entry called 0 returned 0% blocks executed 0%
+    #####:  192:print_entry (struct gl_utmp const *utmp_ent)
+        -:  193:{
+        -:  194:  struct stat stats;
+        -:  195:  time_t last_change;
+        -:  196:  char mesg;
+        -:  197:
+        -:  198:  /* If ut_line contains a space, the device name starts after the space.  */
+    #####:  199:  char *line = utmp_ent->ut_line;
+    #####:  200:  char *space = strchr (line, ' ');
+    #####:  201:  line = space ? space + 1 : line;
+branch  0 never executed
+branch  1 never executed
+        -:  202:
+        -:  203:  int dirfd;
+    #####:  204:  if (IS_ABSOLUTE_FILE_NAME (line))
+branch  0 never executed
+branch  1 never executed
+    #####:  205:    dirfd = AT_FDCWD;
+        -:  206:  else
+        -:  207:    {
+        -:  208:      static int dev_dirfd;
+    #####:  209:      if (!dev_dirfd)
+branch  0 never executed
+branch  1 never executed
+        -:  210:        {
+    #####:  211:          dev_dirfd = open ("/dev", O_PATHSEARCH | O_DIRECTORY);
+call    0 never executed
+    #####:  212:          if (dev_dirfd < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  213:            dev_dirfd = AT_FDCWD - 1;
+        -:  214:        }
+    #####:  215:      dirfd = dev_dirfd;
+        -:  216:    }
+        -:  217:
+    #####:  218:  if (AT_FDCWD <= dirfd && fstatat (dirfd, line, &stats, 0) == 0)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  219:    {
+    #####:  220:      mesg = (stats.st_mode & S_IWGRP) ? ' ' : '*';
+branch  0 never executed
+branch  1 never executed
+    #####:  221:      last_change = stats.st_atime;
+        -:  222:    }
+        -:  223:  else
+        -:  224:    {
+    #####:  225:      mesg = '?';
+    #####:  226:      last_change = 0;
+        -:  227:    }
+        -:  228:
+    #####:  229:  char *ut_user = utmp_ent->ut_user;
+    #####:  230:  if (strnlen (ut_user, 8) < 8)
+branch  0 never executed
+branch  1 never executed
+    #####:  231:    printf ("%-8s", ut_user);
+call    0 never executed
+        -:  232:  else
+    #####:  233:    fputs (ut_user, stdout);
+call    0 never executed
+        -:  234:
+    #####:  235:  if (include_fullname)
+branch  0 never executed
+branch  1 never executed
+        -:  236:    {
+    #####:  237:      struct passwd *pw = getpwnam (ut_user);
+call    0 never executed
+    #####:  238:      if (pw == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  239:        /* TRANSLATORS: Real name is unknown; at most 19 characters. */
+    #####:  240:        printf (" %19s", _("        ???"));
+call    0 never executed
+        -:  241:      else
+        -:  242:        {
+    #####:  243:          char *const comma = strchr (pw->pw_gecos, ',');
+        -:  244:          char *result;
+        -:  245:
+    #####:  246:          if (comma)
+branch  0 never executed
+branch  1 never executed
+    #####:  247:            *comma = '\0';
+        -:  248:
+    #####:  249:          result = create_fullname (pw->pw_gecos, pw->pw_name);
+call    0 never executed
+    #####:  250:          printf (" %-19.19s", result);
+call    0 never executed
+    #####:  251:          free (result);
+        -:  252:        }
+        -:  253:    }
+        -:  254:
+    #####:  255:  fputc (' ', stdout);
+call    0 never executed
+    #####:  256:  fputc (mesg, stdout);
+call    0 never executed
+    #####:  257:  if (strnlen (utmp_ent->ut_line, 8) < 8)
+branch  0 never executed
+branch  1 never executed
+    #####:  258:    printf ("%-8s", utmp_ent->ut_line);
+call    0 never executed
+        -:  259:  else
+    #####:  260:    fputs (utmp_ent->ut_line, stdout);
+call    0 never executed
+        -:  261:
+    #####:  262:  if (include_idle)
+branch  0 never executed
+branch  1 never executed
+        -:  263:    {
+    #####:  264:      if (last_change)
+branch  0 never executed
+branch  1 never executed
+    #####:  265:        printf (" %-6s", idle_string (last_change));
+call    0 never executed
+call    1 never executed
+        -:  266:      else
+        -:  267:        /* TRANSLATORS: Idle time is unknown; at most 5 characters. */
+    #####:  268:        printf (" %-6s", _("?????"));
+call    0 never executed
+        -:  269:    }
+        -:  270:
+    #####:  271:  printf (" %s", time_string (utmp_ent));
+call    0 never executed
+call    1 never executed
+        -:  272:
+        -:  273:#ifdef HAVE_STRUCT_XTMP_UT_HOST
+    #####:  274:  if (include_where && utmp_ent->ut_host[0])
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  275:    {
+    #####:  276:      char *host = nullptr;
+    #####:  277:      char *display = nullptr;
+    #####:  278:      char *ut_host = utmp_ent->ut_host;
+        -:  279:
+        -:  280:      /* Look for an X display.  */
+    #####:  281:      display = strchr (ut_host, ':');
+    #####:  282:      if (display)
+branch  0 never executed
+branch  1 never executed
+    #####:  283:        *display++ = '\0';
+        -:  284:
+    #####:  285:      if (*ut_host)
+branch  0 never executed
+branch  1 never executed
+        -:  286:        /* See if we can canonicalize it.  */
+    #####:  287:        host = canon_host (ut_host);
+call    0 never executed
+    #####:  288:      if ( ! host)
+branch  0 never executed
+branch  1 never executed
+    #####:  289:        host = ut_host;
+        -:  290:
+    #####:  291:      fputc (' ', stdout);
+call    0 never executed
+    #####:  292:      fputs (host, stdout);
+call    0 never executed
+    #####:  293:      if (display)
+branch  0 never executed
+branch  1 never executed
+        -:  294:        {
+    #####:  295:          fputc (':', stdout);
+call    0 never executed
+    #####:  296:          fputs (display, stdout);
+call    0 never executed
+        -:  297:        }
+        -:  298:
+    #####:  299:      if (host != ut_host)
+branch  0 never executed
+branch  1 never executed
+    #####:  300:        free (host);
+        -:  301:    }
+        -:  302:#endif
+        -:  303:
+    #####:  304:  putchar ('\n');
+call    0 never executed
+    #####:  305:}
+        -:  306:
+        -:  307:/* Display a verbose line of information about UTMP_ENT. */
+        -:  308:
+        -:  309:static void
+function print_long_entry called 0 returned 0% blocks executed 0%
+    #####:  310:print_long_entry (const char name[])
+        -:  311:{
+        -:  312:  struct passwd *pw;
+        -:  313:
+    #####:  314:  pw = getpwnam (name);
+call    0 never executed
+        -:  315:
+    #####:  316:  printf (_("Login name: "));
+call    0 never executed
+    #####:  317:  printf ("%-28s", name);
+call    0 never executed
+        -:  318:
+    #####:  319:  printf (_("In real life: "));
+call    0 never executed
+    #####:  320:  if (pw == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  321:    {
+        -:  322:      /* TRANSLATORS: Real name is unknown; no hard limit. */
+    #####:  323:      printf (" %s", _("???\n"));
+call    0 never executed
+    #####:  324:      return;
+        -:  325:    }
+        -:  326:  else
+        -:  327:    {
+    #####:  328:      char *const comma = strchr (pw->pw_gecos, ',');
+        -:  329:      char *result;
+        -:  330:
+    #####:  331:      if (comma)
+branch  0 never executed
+branch  1 never executed
+    #####:  332:        *comma = '\0';
+        -:  333:
+    #####:  334:      result = create_fullname (pw->pw_gecos, pw->pw_name);
+call    0 never executed
+    #####:  335:      printf (" %s", result);
+call    0 never executed
+    #####:  336:      free (result);
+        -:  337:    }
+        -:  338:
+    #####:  339:  putchar ('\n');
+call    0 never executed
+        -:  340:
+    #####:  341:  if (include_home_and_shell)
+branch  0 never executed
+branch  1 never executed
+        -:  342:    {
+    #####:  343:      printf (_("Directory: "));
+call    0 never executed
+    #####:  344:      printf ("%-29s", pw->pw_dir);
+call    0 never executed
+    #####:  345:      printf (_("Shell: "));
+call    0 never executed
+    #####:  346:      printf (" %s", pw->pw_shell);
+call    0 never executed
+    #####:  347:      putchar ('\n');
+call    0 never executed
+        -:  348:    }
+        -:  349:
+    #####:  350:  if (include_project)
+branch  0 never executed
+branch  1 never executed
+        -:  351:    {
+        -:  352:      FILE *stream;
+        -:  353:      char buf[1024];
+    #####:  354:      char const *const baseproject = "/.project";
+        -:  355:      char *const project =
+    #####:  356:        xmalloc (strlen (pw->pw_dir) + strlen (baseproject) + 1);
+call    0 never executed
+    #####:  357:      stpcpy (stpcpy (project, pw->pw_dir), baseproject);
+        -:  358:
+    #####:  359:      stream = fopen (project, "r");
+call    0 never executed
+    #####:  360:      if (stream)
+branch  0 never executed
+branch  1 never executed
+        -:  361:        {
+        -:  362:          size_t bytes;
+        -:  363:
+    #####:  364:          printf (_("Project: "));
+call    0 never executed
+        -:  365:
+    #####:  366:          while ((bytes = fread (buf, 1, sizeof (buf), stream)) > 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  367:            fwrite (buf, 1, bytes, stdout);
+call    0 never executed
+    #####:  368:          fclose (stream);
+call    0 never executed
+        -:  369:        }
+        -:  370:
+    #####:  371:      free (project);
+        -:  372:    }
+        -:  373:
+    #####:  374:  if (include_plan)
+branch  0 never executed
+branch  1 never executed
+        -:  375:    {
+        -:  376:      FILE *stream;
+        -:  377:      char buf[1024];
+    #####:  378:      char const *const baseplan = "/.plan";
+        -:  379:      char *const plan =
+    #####:  380:        xmalloc (strlen (pw->pw_dir) + strlen (baseplan) + 1);
+call    0 never executed
+    #####:  381:      stpcpy (stpcpy (plan, pw->pw_dir), baseplan);
+        -:  382:
+    #####:  383:      stream = fopen (plan, "r");
+call    0 never executed
+    #####:  384:      if (stream)
+branch  0 never executed
+branch  1 never executed
+        -:  385:        {
+        -:  386:          size_t bytes;
+        -:  387:
+    #####:  388:          printf (_("Plan:\n"));
+call    0 never executed
+        -:  389:
+    #####:  390:          while ((bytes = fread (buf, 1, sizeof (buf), stream)) > 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  391:            fwrite (buf, 1, bytes, stdout);
+call    0 never executed
+    #####:  392:          fclose (stream);
+call    0 never executed
+        -:  393:        }
+        -:  394:
+    #####:  395:      free (plan);
+        -:  396:    }
+        -:  397:
+    #####:  398:  putchar ('\n');
+call    0 never executed
+        -:  399:}
+        -:  400:
+        -:  401:/* Print the username of each valid entry and the number of valid entries
+        -:  402:   in UTMP_BUF, which should have N elements. */
+        -:  403:
+        -:  404:static void
+function print_heading called 1 returned 100% blocks executed 100%
+        1:  405:print_heading (void)
+        -:  406:{
+        1:  407:  printf ("%-8s", _("Login"));
+call    0 returned 100%
+        1:  408:  if (include_fullname)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  409:    printf (" %-19s", _("Name"));
+call    0 returned 100%
+        1:  410:  printf (" %-9s", _(" TTY"));
+call    0 returned 100%
+        1:  411:  if (include_idle)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  412:    printf (" %-6s", _("Idle"));
+call    0 returned 100%
+        1:  413:  printf (" %-*s", time_format_width, _("When"));
+call    0 returned 100%
+        -:  414:#ifdef HAVE_STRUCT_XTMP_UT_HOST
+        1:  415:  if (include_where)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  416:    printf (" %s", _("Where"));
+call    0 returned 100%
+        -:  417:#endif
+        1:  418:  putchar ('\n');
+call    0 returned 100%
+        1:  419:}
+        -:  420:
+        -:  421:/* Display UTMP_BUF, which should have N entries. */
+        -:  422:
+        -:  423:static void
+function scan_entries called 1 returned 100% blocks executed 38%
+        1:  424:scan_entries (idx_t n, struct gl_utmp const *utmp_buf,
+        -:  425:              const int argc_names, char *const argv_names[])
+        -:  426:{
+        1:  427:  if (hard_locale (LC_TIME))
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+        -:  428:    {
+    #####:  429:      time_format = "%Y-%m-%d %H:%M";
+    #####:  430:      time_format_width = 4 + 1 + 2 + 1 + 2 + 1 + 2 + 1 + 2;
+        -:  431:    }
+        -:  432:  else
+        -:  433:    {
+        1:  434:      time_format = "%b %e %H:%M";
+        1:  435:      time_format_width = 3 + 1 + 2 + 1 + 2 + 1 + 2;
+        -:  436:    }
+        -:  437:
+        1:  438:  if (include_heading)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  439:    print_heading ();
+call    0 returned 100%
+        -:  440:
+        1:  441:  while (n--)
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+        -:  442:    {
+    #####:  443:      if (IS_USER_PROCESS (utmp_buf))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  444:        {
+    #####:  445:          if (argc_names)
+branch  0 never executed
+branch  1 never executed
+        -:  446:            {
+    #####:  447:              for (int i = 0; i < argc_names; i++)
+branch  0 never executed
+branch  1 never executed
+    #####:  448:                if (STREQ (utmp_buf->ut_user, argv_names[i]))
+branch  0 never executed
+branch  1 never executed
+        -:  449:                  {
+    #####:  450:                    print_entry (utmp_buf);
+call    0 never executed
+    #####:  451:                    break;
+        -:  452:                  }
+        -:  453:            }
+        -:  454:          else
+    #####:  455:            print_entry (utmp_buf);
+call    0 never executed
+        -:  456:        }
+    #####:  457:      utmp_buf++;
+        -:  458:    }
+        1:  459:}
+        -:  460:
+        -:  461:/* Display a list of who is on the system, according to utmp file FILENAME. */
+        -:  462:
+        -:  463:static void
+function short_pinky called 1 returned 0% blocks executed 44%
+        1:  464:short_pinky (char const *filename,
+        -:  465:             const int argc_names, char *const argv_names[])
+        -:  466:{
+        -:  467:  idx_t n_users;
+        -:  468:  struct gl_utmp *utmp_buf;
+        1:  469:  if (read_utmp (filename, &n_users, &utmp_buf, READ_UTMP_USER_PROCESS) != 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  470:    error (EXIT_FAILURE, errno, "%s", quotef (filename));
+call    0 never executed
+call    1 never executed
+        -:  471:
+        1:  472:  scan_entries (n_users, utmp_buf, argc_names, argv_names);
+call    0 returned 100%
+        1:  473:  exit (EXIT_SUCCESS);
+        -:  474:}
+        -:  475:
+        -:  476:static void
+function long_pinky called 0 returned 0% blocks executed 0%
+    #####:  477:long_pinky (const int argc_names, char *const argv_names[])
+        -:  478:{
+    #####:  479:  for (int i = 0; i < argc_names; i++)
+branch  0 never executed
+branch  1 never executed
+    #####:  480:    print_long_entry (argv_names[i]);
+call    0 never executed
+    #####:  481:}
+        -:  482:
+        -:  483:void
+function usage called 1 returned 0% blocks executed 30%
+        1:  484:usage (int status)
+        -:  485:{
+        1:  486:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  487:    emit_try_help ();
+call    0 returned 100%
+        -:  488:  else
+        -:  489:    {
+    #####:  490:      printf (_("Usage: %s [OPTION]... [USER]...\n"), program_name);
+call    0 never executed
+    #####:  491:      fputs (_("\
+call    0 never executed
+        -:  492:\n\
+        -:  493:  -l              produce long format output for the specified USERs\n\
+        -:  494:  -b              omit the user's home directory and shell in long format\n\
+        -:  495:  -h              omit the user's project file in long format\n\
+        -:  496:  -p              omit the user's plan file in long format\n\
+        -:  497:  -s              do short format output, this is the default\n\
+        -:  498:"), stdout);
+    #####:  499:      fputs (_("\
+call    0 never executed
+        -:  500:  -f              omit the line of column headings in short format\n\
+        -:  501:  -w              omit the user's full name in short format\n\
+        -:  502:  -i              omit the user's full name and remote host in short format\n\
+        -:  503:  -q              omit the user's full name, remote host and idle time\n\
+        -:  504:                  in short format\n\
+        -:  505:"), stdout);
+    #####:  506:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  507:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  508:      printf (_("\
+call    0 never executed
+        -:  509:\n\
+        -:  510:A lightweight 'finger' program;  print user information.\n\
+        -:  511:The utmp file will be %s.\n\
+        -:  512:"), UTMP_FILE);
+    #####:  513:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  514:    }
+        1:  515:  exit (status);
+        -:  516:}
+        -:  517:
+        -:  518:int
+function main called 2 returned 0% blocks executed 35%
+        2:  519:main (int argc, char **argv)
+        -:  520:{
+        -:  521:  int optc;
+        -:  522:  int n_users;
+        -:  523:
+        -:  524:  initialize_main (&argc, &argv);
+        2:  525:  set_program_name (argv[0]);
+call    0 returned 100%
+        2:  526:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  527:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  528:  textdomain (PACKAGE);
+        -:  529:
+        2:  530:  atexit (close_stdout);
+call    0 returned 100%
+        -:  531:
+        2:  532:  while ((optc = getopt_long (argc, argv, "sfwiqbhlp", longopts, nullptr))
+call    0 returned 100%
+        2:  533:         != -1)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -:  534:    {
+        1:  535:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 100%
+        -:  536:        {
+    #####:  537:        case 's':
+    #####:  538:          do_short_format = true;
+    #####:  539:          break;
+        -:  540:
+    #####:  541:        case 'l':
+    #####:  542:          do_short_format = false;
+    #####:  543:          break;
+        -:  544:
+    #####:  545:        case 'f':
+    #####:  546:          include_heading = false;
+    #####:  547:          break;
+        -:  548:
+    #####:  549:        case 'w':
+    #####:  550:          include_fullname = false;
+    #####:  551:          break;
+        -:  552:
+    #####:  553:        case 'i':
+    #####:  554:          include_fullname = false;
+        -:  555:#ifdef HAVE_STRUCT_XTMP_UT_HOST
+    #####:  556:          include_where = false;
+        -:  557:#endif
+    #####:  558:          break;
+        -:  559:
+    #####:  560:        case 'q':
+    #####:  561:          include_fullname = false;
+        -:  562:#ifdef HAVE_STRUCT_XTMP_UT_HOST
+    #####:  563:          include_where = false;
+        -:  564:#endif
+    #####:  565:          include_idle = false;
+    #####:  566:          break;
+        -:  567:
+    #####:  568:        case 'h':
+    #####:  569:          include_project = false;
+    #####:  570:          break;
+        -:  571:
+    #####:  572:        case 'p':
+    #####:  573:          include_plan = false;
+    #####:  574:          break;
+        -:  575:
+    #####:  576:        case 'b':
+    #####:  577:          include_home_and_shell = false;
+    #####:  578:          break;
+        -:  579:
+    #####:  580:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  581:
+    #####:  582:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+call    4 never executed
+        -:  583:
+        1:  584:        default:
+        1:  585:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  586:        }
+        -:  587:    }
+        -:  588:
+        1:  589:  n_users = argc - optind;
+        -:  590:
+       1*:  591:  if (!do_short_format && n_users == 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  592:    {
+        -:  593:      error (0, 0, _("no username specified; at least one must be\
+        -:  594: specified when using -l"));
+    #####:  595:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  596:    }
+        -:  597:
+        1:  598:  if (do_short_format)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  599:    short_pinky (UTMP_FILE, n_users, argv + optind);
+call    0 returned 0%
+        -:  600:  else
+    #####:  601:    long_pinky (n_users, argv + optind);
+call    0 never executed
+        -:  602:
+    #####:  603:  return EXIT_SUCCESS;
+        -:  604:}

@@ -1,0 +1,262 @@
+        -:    0:Source:src/basename.c
+        -:    0:Graph:basename.gcno
+        -:    0:Data:basename.gcda
+        -:    0:Runs:23
+        -:    1:/* basename -- strip directory and suffix from file names
+        -:    2:   Copyright (C) 1990-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:#include <config.h>
+        -:   18:#include <getopt.h>
+        -:   19:#include <stdio.h>
+        -:   20:#include <sys/types.h>
+        -:   21:
+        -:   22:#include "system.h"
+        -:   23:#include "quote.h"
+        -:   24:
+        -:   25:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   26:#define PROGRAM_NAME "basename"
+        -:   27:
+        -:   28:#define AUTHORS proper_name ("David MacKenzie")
+        -:   29:
+        -:   30:static struct option const longopts[] =
+        -:   31:{
+        -:   32:  {"multiple", no_argument, nullptr, 'a'},
+        -:   33:  {"suffix", required_argument, nullptr, 's'},
+        -:   34:  {"zero", no_argument, nullptr, 'z'},
+        -:   35:  {GETOPT_HELP_OPTION_DECL},
+        -:   36:  {GETOPT_VERSION_OPTION_DECL},
+        -:   37:  {nullptr, 0, nullptr, 0}
+        -:   38:};
+        -:   39:
+        -:   40:void
+function usage called 20 returned 0% blocks executed 27%
+       20:   41:usage (int status)
+        -:   42:{
+       20:   43:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       20:   44:    emit_try_help ();
+call    0 returned 100%
+        -:   45:  else
+        -:   46:    {
+    #####:   47:      printf (_("\
+call    0 never executed
+        -:   48:Usage: %s NAME [SUFFIX]\n\
+        -:   49:  or:  %s OPTION... NAME...\n\
+        -:   50:"),
+        -:   51:              program_name, program_name);
+    #####:   52:      fputs (_("\
+call    0 never executed
+        -:   53:Print NAME with any leading directory components removed.\n\
+        -:   54:If specified, also remove a trailing SUFFIX.\n\
+        -:   55:"), stdout);
+        -:   56:
+    #####:   57:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:   58:
+    #####:   59:      fputs (_("\
+call    0 never executed
+        -:   60:  -a, --multiple       support multiple arguments and treat each as a NAME\n\
+        -:   61:  -s, --suffix=SUFFIX  remove a trailing SUFFIX; implies -a\n\
+        -:   62:  -z, --zero           end each output line with NUL, not newline\n\
+        -:   63:"), stdout);
+    #####:   64:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   65:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   66:      printf (_("\
+call    0 never executed
+        -:   67:\n\
+        -:   68:Examples:\n\
+        -:   69:  %s /usr/bin/sort          -> \"sort\"\n\
+        -:   70:  %s include/stdio.h .h     -> \"stdio\"\n\
+        -:   71:  %s -s .h include/stdio.h  -> \"stdio\"\n\
+        -:   72:  %s -a any/str1 any/str2   -> \"str1\" followed by \"str2\"\n\
+        -:   73:"),
+        -:   74:              program_name, program_name, program_name, program_name);
+    #####:   75:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   76:    }
+       20:   77:  exit (status);
+        -:   78:}
+        -:   79:
+        -:   80:/* Remove SUFFIX from the end of NAME if it is there, unless NAME
+        -:   81:   consists entirely of SUFFIX.  */
+        -:   82:
+        -:   83:static void
+function remove_suffix called 2 returned 100% blocks executed 50%
+        2:   84:remove_suffix (char *name, char const *suffix)
+        -:   85:{
+        -:   86:  char *np;
+        -:   87:  char const *sp;
+        -:   88:
+        2:   89:  np = name + strlen (name);
+        2:   90:  sp = suffix + strlen (suffix);
+        -:   91:
+       2*:   92:  while (np > name && sp > suffix)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:   93:    if (*--np != *--sp)
+branch  0 never executed
+branch  1 never executed
+    #####:   94:      return;
+        2:   95:  if (np > name)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:   96:    *np = '\0';
+        -:   97:}
+        -:   98:
+        -:   99:/* Perform the basename operation on STRING.  If SUFFIX is non-null, remove
+        -:  100:   the trailing SUFFIX.  Finally, output the result string.  */
+        -:  101:
+        -:  102:static void
+function perform_basename called 3 returned 100% blocks executed 91%
+        3:  103:perform_basename (char const *string, char const *suffix, bool use_nuls)
+        -:  104:{
+        3:  105:  char *name = base_name (string);
+call    0 returned 100%
+        3:  106:  strip_trailing_slashes (name);
+call    0 returned 100%
+        -:  107:
+        -:  108:  /* Per POSIX, 'basename // /' must return '//' on platforms with
+        -:  109:     distinct //.  On platforms with drive letters, this generalizes
+        -:  110:     to making 'basename c: :' return 'c:'.  This rule is captured by
+        -:  111:     skipping suffix stripping if base_name returned an absolute path
+        -:  112:     or a drive letter (only possible if name is a file-system
+        -:  113:     root).  */
+        3:  114:  if (suffix && IS_RELATIVE_FILE_NAME (name) && ! FILE_SYSTEM_PREFIX_LEN (name))
+branch  0 taken 67% (fallthrough)
+branch  1 taken 33%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        2:  115:    remove_suffix (name, suffix);
+call    0 returned 100%
+        -:  116:
+        3:  117:  fputs (name, stdout);
+call    0 returned 100%
+       3*:  118:  putchar (use_nuls ? '\0' : '\n');
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 returned 100%
+        3:  119:  free (name);
+        3:  120:}
+        -:  121:
+        -:  122:int
+function main called 23 returned 13% blocks executed 64%
+       23:  123:main (int argc, char **argv)
+        -:  124:{
+       23:  125:  bool multiple_names = false;
+       23:  126:  bool use_nuls = false;
+       23:  127:  char const *suffix = nullptr;
+        -:  128:
+        -:  129:  initialize_main (&argc, &argv);
+       23:  130:  set_program_name (argv[0]);
+call    0 returned 100%
+       23:  131:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  132:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  133:  textdomain (PACKAGE);
+        -:  134:
+       23:  135:  atexit (close_stdout);
+call    0 returned 100%
+        -:  136:
+        -:  137:  while (true)
+    #####:  138:    {
+       23:  139:      int c = getopt_long (argc, argv, "+as:z", longopts, nullptr);
+call    0 returned 100%
+        -:  140:
+       23:  141:      if (c == -1)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       23:  142:        break;
+        -:  143:
+    #####:  144:      switch (c)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  145:        {
+    #####:  146:        case 's':
+    #####:  147:          suffix = optarg;
+        -:  148:          /* -s implies -a, so...  */
+        -:  149:          FALLTHROUGH;
+        -:  150:
+    #####:  151:        case 'a':
+    #####:  152:          multiple_names = true;
+    #####:  153:          break;
+        -:  154:
+    #####:  155:        case 'z':
+    #####:  156:          use_nuls = true;
+    #####:  157:          break;
+        -:  158:
+    #####:  159:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  160:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  161:
+    #####:  162:        default:
+    #####:  163:          usage (EXIT_FAILURE);
+call    0 never executed
+        -:  164:        }
+        -:  165:    }
+        -:  166:
+       23:  167:  if (argc < optind + 1)
+branch  0 taken 4% (fallthrough)
+branch  1 taken 96%
+        -:  168:    {
+        -:  169:      error (0, 0, _("missing operand"));
+        1:  170:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  171:    }
+        -:  172:
+       22:  173:  if (!multiple_names && optind + 2 < argc)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 86% (fallthrough)
+branch  3 taken 14%
+        -:  174:    {
+       19:  175:      error (0, 0, _("extra operand %s"), quote (argv[optind + 2]));
+call    0 returned 100%
+       19:  176:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  177:    }
+        -:  178:
+        3:  179:  if (multiple_names)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  180:    {
+    #####:  181:      for (; optind < argc; optind++)
+branch  0 never executed
+branch  1 never executed
+    #####:  182:        perform_basename (argv[optind], suffix, use_nuls);
+call    0 never executed
+        -:  183:    }
+        -:  184:  else
+        3:  185:    perform_basename (argv[optind],
+call    0 returned 100%
+        3:  186:                      optind + 2 == argc ? argv[optind + 1] : nullptr,
+branch  0 taken 67% (fallthrough)
+branch  1 taken 33%
+        -:  187:                      use_nuls);
+        -:  188:
+        3:  189:  return EXIT_SUCCESS;
+        -:  190:}

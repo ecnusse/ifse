@@ -1,0 +1,281 @@
+        -:    0:Source:src/fs-is-local.h
+        -:    0:Graph:tail.gcno
+        -:    0:Data:tail.gcda
+        -:    0:Runs:30
+        -:    1:/* Map each S_MAGIC_* value to 1, 0 or -1.
+        -:    2:   1 if it is known to be a remote file system type,
+        -:    3:   0 if it is known to be a local file system type, or -1 otherwise.  */
+        -:    4:static inline int
+function is_local_fs_type called 0 returned 0% blocks executed 0%
+    #####:    5:is_local_fs_type (unsigned long int magic)
+        -:    6:{
+    #####:    7:  switch (magic)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+branch  8 never executed
+branch  9 never executed
+branch 10 never executed
+branch 11 never executed
+branch 12 never executed
+branch 13 never executed
+branch 14 never executed
+branch 15 never executed
+branch 16 never executed
+branch 17 never executed
+branch 18 never executed
+branch 19 never executed
+branch 20 never executed
+branch 21 never executed
+branch 22 never executed
+branch 23 never executed
+branch 24 never executed
+branch 25 never executed
+branch 26 never executed
+branch 27 never executed
+branch 28 never executed
+branch 29 never executed
+branch 30 never executed
+branch 31 never executed
+branch 32 never executed
+branch 33 never executed
+branch 34 never executed
+branch 35 never executed
+branch 36 never executed
+branch 37 never executed
+branch 38 never executed
+branch 39 never executed
+branch 40 never executed
+branch 41 never executed
+branch 42 never executed
+branch 43 never executed
+branch 44 never executed
+branch 45 never executed
+branch 46 never executed
+branch 47 never executed
+branch 48 never executed
+branch 49 never executed
+branch 50 never executed
+branch 51 never executed
+branch 52 never executed
+branch 53 never executed
+branch 54 never executed
+branch 55 never executed
+branch 56 never executed
+branch 57 never executed
+branch 58 never executed
+branch 59 never executed
+branch 60 never executed
+branch 61 never executed
+branch 62 never executed
+branch 63 never executed
+branch 64 never executed
+branch 65 never executed
+branch 66 never executed
+branch 67 never executed
+branch 68 never executed
+branch 69 never executed
+branch 70 never executed
+branch 71 never executed
+branch 72 never executed
+branch 73 never executed
+branch 74 never executed
+branch 75 never executed
+branch 76 never executed
+branch 77 never executed
+branch 78 never executed
+branch 79 never executed
+branch 80 never executed
+branch 81 never executed
+branch 82 never executed
+branch 83 never executed
+branch 84 never executed
+branch 85 never executed
+branch 86 never executed
+branch 87 never executed
+branch 88 never executed
+branch 89 never executed
+branch 90 never executed
+branch 91 never executed
+branch 92 never executed
+branch 93 never executed
+branch 94 never executed
+branch 95 never executed
+branch 96 never executed
+branch 97 never executed
+branch 98 never executed
+branch 99 never executed
+branch 100 never executed
+branch 101 never executed
+branch 102 never executed
+branch 103 never executed
+branch 104 never executed
+branch 105 never executed
+branch 106 never executed
+branch 107 never executed
+branch 108 never executed
+branch 109 never executed
+branch 110 never executed
+branch 111 never executed
+branch 112 never executed
+branch 113 never executed
+branch 114 never executed
+branch 115 never executed
+branch 116 never executed
+branch 117 never executed
+branch 118 never executed
+branch 119 never executed
+branch 120 never executed
+branch 121 never executed
+branch 122 never executed
+branch 123 never executed
+branch 124 never executed
+branch 125 never executed
+branch 126 never executed
+branch 127 never executed
+branch 128 never executed
+branch 129 never executed
+branch 130 never executed
+branch 131 never executed
+branch 132 never executed
+        -:    8:    {
+    #####:    9:      case S_MAGIC_AAFS: return 1;
+    #####:   10:      case S_MAGIC_ACFS: return 0;
+    #####:   11:      case S_MAGIC_ADFS: return 1;
+    #####:   12:      case S_MAGIC_AFFS: return 1;
+    #####:   13:      case S_MAGIC_AFS: return 0;
+    #####:   14:      case S_MAGIC_ANON_INODE_FS: return 1;
+    #####:   15:      case S_MAGIC_AUFS: return 0;
+    #####:   16:      case S_MAGIC_AUTOFS: return 1;
+    #####:   17:      case S_MAGIC_BALLOON_KVM: return 1;
+    #####:   18:      case S_MAGIC_BEFS: return 1;
+    #####:   19:      case S_MAGIC_BDEVFS: return 1;
+    #####:   20:      case S_MAGIC_BFS: return 1;
+    #####:   21:      case S_MAGIC_BINDERFS: return 1;
+    #####:   22:      case S_MAGIC_BPF_FS: return 1;
+    #####:   23:      case S_MAGIC_BINFMTFS: return 1;
+    #####:   24:      case S_MAGIC_BTRFS: return 1;
+    #####:   25:      case S_MAGIC_BTRFS_TEST: return 1;
+    #####:   26:      case S_MAGIC_CEPH: return 0;
+    #####:   27:      case S_MAGIC_CGROUP: return 1;
+    #####:   28:      case S_MAGIC_CGROUP2: return 1;
+    #####:   29:      case S_MAGIC_CIFS: return 0;
+    #####:   30:      case S_MAGIC_CODA: return 0;
+    #####:   31:      case S_MAGIC_COH: return 1;
+    #####:   32:      case S_MAGIC_CONFIGFS: return 1;
+    #####:   33:      case S_MAGIC_CRAMFS: return 1;
+    #####:   34:      case S_MAGIC_CRAMFS_WEND: return 1;
+    #####:   35:      case S_MAGIC_DAXFS: return 1;
+    #####:   36:      case S_MAGIC_DEBUGFS: return 1;
+    #####:   37:      case S_MAGIC_DEVFS: return 1;
+    #####:   38:      case S_MAGIC_DEVMEM: return 1;
+    #####:   39:      case S_MAGIC_DEVPTS: return 1;
+    #####:   40:      case S_MAGIC_DMA_BUF: return 1;
+    #####:   41:      case S_MAGIC_ECRYPTFS: return 1;
+    #####:   42:      case S_MAGIC_EFIVARFS: return 1;
+    #####:   43:      case S_MAGIC_EFS: return 1;
+    #####:   44:      case S_MAGIC_EROFS_V1: return 1;
+    #####:   45:      case S_MAGIC_EXFAT: return 1;
+    #####:   46:      case S_MAGIC_EXFS: return 1;
+    #####:   47:      case S_MAGIC_EXOFS: return 1;
+    #####:   48:      case S_MAGIC_EXT: return 1;
+    #####:   49:      case S_MAGIC_EXT2: return 1;
+    #####:   50:      case S_MAGIC_EXT2_OLD: return 1;
+    #####:   51:      case S_MAGIC_F2FS: return 1;
+    #####:   52:      case S_MAGIC_FAT: return 1;
+    #####:   53:      case S_MAGIC_FHGFS: return 0;
+    #####:   54:      case S_MAGIC_FUSEBLK: return 0;
+    #####:   55:      case S_MAGIC_FUSECTL: return 0;
+    #####:   56:      case S_MAGIC_FUTEXFS: return 1;
+    #####:   57:      case S_MAGIC_GFS: return 0;
+    #####:   58:      case S_MAGIC_GPFS: return 0;
+    #####:   59:      case S_MAGIC_HFS: return 1;
+    #####:   60:      case S_MAGIC_HFS_PLUS: return 1;
+    #####:   61:      case S_MAGIC_HFS_X: return 1;
+    #####:   62:      case S_MAGIC_HOSTFS: return 1;
+    #####:   63:      case S_MAGIC_HPFS: return 1;
+    #####:   64:      case S_MAGIC_HUGETLBFS: return 1;
+    #####:   65:      case S_MAGIC_MTD_INODE_FS: return 1;
+    #####:   66:      case S_MAGIC_IBRIX: return 0;
+    #####:   67:      case S_MAGIC_INOTIFYFS: return 1;
+    #####:   68:      case S_MAGIC_ISOFS: return 1;
+    #####:   69:      case S_MAGIC_ISOFS_R_WIN: return 1;
+    #####:   70:      case S_MAGIC_ISOFS_WIN: return 1;
+    #####:   71:      case S_MAGIC_JFFS: return 1;
+    #####:   72:      case S_MAGIC_JFFS2: return 1;
+    #####:   73:      case S_MAGIC_JFS: return 1;
+    #####:   74:      case S_MAGIC_KAFS: return 0;
+    #####:   75:      case S_MAGIC_LOGFS: return 1;
+    #####:   76:      case S_MAGIC_LUSTRE: return 0;
+    #####:   77:      case S_MAGIC_M1FS: return 1;
+    #####:   78:      case S_MAGIC_MINIX: return 1;
+    #####:   79:      case S_MAGIC_MINIX_30: return 1;
+    #####:   80:      case S_MAGIC_MINIX_V2: return 1;
+    #####:   81:      case S_MAGIC_MINIX_V2_30: return 1;
+    #####:   82:      case S_MAGIC_MINIX_V3: return 1;
+    #####:   83:      case S_MAGIC_MQUEUE: return 1;
+    #####:   84:      case S_MAGIC_MSDOS: return 1;
+    #####:   85:      case S_MAGIC_NCP: return 0;
+    #####:   86:      case S_MAGIC_NFS: return 0;
+    #####:   87:      case S_MAGIC_NFSD: return 0;
+    #####:   88:      case S_MAGIC_NILFS: return 1;
+    #####:   89:      case S_MAGIC_NSFS: return 1;
+    #####:   90:      case S_MAGIC_NTFS: return 1;
+    #####:   91:      case S_MAGIC_OPENPROM: return 1;
+    #####:   92:      case S_MAGIC_OCFS2: return 0;
+    #####:   93:      case S_MAGIC_OVERLAYFS: return 0;
+    #####:   94:      case S_MAGIC_PANFS: return 0;
+    #####:   95:      case S_MAGIC_PIPEFS: return 0;
+    #####:   96:      case S_MAGIC_PPC_CMM: return 1;
+    #####:   97:      case S_MAGIC_PRL_FS: return 0;
+    #####:   98:      case S_MAGIC_PROC: return 1;
+    #####:   99:      case S_MAGIC_PSTOREFS: return 1;
+    #####:  100:      case S_MAGIC_QNX4: return 1;
+    #####:  101:      case S_MAGIC_QNX6: return 1;
+    #####:  102:      case S_MAGIC_RAMFS: return 1;
+    #####:  103:      case S_MAGIC_RDTGROUP: return 1;
+    #####:  104:      case S_MAGIC_REISERFS: return 1;
+    #####:  105:      case S_MAGIC_ROMFS: return 1;
+    #####:  106:      case S_MAGIC_RPC_PIPEFS: return 1;
+    #####:  107:      case S_MAGIC_SDCARDFS: return 1;
+    #####:  108:      case S_MAGIC_SECRETMEM: return 1;
+    #####:  109:      case S_MAGIC_SECURITYFS: return 1;
+    #####:  110:      case S_MAGIC_SELINUX: return 1;
+    #####:  111:      case S_MAGIC_SMACK: return 1;
+    #####:  112:      case S_MAGIC_SMB: return 0;
+    #####:  113:      case S_MAGIC_SMB2: return 0;
+    #####:  114:      case S_MAGIC_SNFS: return 0;
+    #####:  115:      case S_MAGIC_SOCKFS: return 1;
+    #####:  116:      case S_MAGIC_SQUASHFS: return 1;
+    #####:  117:      case S_MAGIC_SYSFS: return 1;
+    #####:  118:      case S_MAGIC_SYSV2: return 1;
+    #####:  119:      case S_MAGIC_SYSV4: return 1;
+    #####:  120:      case S_MAGIC_TMPFS: return 1;
+    #####:  121:      case S_MAGIC_TRACEFS: return 1;
+    #####:  122:      case S_MAGIC_UBIFS: return 1;
+    #####:  123:      case S_MAGIC_UDF: return 1;
+    #####:  124:      case S_MAGIC_UFS: return 1;
+    #####:  125:      case S_MAGIC_UFS_BYTESWAPPED: return 1;
+    #####:  126:      case S_MAGIC_USBDEVFS: return 1;
+    #####:  127:      case S_MAGIC_V9FS: return 1;
+    #####:  128:      case S_MAGIC_VBOXSF: return 0;
+    #####:  129:      case S_MAGIC_VMHGFS: return 0;
+    #####:  130:      case S_MAGIC_VXFS: return 0;
+    #####:  131:      case S_MAGIC_VZFS: return 1;
+    #####:  132:      case S_MAGIC_WSLFS: return 1;
+    #####:  133:      case S_MAGIC_XENFS: return 1;
+    #####:  134:      case S_MAGIC_XENIX: return 1;
+    #####:  135:      case S_MAGIC_XFS: return 1;
+    #####:  136:      case S_MAGIC_XIAFS: return 1;
+    #####:  137:      case S_MAGIC_Z3FOLD: return 1;
+    #####:  138:      case S_MAGIC_ZFS: return 1;
+    #####:  139:      case S_MAGIC_ZONEFS: return 1;
+    #####:  140:      case S_MAGIC_ZSMALLOC: return 1;
+    #####:  141:      default: return -1;
+        -:  142:    }
+        -:  143:}

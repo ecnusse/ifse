@@ -1,0 +1,704 @@
+        -:    0:Source:src/comm.c
+        -:    0:Graph:comm.gcno
+        -:    0:Data:comm.gcda
+        -:    0:Runs:27
+        -:    1:/* comm -- compare two sorted files line by line.
+        -:    2:   Copyright (C) 1986-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Richard Stallman and David MacKenzie. */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:
+        -:   21:#include <getopt.h>
+        -:   22:#include <sys/types.h>
+        -:   23:#include "system.h"
+        -:   24:#include "linebuffer.h"
+        -:   25:#include "fadvise.h"
+        -:   26:#include "hard-locale.h"
+        -:   27:#include "quote.h"
+        -:   28:#include "stdio--.h"
+        -:   29:#include "memcmp2.h"
+        -:   30:#include "xmemcoll.h"
+        -:   31:
+        -:   32:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   33:#define PROGRAM_NAME "comm"
+        -:   34:
+        -:   35:#define AUTHORS \
+        -:   36:  proper_name ("Richard M. Stallman"), \
+        -:   37:  proper_name ("David MacKenzie")
+        -:   38:
+        -:   39:/* Undefine, to avoid warning about redefinition on some systems.  */
+        -:   40:#undef min
+        -:   41:#define min(x, y) ((x) < (y) ? (x) : (y))
+        -:   42:
+        -:   43:/* True if the LC_COLLATE locale is hard.  */
+        -:   44:static bool hard_LC_COLLATE;
+        -:   45:
+        -:   46:/* If true, print lines that are found only in file 1. */
+        -:   47:static bool only_file_1;
+        -:   48:
+        -:   49:/* If true, print lines that are found only in file 2. */
+        -:   50:static bool only_file_2;
+        -:   51:
+        -:   52:/* If true, print lines that are found in both files. */
+        -:   53:static bool both;
+        -:   54:
+        -:   55:/* If nonzero, we have seen at least one unpairable line. */
+        -:   56:static bool seen_unpairable;
+        -:   57:
+        -:   58:/* If nonzero, we have warned about disorder in that file. */
+        -:   59:static bool issued_disorder_warning[2];
+        -:   60:
+        -:   61:/* line delimiter.  */
+        -:   62:static unsigned char delim = '\n';
+        -:   63:
+        -:   64:/* If true, print a summary.  */
+        -:   65:static bool total_option;
+        -:   66:
+        -:   67:/* If nonzero, check that the input is correctly ordered. */
+        -:   68:static enum
+        -:   69:  {
+        -:   70:    CHECK_ORDER_DEFAULT,
+        -:   71:    CHECK_ORDER_ENABLED,
+        -:   72:    CHECK_ORDER_DISABLED
+        -:   73:  } check_input_order;
+        -:   74:
+        -:   75:/* Output columns will be delimited with this string, which may be set
+        -:   76:   on the command-line with --output-delimiter=STR.  */
+        -:   77:static char const *col_sep = "\t";
+        -:   78:static size_t col_sep_len = 0;
+        -:   79:
+        -:   80:/* For long options that have no equivalent short option, use a
+        -:   81:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:   82:enum
+        -:   83:{
+        -:   84:  CHECK_ORDER_OPTION = CHAR_MAX + 1,
+        -:   85:  NOCHECK_ORDER_OPTION,
+        -:   86:  OUTPUT_DELIMITER_OPTION,
+        -:   87:  TOTAL_OPTION
+        -:   88:};
+        -:   89:
+        -:   90:static struct option const long_options[] =
+        -:   91:{
+        -:   92:  {"check-order", no_argument, nullptr, CHECK_ORDER_OPTION},
+        -:   93:  {"nocheck-order", no_argument, nullptr, NOCHECK_ORDER_OPTION},
+        -:   94:  {"output-delimiter", required_argument, nullptr, OUTPUT_DELIMITER_OPTION},
+        -:   95:  {"total", no_argument, nullptr, TOTAL_OPTION},
+        -:   96:  {"zero-terminated", no_argument, nullptr, 'z'},
+        -:   97:  {GETOPT_HELP_OPTION_DECL},
+        -:   98:  {GETOPT_VERSION_OPTION_DECL},
+        -:   99:  {nullptr, 0, nullptr, 0}
+        -:  100:};
+        -:  101:
+        -:  102:
+        -:  103:void
+function usage called 23 returned 0% blocks executed 18%
+       23:  104:usage (int status)
+        -:  105:{
+       23:  106:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       23:  107:    emit_try_help ();
+call    0 returned 100%
+        -:  108:  else
+        -:  109:    {
+    #####:  110:      printf (_("\
+call    0 never executed
+        -:  111:Usage: %s [OPTION]... FILE1 FILE2\n\
+        -:  112:"),
+        -:  113:              program_name);
+    #####:  114:      fputs (_("\
+call    0 never executed
+        -:  115:Compare sorted files FILE1 and FILE2 line by line.\n\
+        -:  116:"), stdout);
+    #####:  117:      fputs (_("\
+call    0 never executed
+        -:  118:\n\
+        -:  119:When FILE1 or FILE2 (not both) is -, read standard input.\n\
+        -:  120:"), stdout);
+    #####:  121:      fputs (_("\
+call    0 never executed
+        -:  122:\n\
+        -:  123:With no options, produce three-column output.  Column one contains\n\
+        -:  124:lines unique to FILE1, column two contains lines unique to FILE2,\n\
+        -:  125:and column three contains lines common to both files.\n\
+        -:  126:"), stdout);
+    #####:  127:      fputs (_("\
+call    0 never executed
+        -:  128:\n\
+        -:  129:  -1                      suppress column 1 (lines unique to FILE1)\n\
+        -:  130:  -2                      suppress column 2 (lines unique to FILE2)\n\
+        -:  131:  -3                      suppress column 3 (lines that appear in both files)\n\
+        -:  132:"), stdout);
+    #####:  133:      fputs (_("\
+call    0 never executed
+        -:  134:\n\
+        -:  135:      --check-order       check that the input is correctly sorted, even\n\
+        -:  136:                            if all input lines are pairable\n\
+        -:  137:      --nocheck-order     do not check that the input is correctly sorted\n\
+        -:  138:"), stdout);
+    #####:  139:      fputs (_("\
+call    0 never executed
+        -:  140:      --output-delimiter=STR  separate columns with STR\n\
+        -:  141:"), stdout);
+    #####:  142:      fputs (_("\
+call    0 never executed
+        -:  143:      --total             output a summary\n\
+        -:  144:"), stdout);
+    #####:  145:      fputs (_("\
+call    0 never executed
+        -:  146:  -z, --zero-terminated   line delimiter is NUL, not newline\n\
+        -:  147:"), stdout);
+    #####:  148:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  149:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  150:      fputs (_("\
+call    0 never executed
+        -:  151:\n\
+        -:  152:Note, comparisons honor the rules specified by 'LC_COLLATE'.\n\
+        -:  153:"), stdout);
+    #####:  154:      printf (_("\
+call    0 never executed
+        -:  155:\n\
+        -:  156:Examples:\n\
+        -:  157:  %s -12 file1 file2  Print only lines present in both file1 and file2.\n\
+        -:  158:  %s -3 file1 file2  Print lines in file1 not in file2, and vice versa.\n\
+        -:  159:"),
+        -:  160:              program_name, program_name);
+    #####:  161:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  162:    }
+       23:  163:  exit (status);
+        -:  164:}
+        -:  165:
+        -:  166:/* Output the line in linebuffer LINE to stdout
+        -:  167:   provided the switches say it should be output.
+        -:  168:   CLASS is 1 for a line found only in file 1,
+        -:  169:   2 for a line only in file 2, 3 for a line in both. */
+        -:  170:
+        -:  171:static void
+function writeline called 1 returned 100% blocks executed 33%
+        1:  172:writeline (struct linebuffer const *line, int class)
+        -:  173:{
+        1:  174:  switch (class)
+branch  0 taken 100%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+        -:  175:    {
+        1:  176:    case 1:
+        1:  177:      if (!only_file_1)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  178:        return;
+        1:  179:      break;
+        -:  180:
+    #####:  181:    case 2:
+    #####:  182:      if (!only_file_2)
+branch  0 never executed
+branch  1 never executed
+    #####:  183:        return;
+    #####:  184:      if (only_file_1)
+branch  0 never executed
+branch  1 never executed
+    #####:  185:        fwrite (col_sep, 1, col_sep_len, stdout);
+call    0 never executed
+    #####:  186:      break;
+        -:  187:
+    #####:  188:    case 3:
+    #####:  189:      if (!both)
+branch  0 never executed
+branch  1 never executed
+    #####:  190:        return;
+    #####:  191:      if (only_file_1)
+branch  0 never executed
+branch  1 never executed
+    #####:  192:        fwrite (col_sep, 1, col_sep_len, stdout);
+call    0 never executed
+    #####:  193:      if (only_file_2)
+branch  0 never executed
+branch  1 never executed
+    #####:  194:        fwrite (col_sep, 1, col_sep_len, stdout);
+call    0 never executed
+    #####:  195:      break;
+        -:  196:    }
+        -:  197:
+        1:  198:  fwrite (line->buffer, sizeof (char), line->length, stdout);
+call    0 returned 100%
+        -:  199:
+        1:  200:  if (ferror (stdout))
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  201:    write_error ();
+call    0 never executed
+        -:  202:}
+        -:  203:
+        -:  204:/* Check that successive input lines PREV and CURRENT from input file
+        -:  205:   WHATFILE are presented in order.
+        -:  206:
+        -:  207:   If the user specified --nocheck-order, the check is not made.
+        -:  208:   If the user specified --check-order, the problem is fatal.
+        -:  209:   Otherwise (the default), the message is simply a warning.
+        -:  210:
+        -:  211:   A message is printed at most once per input file.
+        -:  212:
+        -:  213:   This function was copied (nearly) verbatim from 'src/join.c'. */
+        -:  214:
+        -:  215:static void
+function check_order called 1 returned 100% blocks executed 53%
+        1:  216:check_order (struct linebuffer const *prev,
+        -:  217:             struct linebuffer const *current,
+        -:  218:             int whatfile)
+        -:  219:{
+        -:  220:
+        1:  221:  if (check_input_order != CHECK_ORDER_DISABLED
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  222:      && ((check_input_order == CHECK_ORDER_ENABLED) || seen_unpairable))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        -:  223:    {
+        1:  224:      if (!issued_disorder_warning[whatfile - 1])
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  225:        {
+        -:  226:          int order;
+        -:  227:
+        1:  228:          if (hard_LC_COLLATE)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  229:            order = xmemcoll (prev->buffer, prev->length - 1,
+    #####:  230:                              current->buffer, current->length - 1);
+call    0 never executed
+        -:  231:          else
+        1:  232:            order = memcmp2 (prev->buffer, prev->length - 1,
+        1:  233:                             current->buffer, current->length - 1);
+        -:  234:
+        1:  235:          if (0 < order)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  236:            {
+    #####:  237:              error ((check_input_order == CHECK_ORDER_ENABLED
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  238:                      ? EXIT_FAILURE : 0),
+        -:  239:                     0, _("file %d is not in sorted order"), whatfile);
+        -:  240:
+        -:  241:              /* If we get to here, the message was just a warning, but we
+        -:  242:                 want only to issue it once. */
+    #####:  243:              issued_disorder_warning[whatfile - 1] = true;
+        -:  244:            }
+        -:  245:        }
+        -:  246:    }
+        1:  247:}
+        -:  248:
+        -:  249:/* Compare INFILES[0] and INFILES[1].
+        -:  250:   If either is "-", use the standard input for that file.
+        -:  251:   Assume that each input file is sorted;
+        -:  252:   merge them and output the result.
+        -:  253:   Exit the program when done.  */
+        -:  254:
+        -:  255:static _Noreturn void
+function compare_files called 4 returned 0% blocks executed 56%
+        4:  256:compare_files (char **infiles)
+        -:  257:{
+        -:  258:  /* For each file, we have four linebuffers in lba. */
+        -:  259:  struct linebuffer lba[2][4];
+        -:  260:
+        -:  261:  /* thisline[i] points to the linebuffer holding the next available line
+        -:  262:     in file i, or is null if there are no lines left in that file.  */
+        -:  263:  struct linebuffer *thisline[2];
+        -:  264:
+        -:  265:  /* all_line[i][alt[i][0]] also points to the linebuffer holding the
+        -:  266:     current line in file i. We keep two buffers of history around so we
+        -:  267:     can look two lines back when we get to the end of a file. */
+        -:  268:  struct linebuffer *all_line[2][4];
+        -:  269:
+        -:  270:  /* This is used to rotate through the buffers for each input file. */
+        -:  271:  int alt[2][3];
+        -:  272:
+        -:  273:  /* streams[i] holds the input stream for file i.  */
+        -:  274:  FILE *streams[2];
+        -:  275:
+        -:  276:  /* Counters for the summary.  */
+        4:  277:  uintmax_t total[] = {0, 0, 0};
+        -:  278:
+        -:  279:  int i, j;
+        -:  280:
+        -:  281:  /* Initialize the storage. */
+        7:  282:  for (i = 0; i < 2; i++)
+branch  0 taken 86%
+branch  1 taken 14% (fallthrough)
+        -:  283:    {
+       30:  284:      for (j = 0; j < 4; j++)
+branch  0 taken 80%
+branch  1 taken 20% (fallthrough)
+        -:  285:        {
+       24:  286:          initbuffer (&lba[i][j]);
+call    0 returned 100%
+       24:  287:          all_line[i][j] = &lba[i][j];
+        -:  288:        }
+        6:  289:      alt[i][0] = 0;
+        6:  290:      alt[i][1] = 0;
+        6:  291:      alt[i][2] = 0;
+        6:  292:      streams[i] = (STREQ (infiles[i], "-") ? stdin : fopen (infiles[i], "r"));
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+call    2 returned 100%
+        6:  293:      if (!streams[i])
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+       3*:  294:        error (EXIT_FAILURE, errno, "%s", quotef (infiles[i]));
+call    0 returned 100%
+call    1 never executed
+        -:  295:
+        3:  296:      fadvise (streams[i], FADVISE_SEQUENTIAL);
+call    0 returned 100%
+        -:  297:
+        3:  298:      thisline[i] = readlinebuffer_delim (all_line[i][alt[i][0]], streams[i],
+call    0 returned 100%
+        -:  299:                                          delim);
+        3:  300:      if (ferror (streams[i]))
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  301:        error (EXIT_FAILURE, errno, "%s", quotef (infiles[i]));
+call    0 never executed
+call    1 never executed
+        -:  302:    }
+        -:  303:
+        2:  304:  while (thisline[0] || thisline[1])
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+branch  2 taken 0%
+branch  3 taken 100% (fallthrough)
+        -:  305:    {
+        -:  306:      int order;
+        1:  307:      bool fill_up[2] = { false, false };
+        -:  308:
+        -:  309:      /* Compare the next available lines of the two files.  */
+        -:  310:
+        1:  311:      if (!thisline[0])
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  312:        order = 1;
+        1:  313:      else if (!thisline[1])
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  314:        order = -1;
+        -:  315:      else
+        -:  316:        {
+    #####:  317:          if (hard_LC_COLLATE)
+branch  0 never executed
+branch  1 never executed
+    #####:  318:            order = xmemcoll (thisline[0]->buffer, thisline[0]->length - 1,
+    #####:  319:                              thisline[1]->buffer, thisline[1]->length - 1);
+call    0 never executed
+        -:  320:          else
+        -:  321:            {
+    #####:  322:              size_t len = min (thisline[0]->length, thisline[1]->length) - 1;
+    #####:  323:              order = memcmp (thisline[0]->buffer, thisline[1]->buffer, len);
+    #####:  324:              if (order == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  325:                order = ((thisline[0]->length > thisline[1]->length)
+    #####:  326:                         - (thisline[0]->length < thisline[1]->length));
+        -:  327:            }
+        -:  328:        }
+        -:  329:
+        -:  330:      /* Output the line that is lesser. */
+        1:  331:      if (order == 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  332:        {
+        -:  333:          /* Line is seen in both files.  */
+    #####:  334:          total[2]++;
+    #####:  335:          writeline (thisline[1], 3);
+call    0 never executed
+        -:  336:        }
+        -:  337:      else
+        -:  338:        {
+        1:  339:          seen_unpairable = true;
+        1:  340:          if (order <= 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  341:            {
+        -:  342:              /* Line is seen in file 1 only.  */
+        1:  343:              total[0]++;
+        1:  344:              writeline (thisline[0], 1);
+call    0 returned 100%
+        -:  345:            }
+        -:  346:          else
+        -:  347:            {
+        -:  348:              /* Line is seen in file 2 only.  */
+    #####:  349:              total[1]++;
+    #####:  350:              writeline (thisline[1], 2);
+call    0 never executed
+        -:  351:            }
+        -:  352:        }
+        -:  353:
+        -:  354:      /* Step the file the line came from.
+        -:  355:         If the files match, step both files.  */
+        1:  356:      if (0 <= order)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  357:        fill_up[1] = true;
+        1:  358:      if (order <= 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  359:        fill_up[0] = true;
+        -:  360:
+        3:  361:      for (i = 0; i < 2; i++)
+branch  0 taken 67%
+branch  1 taken 33% (fallthrough)
+        2:  362:        if (fill_up[i])
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+        -:  363:          {
+        -:  364:            /* Rotate the buffers for this file. */
+        1:  365:            alt[i][2] = alt[i][1];
+        1:  366:            alt[i][1] = alt[i][0];
+        1:  367:            alt[i][0] = (alt[i][0] + 1) & 0x03;
+        -:  368:
+        1:  369:            thisline[i] = readlinebuffer_delim (all_line[i][alt[i][0]],
+call    0 returned 100%
+        -:  370:                                                streams[i], delim);
+        -:  371:
+        1:  372:            if (thisline[i])
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  373:              check_order (all_line[i][alt[i][1]], thisline[i], i + 1);
+call    0 never executed
+        -:  374:
+        -:  375:            /* If this is the end of the file we may need to re-check
+        -:  376:               the order of the previous two lines, since we might have
+        -:  377:               discovered an unpairable match since we checked before. */
+        1:  378:            else if (all_line[i][alt[i][2]]->buffer)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  379:              check_order (all_line[i][alt[i][2]],
+        1:  380:                           all_line[i][alt[i][1]], i + 1);
+call    0 returned 100%
+        -:  381:
+        1:  382:            if (ferror (streams[i]))
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  383:              error (EXIT_FAILURE, errno, "%s", quotef (infiles[i]));
+call    0 never executed
+call    1 never executed
+        -:  384:
+        1:  385:            fill_up[i] = false;
+        -:  386:          }
+        -:  387:    }
+        -:  388:
+        2:  389:  for (i = 0; i < 2; i++)
+branch  0 taken 100%
+branch  1 taken 0% (fallthrough)
+        2:  390:    if (fclose (streams[i]) != 0)
+call    0 returned 100%
+branch  1 taken 50% (fallthrough)
+branch  2 taken 50%
+       1*:  391:      error (EXIT_FAILURE, errno, "%s", quotef (infiles[i]));
+call    0 returned 100%
+call    1 never executed
+        -:  392:
+    #####:  393:  if (total_option)
+branch  0 never executed
+branch  1 never executed
+        -:  394:    {
+        -:  395:      /* Print the summary, minding the column and line delimiters.  */
+        -:  396:      char buf1[INT_BUFSIZE_BOUND (uintmax_t)];
+        -:  397:      char buf2[INT_BUFSIZE_BOUND (uintmax_t)];
+        -:  398:      char buf3[INT_BUFSIZE_BOUND (uintmax_t)];
+    #####:  399:      if (col_sep_len == 1)
+branch  0 never executed
+branch  1 never executed
+        -:  400:        { /* Separate to handle NUL char.  */
+    #####:  401:          printf ("%s%c%s%c%s%c%s%c",
+call    0 never executed
+    #####:  402:                  umaxtostr (total[0], buf1), *col_sep,
+call    0 never executed
+    #####:  403:                  umaxtostr (total[1], buf2), *col_sep,
+call    0 never executed
+    #####:  404:                  umaxtostr (total[2], buf3), *col_sep,
+call    0 never executed
+        -:  405:                  _("total"), delim);
+        -:  406:        }
+        -:  407:      else
+        -:  408:        {
+    #####:  409:          printf ("%s%s%s%s%s%s%s%c",
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+        -:  410:                  umaxtostr (total[0], buf1), col_sep,
+        -:  411:                  umaxtostr (total[1], buf2), col_sep,
+        -:  412:                  umaxtostr (total[2], buf3), col_sep,
+        -:  413:                  _("total"), delim);
+        -:  414:        }
+        -:  415:    }
+        -:  416:
+    #####:  417:  if (issued_disorder_warning[0] || issued_disorder_warning[1])
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  418:    error (EXIT_FAILURE, 0, _("input is not in sorted order"));
+call    0 never executed
+        -:  419:
+        -:  420:  /* Exit here to pacify gcc -fsanitizer=leak.  */
+    #####:  421:  exit (EXIT_SUCCESS);
+        -:  422:}
+        -:  423:
+        -:  424:int
+function main called 27 returned 0% blocks executed 58%
+       27:  425:main (int argc, char **argv)
+        -:  426:{
+        -:  427:  int c;
+        -:  428:
+        -:  429:  initialize_main (&argc, &argv);
+       27:  430:  set_program_name (argv[0]);
+call    0 returned 100%
+       27:  431:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  432:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  433:  textdomain (PACKAGE);
+       27:  434:  hard_LC_COLLATE = hard_locale (LC_COLLATE);
+call    0 returned 100%
+        -:  435:
+       27:  436:  atexit (close_stdout);
+call    0 returned 100%
+        -:  437:
+       27:  438:  only_file_1 = true;
+       27:  439:  only_file_2 = true;
+       27:  440:  both = true;
+        -:  441:
+       27:  442:  seen_unpairable = false;
+       27:  443:  issued_disorder_warning[0] = issued_disorder_warning[1] = false;
+       27:  444:  check_input_order = CHECK_ORDER_DEFAULT;
+       27:  445:  total_option = false;
+        -:  446:
+       27:  447:  while ((c = getopt_long (argc, argv, "123z", long_options, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 4%
+branch  2 taken 96% (fallthrough)
+        1:  448:    switch (c)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 100%
+        -:  449:      {
+    #####:  450:      case '1':
+    #####:  451:        only_file_1 = false;
+    #####:  452:        break;
+        -:  453:
+    #####:  454:      case '2':
+    #####:  455:        only_file_2 = false;
+    #####:  456:        break;
+        -:  457:
+    #####:  458:      case '3':
+    #####:  459:        both = false;
+    #####:  460:        break;
+        -:  461:
+    #####:  462:      case 'z':
+    #####:  463:        delim = '\0';
+    #####:  464:        break;
+        -:  465:
+    #####:  466:      case NOCHECK_ORDER_OPTION:
+    #####:  467:        check_input_order = CHECK_ORDER_DISABLED;
+    #####:  468:        break;
+        -:  469:
+    #####:  470:      case CHECK_ORDER_OPTION:
+    #####:  471:        check_input_order = CHECK_ORDER_ENABLED;
+    #####:  472:        break;
+        -:  473:
+    #####:  474:      case OUTPUT_DELIMITER_OPTION:
+    #####:  475:        if (col_sep_len && !STREQ (col_sep, optarg))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  476:          error (EXIT_FAILURE, 0, _("multiple output delimiters specified"));
+call    0 never executed
+    #####:  477:        col_sep = optarg;
+    #####:  478:        col_sep_len = *optarg ? strlen (optarg) : 1;
+branch  0 never executed
+branch  1 never executed
+    #####:  479:        break;
+        -:  480:
+    #####:  481:      case TOTAL_OPTION:
+    #####:  482:        total_option = true;
+    #####:  483:        break;
+        -:  484:
+    #####:  485:      case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  486:
+    #####:  487:      case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+        -:  488:
+        1:  489:      default:
+        1:  490:        usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  491:      }
+        -:  492:
+       26:  493:  if (! col_sep_len)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       26:  494:    col_sep_len = 1;
+        -:  495:
+       26:  496:  if (argc - optind < 2)
+branch  0 taken 77% (fallthrough)
+branch  1 taken 23%
+        -:  497:    {
+       20:  498:      if (argc <= optind)
+branch  0 taken 5% (fallthrough)
+branch  1 taken 95%
+        -:  499:        error (0, 0, _("missing operand"));
+        -:  500:      else
+       19:  501:        error (0, 0, _("missing operand after %s"), quote (argv[argc - 1]));
+call    0 returned 100%
+       20:  502:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  503:    }
+        -:  504:
+        6:  505:  if (2 < argc - optind)
+branch  0 taken 33% (fallthrough)
+branch  1 taken 67%
+        -:  506:    {
+        2:  507:      error (0, 0, _("extra operand %s"), quote (argv[optind + 2]));
+call    0 returned 100%
+        2:  508:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  509:    }
+        -:  510:
+        4:  511:  compare_files (argv + optind);
+        -:  512:}

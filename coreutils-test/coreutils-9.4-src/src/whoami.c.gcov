@@ -1,0 +1,121 @@
+        -:    0:Source:src/whoami.c
+        -:    0:Graph:whoami.gcno
+        -:    0:Data:whoami.gcda
+        -:    0:Runs:23
+        -:    1:/* whoami -- print effective userid
+        -:    2:
+        -:    3:   Copyright (C) 1989-2023 Free Software Foundation, Inc.
+        -:    4:
+        -:    5:   This program is free software: you can redistribute it and/or modify
+        -:    6:   it under the terms of the GNU General Public License as published by
+        -:    7:   the Free Software Foundation, either version 3 of the License, or
+        -:    8:   (at your option) any later version.
+        -:    9:
+        -:   10:   This program is distributed in the hope that it will be useful,
+        -:   11:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   12:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   13:   GNU General Public License for more details.
+        -:   14:
+        -:   15:   You should have received a copy of the GNU General Public License
+        -:   16:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   17:
+        -:   18:/* Equivalent to 'id -un'. */
+        -:   19:/* Written by Richard Mlynarik. */
+        -:   20:
+        -:   21:#include <config.h>
+        -:   22:#include <stdio.h>
+        -:   23:#include <sys/types.h>
+        -:   24:#include <pwd.h>
+        -:   25:
+        -:   26:#include "system.h"
+        -:   27:#include "long-options.h"
+        -:   28:#include "quote.h"
+        -:   29:
+        -:   30:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   31:#define PROGRAM_NAME "whoami"
+        -:   32:
+        -:   33:#define AUTHORS proper_name ("Richard Mlynarik")
+        -:   34:
+        -:   35:void
+function usage called 22 returned 0% blocks executed 38%
+       22:   36:usage (int status)
+        -:   37:{
+       22:   38:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       22:   39:    emit_try_help ();
+call    0 returned 100%
+        -:   40:  else
+        -:   41:    {
+    #####:   42:      printf (_("Usage: %s [OPTION]...\n"), program_name);
+call    0 never executed
+    #####:   43:      fputs (_("\
+call    0 never executed
+        -:   44:Print the user name associated with the current effective user ID.\n\
+        -:   45:Same as id -un.\n\
+        -:   46:\n\
+        -:   47:"), stdout);
+    #####:   48:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   49:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   50:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   51:    }
+       22:   52:  exit (status);
+        -:   53:}
+        -:   54:
+        -:   55:int
+function main called 23 returned 4% blocks executed 75%
+       23:   56:main (int argc, char **argv)
+        -:   57:{
+        -:   58:  struct passwd *pw;
+        -:   59:  uid_t uid;
+       23:   60:  uid_t NO_UID = -1;
+        -:   61:
+        -:   62:  initialize_main (&argc, &argv);
+       23:   63:  set_program_name (argv[0]);
+call    0 returned 100%
+       23:   64:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:   65:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:   66:  textdomain (PACKAGE);
+        -:   67:
+       23:   68:  atexit (close_stdout);
+call    0 returned 100%
+        -:   69:
+       23:   70:  parse_gnu_standard_options_only (argc, argv, PROGRAM_NAME, PACKAGE_NAME,
+call    0 returned 100%
+call    1 returned 96%
+        -:   71:                                   Version, true, usage, AUTHORS,
+        -:   72:                                   (char const *) nullptr);
+        -:   73:
+       22:   74:  if (optind != argc)
+branch  0 taken 95% (fallthrough)
+branch  1 taken 5%
+        -:   75:    {
+       21:   76:      error (0, 0, _("extra operand %s"), quote (argv[optind]));
+call    0 returned 100%
+       21:   77:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:   78:    }
+        -:   79:
+        1:   80:  errno = 0;
+        1:   81:  uid = geteuid ();
+call    0 returned 100%
+       1*:   82:  pw = uid == NO_UID && errno ? nullptr : getpwuid (uid);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+call    4 returned 100%
+        1:   83:  if (!pw)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:   84:    error (EXIT_FAILURE, errno, _("cannot find name for user ID %lu"),
+call    0 never executed
+        -:   85:           (unsigned long int) uid);
+        1:   86:  puts (pw->pw_name);
+call    0 returned 100%
+        1:   87:  return EXIT_SUCCESS;
+        -:   88:}

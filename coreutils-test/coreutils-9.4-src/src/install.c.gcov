@@ -1,0 +1,1541 @@
+        -:    0:Source:src/install.c
+        -:    0:Graph:install.gcno
+        -:    0:Data:install.gcda
+        -:    0:Runs:61
+        -:    1:/* install - copy files and set attributes
+        -:    2:   Copyright (C) 1989-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by David MacKenzie <djm@gnu.ai.mit.edu> */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <stdio.h>
+        -:   21:#include <getopt.h>
+        -:   22:#include <sys/types.h>
+        -:   23:#include <signal.h>
+        -:   24:#include <pwd.h>
+        -:   25:#include <grp.h>
+        -:   26:#include <selinux/label.h>
+        -:   27:#include <sys/wait.h>
+        -:   28:
+        -:   29:#include "system.h"
+        -:   30:#include "backupfile.h"
+        -:   31:#include "cp-hash.h"
+        -:   32:#include "copy.h"
+        -:   33:#include "filenamecat.h"
+        -:   34:#include "full-read.h"
+        -:   35:#include "mkancesdirs.h"
+        -:   36:#include "mkdir-p.h"
+        -:   37:#include "modechange.h"
+        -:   38:#include "prog-fprintf.h"
+        -:   39:#include "quote.h"
+        -:   40:#include "savewd.h"
+        -:   41:#include "selinux.h"
+        -:   42:#include "stat-time.h"
+        -:   43:#include "targetdir.h"
+        -:   44:#include "utimens.h"
+        -:   45:#include "xstrtol.h"
+        -:   46:
+        -:   47:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   48:#define PROGRAM_NAME "install"
+        -:   49:
+        -:   50:#define AUTHORS proper_name ("David MacKenzie")
+        -:   51:
+        -:   52:static int selinux_enabled = 0;
+        -:   53:static bool use_default_selinux_context = true;
+        -:   54:
+        -:   55:#if ! HAVE_ENDGRENT
+        -:   56:# define endgrent() ((void) 0)
+        -:   57:#endif
+        -:   58:
+        -:   59:#if ! HAVE_ENDPWENT
+        -:   60:# define endpwent() ((void) 0)
+        -:   61:#endif
+        -:   62:
+        -:   63:/* The user name that will own the files, or nullptr to make the owner
+        -:   64:   the current user ID. */
+        -:   65:static char *owner_name;
+        -:   66:
+        -:   67:/* The user ID corresponding to 'owner_name'. */
+        -:   68:static uid_t owner_id;
+        -:   69:
+        -:   70:/* The group name that will own the files, or nullptr to make the group
+        -:   71:   the current group ID. */
+        -:   72:static char *group_name;
+        -:   73:
+        -:   74:/* The group ID corresponding to 'group_name'. */
+        -:   75:static gid_t group_id;
+        -:   76:
+        -:   77:#define DEFAULT_MODE (S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH)
+        -:   78:
+        -:   79:/* The file mode bits to which non-directory files will be set.  The umask has
+        -:   80:   no effect. */
+        -:   81:static mode_t mode = DEFAULT_MODE;
+        -:   82:
+        -:   83:/* Similar, but for directories.  */
+        -:   84:static mode_t dir_mode = DEFAULT_MODE;
+        -:   85:
+        -:   86:/* The file mode bits that the user cares about.  This should be a
+        -:   87:   superset of DIR_MODE and a subset of CHMOD_MODE_BITS.  This matters
+        -:   88:   for directories, since otherwise directories may keep their S_ISUID
+        -:   89:   or S_ISGID bits.  */
+        -:   90:static mode_t dir_mode_bits = CHMOD_MODE_BITS;
+        -:   91:
+        -:   92:/* Compare files before installing (-C) */
+        -:   93:static bool copy_only_if_needed;
+        -:   94:
+        -:   95:/* If true, strip executable files after copying them. */
+        -:   96:static bool strip_files;
+        -:   97:
+        -:   98:/* If true, install a directory instead of a regular file. */
+        -:   99:static bool dir_arg;
+        -:  100:
+        -:  101:/* Program used to strip binaries, "strip" is default */
+        -:  102:static char const *strip_program = "strip";
+        -:  103:
+        -:  104:/* For long options that have no equivalent short option, use a
+        -:  105:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:  106:enum
+        -:  107:{
+        -:  108:  DEBUG_OPTION = CHAR_MAX + 1,
+        -:  109:  PRESERVE_CONTEXT_OPTION,
+        -:  110:  STRIP_PROGRAM_OPTION
+        -:  111:};
+        -:  112:
+        -:  113:static struct option const long_options[] =
+        -:  114:{
+        -:  115:  {"backup", optional_argument, nullptr, 'b'},
+        -:  116:  {"compare", no_argument, nullptr, 'C'},
+        -:  117:  {GETOPT_SELINUX_CONTEXT_OPTION_DECL},
+        -:  118:  {"debug", no_argument, nullptr, DEBUG_OPTION},
+        -:  119:  {"directory", no_argument, nullptr, 'd'},
+        -:  120:  {"group", required_argument, nullptr, 'g'},
+        -:  121:  {"mode", required_argument, nullptr, 'm'},
+        -:  122:  {"no-target-directory", no_argument, nullptr, 'T'},
+        -:  123:  {"owner", required_argument, nullptr, 'o'},
+        -:  124:  {"preserve-timestamps", no_argument, nullptr, 'p'},
+        -:  125:  {"preserve-context", no_argument, nullptr, PRESERVE_CONTEXT_OPTION},
+        -:  126:  {"strip", no_argument, nullptr, 's'},
+        -:  127:  {"strip-program", required_argument, nullptr, STRIP_PROGRAM_OPTION},
+        -:  128:  {"suffix", required_argument, nullptr, 'S'},
+        -:  129:  {"target-directory", required_argument, nullptr, 't'},
+        -:  130:  {"verbose", no_argument, nullptr, 'v'},
+        -:  131:  {GETOPT_HELP_OPTION_DECL},
+        -:  132:  {GETOPT_VERSION_OPTION_DECL},
+        -:  133:  {nullptr, 0, nullptr, 0}
+        -:  134:};
+        -:  135:
+        -:  136:/* Compare content of opened files using file descriptors A_FD and B_FD. Return
+        -:  137:   true if files are equal. */
+        -:  138:static bool
+function have_same_content called 0 returned 0% blocks executed 0%
+    #####:  139:have_same_content (int a_fd, int b_fd)
+        -:  140:{
+        -:  141:  enum { CMP_BLOCK_SIZE = 4096 };
+        -:  142:  static char a_buff[CMP_BLOCK_SIZE];
+        -:  143:  static char b_buff[CMP_BLOCK_SIZE];
+        -:  144:
+        -:  145:  size_t size;
+    #####:  146:  while (0 < (size = full_read (a_fd, a_buff, sizeof a_buff))) {
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  147:    if (size != full_read (b_fd, b_buff, sizeof b_buff))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  148:      return false;
+        -:  149:
+    #####:  150:    if (memcmp (a_buff, b_buff, size) != 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  151:      return false;
+        -:  152:  }
+        -:  153:
+    #####:  154:  return size == 0;
+        -:  155:}
+        -:  156:
+        -:  157:/* Return true for mode with non-permission bits. */
+        -:  158:static bool
+function extra_mode called 0 returned 0% blocks executed 0%
+    #####:  159:extra_mode (mode_t input)
+        -:  160:{
+    #####:  161:  mode_t mask = S_IRWXUGO | S_IFMT;
+    #####:  162:  return !! (input & ~ mask);
+        -:  163:}
+        -:  164:
+        -:  165:/* Return true if copy of file SRC_NAME to file DEST_NAME aka
+        -:  166:   DEST_DIRFD+DEST_RELNAME is necessary. */
+        -:  167:static bool
+function need_copy called 0 returned 0% blocks executed 0%
+    #####:  168:need_copy (char const *src_name, char const *dest_name,
+        -:  169:           int dest_dirfd, char const *dest_relname,
+        -:  170:           const struct cp_options *x)
+        -:  171:{
+        -:  172:  struct stat src_sb, dest_sb;
+        -:  173:  int src_fd, dest_fd;
+        -:  174:  bool content_match;
+        -:  175:
+    #####:  176:  if (extra_mode (mode))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  177:    return true;
+        -:  178:
+        -:  179:  /* compare files using stat */
+    #####:  180:  if (lstat (src_name, &src_sb) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  181:    return true;
+        -:  182:
+    #####:  183:  if (fstatat (dest_dirfd, dest_relname, &dest_sb, AT_SYMLINK_NOFOLLOW) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  184:    return true;
+        -:  185:
+    #####:  186:  if (!S_ISREG (src_sb.st_mode) || !S_ISREG (dest_sb.st_mode)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  187:      || extra_mode (src_sb.st_mode) || extra_mode (dest_sb.st_mode))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+call    3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  188:    return true;
+        -:  189:
+    #####:  190:  if (src_sb.st_size != dest_sb.st_size
+branch  0 never executed
+branch  1 never executed
+    #####:  191:      || (dest_sb.st_mode & CHMOD_MODE_BITS) != mode)
+branch  0 never executed
+branch  1 never executed
+    #####:  192:    return true;
+        -:  193:
+    #####:  194:  if (owner_id == (uid_t) -1)
+branch  0 never executed
+branch  1 never executed
+        -:  195:    {
+    #####:  196:      errno = 0;
+    #####:  197:      uid_t ruid = getuid ();
+call    0 never executed
+    #####:  198:      if ((ruid == (uid_t) -1 && errno) || dest_sb.st_uid != ruid)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  199:        return true;
+        -:  200:    }
+    #####:  201:  else if (dest_sb.st_uid != owner_id)
+branch  0 never executed
+branch  1 never executed
+    #####:  202:    return true;
+        -:  203:
+    #####:  204:  if (group_id == (uid_t) -1)
+branch  0 never executed
+branch  1 never executed
+        -:  205:    {
+    #####:  206:      errno = 0;
+    #####:  207:      gid_t rgid = getgid ();
+call    0 never executed
+    #####:  208:      if ((rgid == (uid_t) -1 && errno) || dest_sb.st_gid != rgid)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  209:        return true;
+        -:  210:    }
+    #####:  211:  else if (dest_sb.st_gid != group_id)
+branch  0 never executed
+branch  1 never executed
+    #####:  212:    return true;
+        -:  213:
+        -:  214:  /* compare SELinux context if preserving */
+    #####:  215:  if (selinux_enabled && x->preserve_security_context)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  216:    {
+    #####:  217:      char *file_scontext = nullptr;
+    #####:  218:      char *to_scontext = nullptr;
+        -:  219:      bool scontext_match;
+        -:  220:
+    #####:  221:      if (getfilecon (src_name, &file_scontext) == -1)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  222:        return true;
+        -:  223:
+    #####:  224:      if (getfilecon (dest_name, &to_scontext) == -1)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  225:        {
+    #####:  226:          freecon (file_scontext);
+call    0 never executed
+    #####:  227:          return true;
+        -:  228:        }
+        -:  229:
+    #####:  230:      scontext_match = STREQ (file_scontext, to_scontext);
+        -:  231:
+    #####:  232:      freecon (file_scontext);
+call    0 never executed
+    #####:  233:      freecon (to_scontext);
+call    0 never executed
+    #####:  234:      if (!scontext_match)
+branch  0 never executed
+branch  1 never executed
+    #####:  235:        return true;
+        -:  236:    }
+        -:  237:
+        -:  238:  /* compare files content */
+    #####:  239:  src_fd = open (src_name, O_RDONLY | O_BINARY);
+call    0 never executed
+    #####:  240:  if (src_fd < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  241:    return true;
+        -:  242:
+    #####:  243:  dest_fd = openat (dest_dirfd, dest_relname, O_RDONLY | O_BINARY);
+call    0 never executed
+    #####:  244:  if (dest_fd < 0)
+branch  0 never executed
+branch  1 never executed
+        -:  245:    {
+    #####:  246:      close (src_fd);
+call    0 never executed
+    #####:  247:      return true;
+        -:  248:    }
+        -:  249:
+    #####:  250:  content_match = have_same_content (src_fd, dest_fd);
+call    0 never executed
+        -:  251:
+    #####:  252:  close (src_fd);
+call    0 never executed
+    #####:  253:  close (dest_fd);
+call    0 never executed
+    #####:  254:  return !content_match;
+        -:  255:}
+        -:  256:
+        -:  257:static void
+function cp_option_init called 61 returned 100% blocks executed 100%
+       61:  258:cp_option_init (struct cp_options *x)
+        -:  259:{
+       61:  260:  cp_options_default (x);
+call    0 returned 100%
+       61:  261:  x->copy_as_regular = true;
+       61:  262:  x->reflink_mode = REFLINK_AUTO;
+       61:  263:  x->dereference = DEREF_ALWAYS;
+       61:  264:  x->unlink_dest_before_opening = true;
+       61:  265:  x->unlink_dest_after_failed_open = false;
+       61:  266:  x->hard_link = false;
+       61:  267:  x->interactive = I_UNSPECIFIED;
+       61:  268:  x->move_mode = false;
+       61:  269:  x->install_mode = true;
+       61:  270:  x->one_file_system = false;
+       61:  271:  x->preserve_ownership = false;
+       61:  272:  x->preserve_links = false;
+       61:  273:  x->preserve_mode = false;
+       61:  274:  x->preserve_timestamps = false;
+       61:  275:  x->explicit_no_preserve_mode = false;
+       61:  276:  x->reduce_diagnostics=false;
+       61:  277:  x->data_copy_required = true;
+       61:  278:  x->require_preserve = false;
+       61:  279:  x->require_preserve_xattr = false;
+       61:  280:  x->recursive = false;
+       61:  281:  x->sparse_mode = SPARSE_AUTO;
+       61:  282:  x->symbolic_link = false;
+       61:  283:  x->backup_type = no_backups;
+        -:  284:
+        -:  285:  /* Create destination files initially writable so we can run strip on them.
+        -:  286:     Although GNU strip works fine on read-only files, some others
+        -:  287:     would fail.  */
+       61:  288:  x->set_mode = true;
+       61:  289:  x->mode = S_IRUSR | S_IWUSR;
+       61:  290:  x->stdin_tty = false;
+        -:  291:
+       61:  292:  x->open_dangling_dest_symlink = false;
+       61:  293:  x->update = false;
+       61:  294:  x->require_preserve_context = false;  /* Not used by install currently.  */
+       61:  295:  x->preserve_security_context = false; /* Whether to copy context from src.  */
+       61:  296:  x->set_security_context = nullptr; /* Whether to set sys default context.  */
+       61:  297:  x->preserve_xattr = false;
+       61:  298:  x->verbose = false;
+       61:  299:  x->dest_info = nullptr;
+       61:  300:  x->src_info = nullptr;
+       61:  301:}
+        -:  302:
+        -:  303:static struct selabel_handle *
+function get_labeling_handle called 0 returned 0% blocks executed 0%
+    #####:  304:get_labeling_handle (void)
+        -:  305:{
+        -:  306:  static bool initialized;
+        -:  307:  static struct selabel_handle *hnd;
+    #####:  308:  if (!initialized)
+branch  0 never executed
+branch  1 never executed
+        -:  309:    {
+    #####:  310:      initialized = true;
+    #####:  311:      hnd = selabel_open (SELABEL_CTX_FILE, nullptr, 0);
+call    0 never executed
+    #####:  312:      if (!hnd)
+branch  0 never executed
+branch  1 never executed
+    #####:  313:        error (0, errno, _("warning: security labeling handle failed"));
+        -:  314:    }
+    #####:  315:  return hnd;
+        -:  316:}
+        -:  317:
+        -:  318:/* Modify file context to match the specified policy.
+        -:  319:   If an error occurs the file will remain with the default directory
+        -:  320:   context.  Note this sets the context to that returned by selabel_lookup
+        -:  321:   and thus discards MLS levels and user identity of the FILE.  */
+        -:  322:static void
+function setdefaultfilecon called 1 returned 100% blocks executed 12%
+        1:  323:setdefaultfilecon (char const *file)
+        -:  324:{
+        -:  325:  struct stat st;
+        1:  326:  char *scontext = nullptr;
+        -:  327:
+        1:  328:  if (selinux_enabled != 1)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  329:    {
+        -:  330:      /* Indicate no context found. */
+        1:  331:      return;
+        -:  332:    }
+    #####:  333:  if (lstat (file, &st) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  334:    return;
+        -:  335:
+    #####:  336:  struct selabel_handle *hnd = get_labeling_handle ();
+call    0 never executed
+    #####:  337:  if (!hnd)
+branch  0 never executed
+branch  1 never executed
+    #####:  338:    return;
+    #####:  339:  if (selabel_lookup (hnd, &scontext, file, st.st_mode) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  340:    {
+    #####:  341:      if (errno != ENOENT && ! ignorable_ctx_err (errno))
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  342:        error (0, errno, _("warning: %s: context lookup failed"),
+call    0 never executed
+        -:  343:               quotef (file));
+    #####:  344:      return;
+        -:  345:    }
+        -:  346:
+    #####:  347:  if (lsetfilecon (file, scontext) < 0 && errno != ENOTSUP)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  348:    error (0, errno,
+call    0 never executed
+call    1 never executed
+        -:  349:           _("warning: %s: failed to change context to %s"),
+        -:  350:           quotef_n (0, file), quote_n (1, scontext));
+        -:  351:
+    #####:  352:  freecon (scontext);
+call    0 never executed
+        -:  353:}
+        -:  354:
+        -:  355:/* Report that directory DIR was made, if OPTIONS requests this.  */
+        -:  356:static void
+function announce_mkdir called 0 returned 0% blocks executed 0%
+    #####:  357:announce_mkdir (char const *dir, void *options)
+        -:  358:{
+    #####:  359:  struct cp_options const *x = options;
+    #####:  360:  if (x->verbose)
+branch  0 never executed
+branch  1 never executed
+    #####:  361:    prog_fprintf (stdout, _("creating directory %s"), quoteaf (dir));
+call    0 never executed
+call    1 never executed
+    #####:  362:}
+        -:  363:
+        -:  364:/* Make ancestor directory DIR, whose last file name component is
+        -:  365:   COMPONENT, with options OPTIONS.  Assume the working directory is
+        -:  366:   COMPONENT's parent.  */
+        -:  367:static int
+function make_ancestor called 0 returned 0% blocks executed 0%
+    #####:  368:make_ancestor (char const *dir, char const *component, void *options)
+        -:  369:{
+    #####:  370:  struct cp_options const *x = options;
+    #####:  371:  if (x->set_security_context
+branch  0 never executed
+branch  1 never executed
+    #####:  372:      && defaultcon (x->set_security_context, component, S_IFDIR) < 0
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  373:      && ! ignorable_ctx_err (errno))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  374:    error (0, errno, _("failed to set default creation context for %s"),
+call    0 never executed
+        -:  375:           quoteaf (dir));
+        -:  376:
+    #####:  377:  int r = mkdir (component, DEFAULT_MODE);
+call    0 never executed
+    #####:  378:  if (r == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  379:    announce_mkdir (dir, options);
+call    0 never executed
+    #####:  380:  return r;
+        -:  381:}
+        -:  382:
+        -:  383:/* Process a command-line file name, for the -d option.  */
+        -:  384:static int
+function process_dir called 0 returned 0% blocks executed 0%
+    #####:  385:process_dir (char *dir, struct savewd *wd, void *options)
+        -:  386:{
+    #####:  387:  struct cp_options const *x = options;
+        -:  388:
+    #####:  389:  int ret = (make_dir_parents (dir, wd, make_ancestor, options,
+call    0 never executed
+        -:  390:                               dir_mode, announce_mkdir,
+        -:  391:                               dir_mode_bits, owner_id, group_id, false)
+        -:  392:          ? EXIT_SUCCESS
+    #####:  393:          : EXIT_FAILURE);
+        -:  394:
+        -:  395:  /* FIXME: Due to the current structure of make_dir_parents()
+        -:  396:     we don't have the facility to call defaultcon() before the
+        -:  397:     final component of DIR is created.  So for now, create the
+        -:  398:     final component with the context from previous component
+        -:  399:     and here we set the context for the final component. */
+    #####:  400:  if (ret == EXIT_SUCCESS && x->set_security_context)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  401:    {
+    #####:  402:      if (! restorecon (x->set_security_context, last_component (dir), false)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  403:          && ! ignorable_ctx_err (errno))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  404:        error (0, errno, _("failed to restore context for %s"),
+call    0 never executed
+        -:  405:               quoteaf (dir));
+        -:  406:    }
+        -:  407:
+    #####:  408:  return ret;
+        -:  409:}
+        -:  410:
+        -:  411:/* Copy file FROM onto file TO aka TO_DIRFD+TO_RELNAME, creating TO if
+        -:  412:   necessary.  Return true if successful.  */
+        -:  413:
+        -:  414:static bool
+function copy_file called 34 returned 100% blocks executed 57%
+       34:  415:copy_file (char const *from, char const *to,
+        -:  416:           int to_dirfd, char const *to_relname, const struct cp_options *x)
+        -:  417:{
+        -:  418:  bool copy_into_self;
+        -:  419:
+      34*:  420:  if (copy_only_if_needed && !need_copy (from, to, to_dirfd, to_relname, x))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  421:    return true;
+        -:  422:
+        -:  423:  /* Allow installing from non-regular files like /dev/null.
+        -:  424:     Charles Karney reported that some Sun version of install allows that
+        -:  425:     and that sendmail's installation process relies on the behavior.
+        -:  426:     However, since !x->recursive, the call to "copy" will fail if FROM
+        -:  427:     is a directory.  */
+        -:  428:
+       34:  429:  return copy (from, to, to_dirfd, to_relname, 0, x, &copy_into_self, nullptr);
+call    0 returned 100%
+        -:  430:}
+        -:  431:
+        -:  432:/* Set the attributes of file or directory NAME aka DIRFD+RELNAME.
+        -:  433:   Return true if successful.  */
+        -:  434:
+        -:  435:static bool
+function change_attributes called 1 returned 100% blocks executed 43%
+        1:  436:change_attributes (char const *name, int dirfd, char const *relname)
+        -:  437:{
+        1:  438:  bool ok = false;
+        -:  439:  /* chown must precede chmod because on some systems,
+        -:  440:     chown clears the set[ug]id bits for non-superusers,
+        -:  441:     resulting in incorrect permissions.
+        -:  442:     On System V, users can give away files with chown and then not
+        -:  443:     be able to chmod them.  So don't give files away.
+        -:  444:
+        -:  445:     We don't normally ignore errors from chown because the idea of
+        -:  446:     the install command is that the file is supposed to end up with
+        -:  447:     precisely the attributes that the user specified (or defaulted).
+        -:  448:     If the file doesn't end up with the group they asked for, they'll
+        -:  449:     want to know.  */
+        -:  450:
+        1:  451:  if (! (owner_id == (uid_t) -1 && group_id == (gid_t) -1)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+    #####:  452:      && lchownat (dirfd, relname, owner_id, group_id) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  453:    error (0, errno, _("cannot change ownership of %s"), quoteaf (name));
+call    0 never executed
+        1:  454:  else if (chmodat (dirfd, relname, mode) != 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  455:    error (0, errno, _("cannot change permissions of %s"), quoteaf (name));
+call    0 never executed
+        -:  456:  else
+        1:  457:    ok = true;
+        -:  458:
+        1:  459:  if (use_default_selinux_context)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  460:    setdefaultfilecon (name);
+call    0 returned 100%
+        -:  461:
+        1:  462:  return ok;
+        -:  463:}
+        -:  464:
+        -:  465:/* Set the timestamps of file DEST aka DIRFD+RELNAME to match those of SRC_SB.
+        -:  466:   Return true if successful.  */
+        -:  467:
+        -:  468:static bool
+function change_timestamps called 0 returned 0% blocks executed 0%
+    #####:  469:change_timestamps (struct stat const *src_sb, char const *dest,
+        -:  470:                   int dirfd, char const *relname)
+        -:  471:{
+        -:  472:  struct timespec timespec[2];
+    #####:  473:  timespec[0] = get_stat_atime (src_sb);
+    #####:  474:  timespec[1] = get_stat_mtime (src_sb);
+        -:  475:
+    #####:  476:  if (utimensat (dirfd, relname, timespec, 0))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  477:    {
+    #####:  478:      error (0, errno, _("cannot set timestamps for %s"), quoteaf (dest));
+call    0 never executed
+    #####:  479:      return false;
+        -:  480:    }
+    #####:  481:  return true;
+        -:  482:}
+        -:  483:
+        -:  484:/* Strip the symbol table from the file NAME.
+        -:  485:   We could dig the magic number out of the file first to
+        -:  486:   determine whether to strip it, but the header files and
+        -:  487:   magic numbers vary so much from system to system that making
+        -:  488:   it portable would be very difficult.  Not worth the effort. */
+        -:  489:
+        -:  490:static bool
+function strip called 0 returned 0% blocks executed 0%
+    #####:  491:strip (char const *name)
+        -:  492:{
+        -:  493:  int status;
+    #####:  494:  bool ok = false;
+    #####:  495:  pid_t pid = fork ();
+call    0 never executed
+        -:  496:
+    #####:  497:  switch (pid)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  498:    {
+    #####:  499:    case -1:
+    #####:  500:      error (0, errno, _("fork system call failed"));
+    #####:  501:      break;
+    #####:  502:    case 0:			/* Child. */
+        -:  503:      {
+    #####:  504:        char const *safe_name = name;
+    #####:  505:        if (name && *name == '-')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  506:          safe_name = file_name_concat (".", name, nullptr);
+call    0 never executed
+    #####:  507:        execlp (strip_program, strip_program, safe_name, nullptr);
+    #####:  508:        error (EXIT_FAILURE, errno, _("cannot run %s"),
+call    0 never executed
+call    1 never executed
+        -:  509:               quoteaf (strip_program));
+        -:  510:      }
+    #####:  511:    default:			/* Parent. */
+    #####:  512:      if (waitpid (pid, &status, 0) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  513:        error (0, errno, _("waiting for strip"));
+    #####:  514:      else if (! WIFEXITED (status) || WEXITSTATUS (status))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  515:        error (0, 0, _("strip process terminated abnormally"));
+        -:  516:      else
+    #####:  517:        ok = true;      /* strip succeeded */
+    #####:  518:      break;
+        -:  519:    }
+    #####:  520:  return ok;
+        -:  521:}
+        -:  522:
+        -:  523:/* Initialize the user and group ownership of the files to install. */
+        -:  524:
+        -:  525:static void
+function get_ids called 30 returned 100% blocks executed 16%
+       30:  526:get_ids (void)
+        -:  527:{
+        -:  528:  struct passwd *pw;
+        -:  529:  struct group *gr;
+        -:  530:
+       30:  531:  if (owner_name)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  532:    {
+    #####:  533:      pw = getpwnam (owner_name);
+call    0 never executed
+    #####:  534:      if (pw == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  535:        {
+        -:  536:          uintmax_t tmp;
+    #####:  537:          if (xstrtoumax (owner_name, nullptr, 0, &tmp, "") != LONGINT_OK
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  538:              || UID_T_MAX < tmp)
+branch  0 never executed
+branch  1 never executed
+    #####:  539:            error (EXIT_FAILURE, 0, _("invalid user %s"),
+call    0 never executed
+call    1 never executed
+        -:  540:                   quoteaf (owner_name));
+    #####:  541:          owner_id = tmp;
+        -:  542:        }
+        -:  543:      else
+    #####:  544:        owner_id = pw->pw_uid;
+    #####:  545:      endpwent ();
+call    0 never executed
+        -:  546:    }
+        -:  547:  else
+       30:  548:    owner_id = (uid_t) -1;
+        -:  549:
+       30:  550:  if (group_name)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  551:    {
+    #####:  552:      gr = getgrnam (group_name);
+call    0 never executed
+    #####:  553:      if (gr == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  554:        {
+        -:  555:          uintmax_t tmp;
+    #####:  556:          if (xstrtoumax (group_name, nullptr, 0, &tmp, "") != LONGINT_OK
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  557:              || GID_T_MAX < tmp)
+branch  0 never executed
+branch  1 never executed
+    #####:  558:            error (EXIT_FAILURE, 0, _("invalid group %s"),
+call    0 never executed
+call    1 never executed
+        -:  559:                   quoteaf (group_name));
+    #####:  560:          group_id = tmp;
+        -:  561:        }
+        -:  562:      else
+    #####:  563:        group_id = gr->gr_gid;
+    #####:  564:      endgrent ();
+call    0 never executed
+        -:  565:    }
+        -:  566:  else
+       30:  567:    group_id = (gid_t) -1;
+       30:  568:}
+        -:  569:
+        -:  570:void
+function usage called 29 returned 0% blocks executed 18%
+       29:  571:usage (int status)
+        -:  572:{
+       29:  573:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       29:  574:    emit_try_help ();
+call    0 returned 100%
+        -:  575:  else
+        -:  576:    {
+    #####:  577:      printf (_("\
+call    0 never executed
+        -:  578:Usage: %s [OPTION]... [-T] SOURCE DEST\n\
+        -:  579:  or:  %s [OPTION]... SOURCE... DIRECTORY\n\
+        -:  580:  or:  %s [OPTION]... -t DIRECTORY SOURCE...\n\
+        -:  581:  or:  %s [OPTION]... -d DIRECTORY...\n\
+        -:  582:"),
+        -:  583:              program_name, program_name, program_name, program_name);
+    #####:  584:      fputs (_("\
+call    0 never executed
+        -:  585:\n\
+        -:  586:This install program copies files (often just compiled) into destination\n\
+        -:  587:locations you choose.  If you want to download and install a ready-to-use\n\
+        -:  588:package on a GNU/Linux system, you should instead be using a package manager\n\
+        -:  589:like yum(1) or apt-get(1).\n\
+        -:  590:\n\
+        -:  591:In the first three forms, copy SOURCE to DEST or multiple SOURCE(s) to\n\
+        -:  592:the existing DIRECTORY, while setting permission modes and owner/group.\n\
+        -:  593:In the 4th form, create all components of the given DIRECTORY(ies).\n\
+        -:  594:"), stdout);
+        -:  595:
+    #####:  596:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  597:
+    #####:  598:      fputs (_("\
+call    0 never executed
+        -:  599:      --backup[=CONTROL]  make a backup of each existing destination file\n\
+        -:  600:  -b                  like --backup but does not accept an argument\n\
+        -:  601:  -c                  (ignored)\n\
+        -:  602:  -C, --compare       compare content of source and destination files, and\n\
+        -:  603:                        if no change to content, ownership, and permissions,\n\
+        -:  604:                        do not modify the destination at all\n\
+        -:  605:  -d, --directory     treat all arguments as directory names; create all\n\
+        -:  606:                        components of the specified directories\n\
+        -:  607:"), stdout);
+    #####:  608:      fputs (_("\
+call    0 never executed
+        -:  609:  -D                  create all leading components of DEST except the last,\n\
+        -:  610:                        or all components of --target-directory,\n\
+        -:  611:                        then copy SOURCE to DEST\n\
+        -:  612:"), stdout);
+    #####:  613:      fputs (_("\
+call    0 never executed
+        -:  614:      --debug         explain how a file is copied.  Implies -v\n\
+        -:  615:"), stdout);
+    #####:  616:      fputs (_("\
+call    0 never executed
+        -:  617:  -g, --group=GROUP   set group ownership, instead of process' current group\n\
+        -:  618:  -m, --mode=MODE     set permission mode (as in chmod), instead of rwxr-xr-x\n\
+        -:  619:  -o, --owner=OWNER   set ownership (super-user only)\n\
+        -:  620:"), stdout);
+    #####:  621:      fputs (_("\
+call    0 never executed
+        -:  622:  -p, --preserve-timestamps   apply access/modification times of SOURCE files\n\
+        -:  623:                        to corresponding destination files\n\
+        -:  624:  -s, --strip         strip symbol tables\n\
+        -:  625:      --strip-program=PROGRAM  program used to strip binaries\n\
+        -:  626:  -S, --suffix=SUFFIX  override the usual backup suffix\n\
+        -:  627:  -t, --target-directory=DIRECTORY  copy all SOURCE arguments into DIRECTORY\n\
+        -:  628:  -T, --no-target-directory  treat DEST as a normal file\n\
+        -:  629:"), stdout);
+    #####:  630:      fputs (_("\
+call    0 never executed
+        -:  631:  -v, --verbose       print the name of each created file or directory\n\
+        -:  632:"), stdout);
+    #####:  633:      fputs (_("\
+call    0 never executed
+        -:  634:      --preserve-context  preserve SELinux security context\n\
+        -:  635:  -Z                      set SELinux security context of destination\n\
+        -:  636:                            file and each created directory to default type\n\
+        -:  637:      --context[=CTX]     like -Z, or if CTX is specified then set the\n\
+        -:  638:                            SELinux or SMACK security context to CTX\n\
+        -:  639:"), stdout);
+        -:  640:
+    #####:  641:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  642:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  643:      emit_backup_suffix_note ();
+call    0 never executed
+    #####:  644:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  645:    }
+       29:  646:  exit (status);
+        -:  647:}
+        -:  648:
+        -:  649:/* Copy file FROM onto file TO aka TO_DIRFD+TO_RELNAME and give TO the
+        -:  650:   appropriate attributes.  X gives the command options.
+        -:  651:   Return true if successful.  */
+        -:  652:
+        -:  653:static bool
+function install_file_in_file called 34 returned 100% blocks executed 29%
+       34:  654:install_file_in_file (char const *from, char const *to,
+        -:  655:                      int to_dirfd, char const *to_relname,
+        -:  656:                      const struct cp_options *x)
+        -:  657:{
+        -:  658:  struct stat from_sb;
+      34*:  659:  if (x->preserve_timestamps && stat (from, &from_sb) != 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  660:    {
+    #####:  661:      error (0, errno, _("cannot stat %s"), quoteaf (from));
+call    0 never executed
+    #####:  662:      return false;
+        -:  663:    }
+       34:  664:  if (! copy_file (from, to, to_dirfd, to_relname, x))
+call    0 returned 100%
+branch  1 taken 97% (fallthrough)
+branch  2 taken 3%
+       33:  665:    return false;
+        1:  666:  if (strip_files)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  667:    if (! strip (to))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  668:      {
+    #####:  669:        if (unlinkat (to_dirfd, to_relname, 0) != 0)  /* Cleanup.  */
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  670:          error (EXIT_FAILURE, errno, _("cannot unlink %s"), quoteaf (to));
+call    0 never executed
+call    1 never executed
+    #####:  671:        return false;
+        -:  672:      }
+       1*:  673:  if (x->preserve_timestamps && (strip_files || ! S_ISREG (from_sb.st_mode))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  674:      && ! change_timestamps (&from_sb, to, to_dirfd, to_relname))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  675:    return false;
+        1:  676:  return change_attributes (to, to_dirfd, to_relname);
+call    0 returned 100%
+        -:  677:}
+        -:  678:
+        -:  679:/* Create any missing parent directories of TO,
+        -:  680:   while maintaining the current Working Directory.
+        -:  681:   Return true if successful.  */
+        -:  682:
+        -:  683:static bool
+function mkancesdirs_safe_wd called 0 returned 0% blocks executed 0%
+    #####:  684:mkancesdirs_safe_wd (char const *from, char *to, struct cp_options *x,
+        -:  685:                     bool save_always)
+        -:  686:{
+    #####:  687:  bool save_working_directory =
+        -:  688:    save_always
+    #####:  689:    || ! (IS_ABSOLUTE_FILE_NAME (from) && IS_ABSOLUTE_FILE_NAME (to));
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  690:  int status = EXIT_SUCCESS;
+        -:  691:
+        -:  692:  struct savewd wd;
+    #####:  693:  savewd_init (&wd);
+call    0 never executed
+    #####:  694:  if (! save_working_directory)
+branch  0 never executed
+branch  1 never executed
+    #####:  695:    savewd_finish (&wd);
+call    0 never executed
+        -:  696:
+    #####:  697:  if (mkancesdirs (to, &wd, make_ancestor, x) == -1)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  698:    {
+    #####:  699:      error (0, errno, _("cannot create directory %s"), quoteaf (to));
+call    0 never executed
+    #####:  700:      status = EXIT_FAILURE;
+        -:  701:    }
+        -:  702:
+    #####:  703:  if (save_working_directory)
+branch  0 never executed
+branch  1 never executed
+        -:  704:    {
+    #####:  705:      int restore_result = savewd_restore (&wd, status);
+call    0 never executed
+    #####:  706:      int restore_errno = errno;
+    #####:  707:      savewd_finish (&wd);
+call    0 never executed
+    #####:  708:      if (EXIT_SUCCESS < restore_result)
+branch  0 never executed
+branch  1 never executed
+    #####:  709:        return false;
+    #####:  710:      if (restore_result < 0 && status == EXIT_SUCCESS)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  711:        {
+    #####:  712:          error (0, restore_errno, _("cannot create directory %s"),
+call    0 never executed
+        -:  713:                 quoteaf (to));
+    #####:  714:          return false;
+        -:  715:        }
+        -:  716:    }
+    #####:  717:  return status == EXIT_SUCCESS;
+        -:  718:}
+        -:  719:
+        -:  720:/* Copy file FROM onto file TO, creating any missing parent directories of TO.
+        -:  721:   Return true if successful.  */
+        -:  722:
+        -:  723:static bool
+function install_file_in_file_parents called 0 returned 0% blocks executed 0%
+    #####:  724:install_file_in_file_parents (char const *from, char *to,
+        -:  725:                              const struct cp_options *x)
+        -:  726:{
+    #####:  727:  return (mkancesdirs_safe_wd (from, to, (struct cp_options *)x, false)
+call    0 never executed
+    #####:  728:          && install_file_in_file (from, to, AT_FDCWD, to, x));
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  729:}
+        -:  730:
+        -:  731:/* Copy file FROM into directory TO_DIR, keeping its same name,
+        -:  732:   and give the copy the appropriate attributes.
+        -:  733:   Return true if successful.  */
+        -:  734:
+        -:  735:static bool
+function install_file_in_dir called 20 returned 100% blocks executed 37%
+       20:  736:install_file_in_dir (char const *from, char const *to_dir,
+        -:  737:                     const struct cp_options *x, bool mkdir_and_install,
+        -:  738:                     int *target_dirfd)
+        -:  739:{
+       20:  740:  char const *from_base = last_component (from);
+        -:  741:  char *to_relname;
+       20:  742:  char *to = file_name_concat (to_dir, from_base, &to_relname);
+call    0 returned 100%
+       20:  743:  bool ret = true;
+        -:  744:
+       20:  745:  if (!target_dirfd_valid (*target_dirfd)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  746:      && (ret = mkdir_and_install)
+branch  0 never executed
+branch  1 never executed
+    #####:  747:      && (ret = mkancesdirs_safe_wd (from, to, (struct cp_options *) x, true)))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  748:    {
+    #####:  749:      int fd = open (to_dir, O_PATHSEARCH | O_DIRECTORY);
+call    0 never executed
+    #####:  750:      if (fd < 0)
+branch  0 never executed
+branch  1 never executed
+        -:  751:        {
+    #####:  752:          error (0, errno, _("cannot open %s"), quoteaf (to));
+call    0 never executed
+    #####:  753:          ret = false;
+        -:  754:        }
+        -:  755:      else
+    #####:  756:        *target_dirfd = fd;
+        -:  757:    }
+        -:  758:
+       20:  759:  if (ret)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  760:    {
+       20:  761:      int to_dirfd = *target_dirfd;
+       20:  762:      if (!target_dirfd_valid (to_dirfd))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  763:        {
+    #####:  764:          to_dirfd = AT_FDCWD;
+    #####:  765:          to_relname = to;
+        -:  766:        }
+       20:  767:      ret = install_file_in_file (from, to, to_dirfd, to_relname, x);
+call    0 returned 100%
+        -:  768:    }
+        -:  769:
+       20:  770:  free (to);
+       20:  771:  return ret;
+        -:  772:}
+        -:  773:
+        -:  774:int
+function main called 61 returned 49% blocks executed 35%
+       61:  775:main (int argc, char **argv)
+        -:  776:{
+        -:  777:  int optc;
+       61:  778:  int exit_status = EXIT_SUCCESS;
+       61:  779:  char const *specified_mode = nullptr;
+       61:  780:  bool make_backups = false;
+       61:  781:  char const *backup_suffix = nullptr;
+       61:  782:  char *version_control_string = nullptr;
+       61:  783:  bool mkdir_and_install = false;
+        -:  784:  struct cp_options x;
+       61:  785:  char const *target_directory = nullptr;
+       61:  786:  bool no_target_directory = false;
+        -:  787:  int n_files;
+        -:  788:  char **file;
+       61:  789:  bool strip_program_specified = false;
+       61:  790:  char const *scontext = nullptr;
+        -:  791:  /* set iff kernel has extra selinux system calls */
+       61:  792:  selinux_enabled = (0 < is_selinux_enabled ());
+        -:  793:
+        -:  794:  initialize_main (&argc, &argv);
+       61:  795:  set_program_name (argv[0]);
+call    0 returned 100%
+       61:  796:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  797:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  798:  textdomain (PACKAGE);
+        -:  799:
+       61:  800:  atexit (close_stdin);
+call    0 returned 100%
+        -:  801:
+       61:  802:  cp_option_init (&x);
+call    0 returned 100%
+        -:  803:
+       61:  804:  owner_name = nullptr;
+       61:  805:  group_name = nullptr;
+       61:  806:  strip_files = false;
+       61:  807:  dir_arg = false;
+       61:  808:  umask (0);
+call    0 returned 100%
+        -:  809:
+       61:  810:  while ((optc = getopt_long (argc, argv, "bcCsDdg:m:o:pt:TvS:Z", long_options,
+call    0 returned 100%
+        -:  811:                              nullptr))
+       61:  812:         != -1)
+branch  0 taken 2%
+branch  1 taken 98% (fallthrough)
+        -:  813:    {
+        1:  814:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 0%
+branch 13 taken 0%
+branch 14 taken 0%
+branch 15 taken 0%
+branch 16 taken 0%
+branch 17 taken 0%
+branch 18 taken 0%
+branch 19 taken 0%
+branch 20 taken 100%
+        -:  815:        {
+    #####:  816:        case 'b':
+    #####:  817:          make_backups = true;
+    #####:  818:          if (optarg)
+branch  0 never executed
+branch  1 never executed
+    #####:  819:            version_control_string = optarg;
+    #####:  820:          break;
+    #####:  821:        case 'c':
+    #####:  822:          break;
+    #####:  823:        case 'C':
+    #####:  824:          copy_only_if_needed = true;
+    #####:  825:          break;
+    #####:  826:        case 's':
+    #####:  827:          strip_files = true;
+        -:  828:#ifdef SIGCHLD
+        -:  829:          /* System V fork+wait does not work if SIGCHLD is ignored.  */
+    #####:  830:          signal (SIGCHLD, SIG_DFL);
+call    0 never executed
+        -:  831:#endif
+    #####:  832:          break;
+    #####:  833:        case DEBUG_OPTION:
+    #####:  834:          x.debug = x.verbose = true;
+    #####:  835:          break;
+    #####:  836:        case STRIP_PROGRAM_OPTION:
+    #####:  837:          strip_program = xstrdup (optarg);
+call    0 never executed
+    #####:  838:          strip_program_specified = true;
+    #####:  839:          break;
+    #####:  840:        case 'd':
+    #####:  841:          dir_arg = true;
+    #####:  842:          break;
+    #####:  843:        case 'D':
+    #####:  844:          mkdir_and_install = true;
+    #####:  845:          break;
+    #####:  846:        case 'v':
+    #####:  847:          x.verbose = true;
+    #####:  848:          break;
+    #####:  849:        case 'g':
+    #####:  850:          group_name = optarg;
+    #####:  851:          break;
+    #####:  852:        case 'm':
+    #####:  853:          specified_mode = optarg;
+    #####:  854:          break;
+    #####:  855:        case 'o':
+    #####:  856:          owner_name = optarg;
+    #####:  857:          break;
+    #####:  858:        case 'p':
+    #####:  859:          x.preserve_timestamps = true;
+    #####:  860:          break;
+    #####:  861:        case 'S':
+    #####:  862:          make_backups = true;
+    #####:  863:          backup_suffix = optarg;
+    #####:  864:          break;
+    #####:  865:        case 't':
+    #####:  866:          if (target_directory)
+branch  0 never executed
+branch  1 never executed
+    #####:  867:            error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  868:                   _("multiple target directories specified"));
+    #####:  869:          target_directory = optarg;
+    #####:  870:          break;
+    #####:  871:        case 'T':
+    #####:  872:          no_target_directory = true;
+    #####:  873:          break;
+        -:  874:
+    #####:  875:        case PRESERVE_CONTEXT_OPTION:
+    #####:  876:          if (! selinux_enabled)
+branch  0 never executed
+branch  1 never executed
+        -:  877:            {
+        -:  878:              error (0, 0, _("WARNING: ignoring --preserve-context; "
+        -:  879:                             "this kernel is not SELinux-enabled"));
+    #####:  880:              break;
+        -:  881:            }
+    #####:  882:          x.preserve_security_context = true;
+    #####:  883:          use_default_selinux_context = false;
+    #####:  884:          break;
+    #####:  885:        case 'Z':
+    #####:  886:          if (selinux_enabled)
+branch  0 never executed
+branch  1 never executed
+        -:  887:            {
+        -:  888:              /* Disable use of the install(1) specific setdefaultfilecon().
+        -:  889:                 Note setdefaultfilecon() is different from the newer and more
+        -:  890:                 generic restorecon() in that the former sets the context of
+        -:  891:                 the dest files to that returned by selabel_lookup directly,
+        -:  892:                 thus discarding MLS level and user identity of the file.
+        -:  893:                 TODO: consider removing setdefaultfilecon() in future.  */
+    #####:  894:              use_default_selinux_context = false;
+        -:  895:
+    #####:  896:              if (optarg)
+branch  0 never executed
+branch  1 never executed
+    #####:  897:                scontext = optarg;
+        -:  898:              else
+    #####:  899:                x.set_security_context = get_labeling_handle ();
+call    0 never executed
+        -:  900:            }
+    #####:  901:          else if (optarg)
+branch  0 never executed
+branch  1 never executed
+        -:  902:            {
+        -:  903:              error (0, 0,
+        -:  904:                     _("warning: ignoring --context; "
+        -:  905:                       "it requires an SELinux-enabled kernel"));
+        -:  906:            }
+    #####:  907:          break;
+    #####:  908:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  909:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        1:  910:        default:
+        1:  911:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  912:        }
+        -:  913:    }
+        -:  914:
+        -:  915:  /* Check for invalid combinations of arguments. */
+      60*:  916:  if (dir_arg && strip_files)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  917:    error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  918:           _("the strip option may not be used when installing a directory"));
+      60*:  919:  if (dir_arg && target_directory)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  920:    error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  921:           _("target directory not allowed when installing a directory"));
+        -:  922:
+       60:  923:  x.backup_type = (make_backups
+    #####:  924:                   ? xget_version (_("backup type"),
+call    0 never executed
+        -:  925:                                   version_control_string)
+       60:  926:                   : no_backups);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+       60:  927:  set_simple_backup_suffix (backup_suffix);
+call    0 returned 100%
+        -:  928:
+      60*:  929:  if (x.preserve_security_context && (x.set_security_context || scontext))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  930:    error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  931:           _("cannot set target context and preserve it"));
+        -:  932:
+      60*:  933:  if (scontext && setfscreatecon (scontext) < 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  934:    error (EXIT_FAILURE, errno,
+call    0 never executed
+call    1 never executed
+        -:  935:           _("failed to set default file creation context to %s"),
+        -:  936:         quote (scontext));
+        -:  937:
+       60:  938:  n_files = argc - optind;
+       60:  939:  file = argv + optind;
+        -:  940:
+      60*:  941:  if (n_files <= ! (dir_arg || target_directory))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 47% (fallthrough)
+branch  5 taken 53%
+        -:  942:    {
+       28:  943:      if (n_files <= 0)
+branch  0 taken 4% (fallthrough)
+branch  1 taken 96%
+        -:  944:        error (0, 0, _("missing file operand"));
+        -:  945:      else
+       27:  946:        error (0, 0, _("missing destination file operand after %s"),
+call    0 returned 100%
+        -:  947:               quoteaf (file[0]));
+       28:  948:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  949:    }
+        -:  950:
+        -:  951:  struct stat sb;
+       32:  952:  int target_dirfd = AT_FDCWD;
+       32:  953:  if (no_target_directory)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  954:    {
+    #####:  955:      if (target_directory)
+branch  0 never executed
+branch  1 never executed
+    #####:  956:        error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  957:               _("cannot combine --target-directory (-t) "
+        -:  958:                 "and --no-target-directory (-T)"));
+    #####:  959:      if (2 < n_files)
+branch  0 never executed
+branch  1 never executed
+        -:  960:        {
+    #####:  961:          error (0, 0, _("extra operand %s"), quoteaf (file[2]));
+call    0 never executed
+    #####:  962:          usage (EXIT_FAILURE);
+call    0 never executed
+        -:  963:        }
+        -:  964:    }
+       32:  965:  else if (target_directory)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  966:    {
+    #####:  967:      target_dirfd = target_directory_operand (target_directory, &sb);
+call    0 never executed
+    #####:  968:      if (! (target_dirfd_valid (target_dirfd)
+branch  0 never executed
+branch  1 never executed
+    #####:  969:             || (mkdir_and_install && errno == ENOENT)))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  970:        error (EXIT_FAILURE, errno, _("failed to access %s"),
+call    0 never executed
+call    1 never executed
+        -:  971:               quoteaf (target_directory));
+        -:  972:    }
+       32:  973:  else if (!dir_arg)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  974:    {
+       32:  975:      char const *lastfile = file[n_files - 1];
+       32:  976:      int fd = target_directory_operand (lastfile, &sb);
+call    0 returned 100%
+       32:  977:      if (target_dirfd_valid (fd))
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+        -:  978:        {
+       16:  979:          target_dirfd = fd;
+       16:  980:          target_directory = lastfile;
+       16:  981:          n_files--;
+        -:  982:        }
+       16:  983:      else if (2 < n_files)
+branch  0 taken 12% (fallthrough)
+branch  1 taken 88%
+       2*:  984:        error (EXIT_FAILURE, errno, _("target %s"), quoteaf (lastfile));
+call    0 returned 100%
+call    1 never executed
+        -:  985:    }
+        -:  986:
+       30:  987:  if (specified_mode)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  988:    {
+    #####:  989:      struct mode_change *change = mode_compile (specified_mode);
+call    0 never executed
+    #####:  990:      if (!change)
+branch  0 never executed
+branch  1 never executed
+    #####:  991:        error (EXIT_FAILURE, 0, _("invalid mode %s"), quote (specified_mode));
+call    0 never executed
+call    1 never executed
+    #####:  992:      mode = mode_adjust (0, false, 0, change, nullptr);
+    #####:  993:      dir_mode = mode_adjust (0, true, 0, change, &dir_mode_bits);
+    #####:  994:      free (change);
+        -:  995:    }
+        -:  996:
+      30*:  997:  if (strip_program_specified && !strip_files)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  998:    error (0, 0, _("WARNING: ignoring --strip-program option as -s option was "
+        -:  999:                   "not specified"));
+        -: 1000:
+      30*: 1001:  if (copy_only_if_needed && x.preserve_timestamps)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -: 1002:    {
+        -: 1003:      error (0, 0, _("options --compare (-C) and --preserve-timestamps are "
+        -: 1004:                     "mutually exclusive"));
+    #####: 1005:      usage (EXIT_FAILURE);
+call    0 never executed
+        -: 1006:    }
+        -: 1007:
+      30*: 1008:  if (copy_only_if_needed && strip_files)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -: 1009:    {
+        -: 1010:      error (0, 0, _("options --compare (-C) and --strip are mutually "
+        -: 1011:                     "exclusive"));
+    #####: 1012:      usage (EXIT_FAILURE);
+call    0 never executed
+        -: 1013:    }
+        -: 1014:
+      30*: 1015:  if (copy_only_if_needed && extra_mode (mode))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -: 1016:    error (0, 0, _("the --compare (-C) option is ignored when you"
+        -: 1017:                   " specify a mode with non-permission bits"));
+        -: 1018:
+       30: 1019:  get_ids ();
+call    0 returned 100%
+        -: 1020:
+       30: 1021:  if (dir_arg)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1022:    exit_status = savewd_process_files (n_files, file, process_dir, &x);
+call    0 never executed
+        -: 1023:  else
+        -: 1024:    {
+        -: 1025:      /* FIXME: it's a little gross that this initialization is
+        -: 1026:         required by copy.c::copy. */
+       30: 1027:      hash_init ();
+call    0 returned 100%
+        -: 1028:
+       30: 1029:      if (!target_directory)
+branch  0 taken 47% (fallthrough)
+branch  1 taken 53%
+        -: 1030:        {
+      28*: 1031:          if (! (mkdir_and_install
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 taken 93% (fallthrough)
+branch  3 taken 7%
+    #####: 1032:                 ? install_file_in_file_parents (file[0], file[1], &x)
+call    0 never executed
+       14: 1033:                 : install_file_in_file (file[0], file[1], AT_FDCWD,
+       14: 1034:                                         file[1], &x)))
+call    0 returned 100%
+       13: 1035:            exit_status = EXIT_FAILURE;
+        -: 1036:        }
+        -: 1037:      else
+        -: 1038:        {
+        -: 1039:          int i;
+       16: 1040:          dest_info_init (&x);
+call    0 returned 100%
+       36: 1041:          for (i = 0; i < n_files; i++)
+branch  0 taken 56%
+branch  1 taken 44% (fallthrough)
+       20: 1042:            if (! install_file_in_dir (file[i], target_directory, &x,
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+      20*: 1043:                                       i == 0 && mkdir_and_install,
+branch  0 taken 80% (fallthrough)
+branch  1 taken 20%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+call    4 returned 100%
+        -: 1044:                                       &target_dirfd))
+       20: 1045:              exit_status = EXIT_FAILURE;
+        -: 1046:        }
+        -: 1047:    }
+        -: 1048:
+       30: 1049:  main_exit (exit_status);
+        -: 1050:}

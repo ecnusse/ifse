@@ -1,0 +1,2012 @@
+        -:    0:Source:src/csplit.c
+        -:    0:Graph:csplit.gcno
+        -:    0:Data:csplit.gcda
+        -:    0:Runs:4
+        -:    1:/* csplit - split a file into sections determined by context lines
+        -:    2:   Copyright (C) 1991-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Stuart Kemp, cpsrk@groper.jcu.edu.au.
+        -:   18:   Modified by David MacKenzie, djm@gnu.ai.mit.edu. */
+        -:   19:
+        -:   20:#include <config.h>
+        -:   21:
+        -:   22:#include <getopt.h>
+        -:   23:#include <sys/types.h>
+        -:   24:#include <signal.h>
+        -:   25:#include <stdckdint.h>
+        -:   26:
+        -:   27:#include "system.h"
+        -:   28:
+        -:   29:#include <regex.h>
+        -:   30:
+        -:   31:#include "fd-reopen.h"
+        -:   32:#include "quote.h"
+        -:   33:#include "safe-read.h"
+        -:   34:#include "stdio--.h"
+        -:   35:#include "xdectoint.h"
+        -:   36:#include "xstrtol.h"
+        -:   37:
+        -:   38:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   39:#define PROGRAM_NAME "csplit"
+        -:   40:
+        -:   41:#define AUTHORS \
+        -:   42:  proper_name ("Stuart Kemp"), \
+        -:   43:  proper_name ("David MacKenzie")
+        -:   44:
+        -:   45:/* The default prefix for output file names. */
+        -:   46:#define DEFAULT_PREFIX	"xx"
+        -:   47:
+        -:   48:/* A compiled pattern arg. */
+        -:   49:struct control
+        -:   50:{
+        -:   51:  intmax_t offset;		/* Offset from regexp to split at. */
+        -:   52:  intmax_t lines_required;	/* Number of lines required. */
+        -:   53:  intmax_t repeat;		/* Repeat count. */
+        -:   54:  int argnum;			/* ARGV index. */
+        -:   55:  bool repeat_forever;		/* True if '*' used as a repeat count. */
+        -:   56:  bool ignore;			/* If true, produce no output (for regexp). */
+        -:   57:  bool regexpr;			/* True if regular expression was used. */
+        -:   58:  struct re_pattern_buffer re_compiled;	/* Compiled regular expression. */
+        -:   59:};
+        -:   60:
+        -:   61:/* Initial size of data area in buffers. */
+        -:   62:#define START_SIZE	8191
+        -:   63:
+        -:   64:/* Number of lines kept in each node in line list. */
+        -:   65:#define CTRL_SIZE	80
+        -:   66:
+        -:   67:#ifdef DEBUG
+        -:   68:/* Some small values to test the algorithms. */
+        -:   69:# define START_SIZE	200
+        -:   70:# define CTRL_SIZE	1
+        -:   71:#endif
+        -:   72:
+        -:   73:/* A string with a length count. */
+        -:   74:struct cstring
+        -:   75:{
+        -:   76:  idx_t len;
+        -:   77:  char *str;
+        -:   78:};
+        -:   79:
+        -:   80:/* Pointers to the beginnings of lines in the buffer area.
+        -:   81:   These structures are linked together if needed. */
+        -:   82:struct line
+        -:   83:{
+        -:   84:  idx_t used;			/* Number of offsets used in this struct. */
+        -:   85:  idx_t insert_index;		/* Next offset to use when inserting line. */
+        -:   86:  idx_t retrieve_index;	/* Next index to use when retrieving line. */
+        -:   87:  struct cstring starts[CTRL_SIZE]; /* Lines in the data area. */
+        -:   88:  struct line *next;		/* Next in linked list. */
+        -:   89:};
+        -:   90:
+        -:   91:/* The structure to hold the input lines.
+        -:   92:   Contains a pointer to the data area and a list containing
+        -:   93:   pointers to the individual lines. */
+        -:   94:struct buffer_record
+        -:   95:{
+        -:   96:  idx_t bytes_alloc;		/* Size of the buffer area. */
+        -:   97:  idx_t bytes_used;		/* Bytes used in the buffer area. */
+        -:   98:  intmax_t start_line;		/* First line number in this buffer. */
+        -:   99:  intmax_t first_available;	/* First line that can be retrieved. */
+        -:  100:  idx_t num_lines;		/* Number of complete lines in this buffer. */
+        -:  101:  char *buffer;			/* Data area. */
+        -:  102:  struct line *line_start;	/* Head of list of pointers to lines. */
+        -:  103:  struct line *curr_line;	/* The line start record currently in use. */
+        -:  104:  struct buffer_record *next;
+        -:  105:};
+        -:  106:
+        -:  107:static void close_output_file (void);
+        -:  108:static void create_output_file (void);
+        -:  109:static void delete_all_files (bool);
+        -:  110:static void save_line_to_file (const struct cstring *line);
+        -:  111:
+        -:  112:/* Start of buffer list. */
+        -:  113:static struct buffer_record *head = nullptr;
+        -:  114:
+        -:  115:/* Partially read line. */
+        -:  116:static char *hold_area = nullptr;
+        -:  117:
+        -:  118:/* Number of bytes in 'hold_area'. */
+        -:  119:static idx_t hold_count = 0;
+        -:  120:
+        -:  121:/* Number of the last line in the buffers. */
+        -:  122:static intmax_t last_line_number = 0;
+        -:  123:
+        -:  124:/* Number of the line currently being examined. */
+        -:  125:static intmax_t current_line = 0;
+        -:  126:
+        -:  127:/* If true, we have read EOF. */
+        -:  128:static bool have_read_eof = false;
+        -:  129:
+        -:  130:/* Name of output files. */
+        -:  131:static char *volatile filename_space = nullptr;
+        -:  132:
+        -:  133:/* Prefix part of output file names. */
+        -:  134:static char const *volatile prefix = nullptr;
+        -:  135:
+        -:  136:/* Suffix part of output file names. */
+        -:  137:static char *volatile suffix = nullptr;
+        -:  138:
+        -:  139:/* Number of digits to use in output file names. */
+        -:  140:static int volatile digits = 2;
+        -:  141:
+        -:  142:/* Number of files created so far. */
+        -:  143:static int volatile files_created = 0;
+        -:  144:
+        -:  145:/* Number of bytes written to current file. */
+        -:  146:static intmax_t bytes_written;
+        -:  147:
+        -:  148:/* Output file pointer. */
+        -:  149:static FILE *output_stream = nullptr;
+        -:  150:
+        -:  151:/* Output file name. */
+        -:  152:static char *output_filename = nullptr;
+        -:  153:
+        -:  154:/* Perhaps it would be cleaner to pass arg values instead of indexes. */
+        -:  155:static char **global_argv;
+        -:  156:
+        -:  157:/* If true, do not print the count of bytes in each output file. */
+        -:  158:static bool suppress_count;
+        -:  159:
+        -:  160:/* If true, remove output files on error. */
+        -:  161:static bool volatile remove_files;
+        -:  162:
+        -:  163:/* If true, remove all output files which have a zero length. */
+        -:  164:static bool elide_empty_files;
+        -:  165:
+        -:  166:/* If true, suppress the lines that match the PATTERN */
+        -:  167:static bool suppress_matched;
+        -:  168:
+        -:  169:/* The compiled pattern arguments, which determine how to split
+        -:  170:   the input file. */
+        -:  171:static struct control *controls;
+        -:  172:
+        -:  173:/* Number of elements in 'controls'. */
+        -:  174:static idx_t control_used;
+        -:  175:
+        -:  176:/* The set of signals that are caught.  */
+        -:  177:static sigset_t caught_signals;
+        -:  178:
+        -:  179:/* For long options that have no equivalent short option, use a
+        -:  180:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:  181:enum
+        -:  182:{
+        -:  183:  SUPPRESS_MATCHED_OPTION = CHAR_MAX + 1
+        -:  184:};
+        -:  185:
+        -:  186:static struct option const longopts[] =
+        -:  187:{
+        -:  188:  {"digits", required_argument, nullptr, 'n'},
+        -:  189:  {"quiet", no_argument, nullptr, 'q'},
+        -:  190:  {"silent", no_argument, nullptr, 's'},
+        -:  191:  {"keep-files", no_argument, nullptr, 'k'},
+        -:  192:  {"elide-empty-files", no_argument, nullptr, 'z'},
+        -:  193:  {"prefix", required_argument, nullptr, 'f'},
+        -:  194:  {"suffix-format", required_argument, nullptr, 'b'},
+        -:  195:  {"suppress-matched", no_argument, nullptr, SUPPRESS_MATCHED_OPTION},
+        -:  196:  {GETOPT_HELP_OPTION_DECL},
+        -:  197:  {GETOPT_VERSION_OPTION_DECL},
+        -:  198:  {nullptr, 0, nullptr, 0}
+        -:  199:};
+        -:  200:
+        -:  201:/* Optionally remove files created so far; then exit.
+        -:  202:   Called when an error detected. */
+        -:  203:
+        -:  204:static void
+function cleanup called 0 returned 0% blocks executed 0%
+    #####:  205:cleanup (void)
+        -:  206:{
+        -:  207:  sigset_t oldset;
+        -:  208:
+    #####:  209:  close_output_file ();
+call    0 never executed
+        -:  210:
+    #####:  211:  sigprocmask (SIG_BLOCK, &caught_signals, &oldset);
+call    0 never executed
+    #####:  212:  delete_all_files (false);
+call    0 never executed
+    #####:  213:  sigprocmask (SIG_SETMASK, &oldset, nullptr);
+call    0 never executed
+    #####:  214:}
+        -:  215:
+        -:  216:static _Noreturn void
+function cleanup_fatal called 0 returned 0% blocks executed 0%
+    #####:  217:cleanup_fatal (void)
+        -:  218:{
+    #####:  219:  cleanup ();
+call    0 never executed
+    #####:  220:  exit (EXIT_FAILURE);
+        -:  221:}
+        -:  222:
+        -:  223:extern void
+function xalloc_die called 0 returned 0% blocks executed 0%
+    #####:  224:xalloc_die (void)
+        -:  225:{
+        -:  226:  error (0, 0, "%s", _("memory exhausted"));
+    #####:  227:  cleanup_fatal ();
+        -:  228:}
+        -:  229:
+        -:  230:static void
+function interrupt_handler called 0 returned 0% blocks executed 0%
+    #####:  231:interrupt_handler (int sig)
+        -:  232:{
+    #####:  233:  delete_all_files (true);
+call    0 never executed
+    #####:  234:  signal (sig, SIG_DFL);
+call    0 never executed
+        -:  235:  /* The signal has been reset to SIG_DFL, but blocked during this
+        -:  236:     handler.  Force the default action of this signal once the
+        -:  237:     handler returns and the block is removed.  */
+    #####:  238:  raise (sig);
+call    0 never executed
+    #####:  239:}
+        -:  240:
+        -:  241:/* Keep track of NUM bytes of a partial line in buffer START.
+        -:  242:   These bytes will be retrieved later when another large buffer is read.  */
+        -:  243:
+        -:  244:static void
+function save_to_hold_area called 0 returned 0% blocks executed 0%
+    #####:  245:save_to_hold_area (char *start, idx_t num)
+        -:  246:{
+    #####:  247:  free (hold_area);
+    #####:  248:  hold_area = start;
+    #####:  249:  hold_count = num;
+    #####:  250:}
+        -:  251:
+        -:  252:/* Read up to MAX_N_BYTES bytes from the input stream into DEST.
+        -:  253:   Return the number of bytes read. */
+        -:  254:
+        -:  255:static idx_t
+function read_input called 0 returned 0% blocks executed 0%
+    #####:  256:read_input (char *dest, idx_t max_n_bytes)
+        -:  257:{
+        -:  258:  idx_t bytes_read;
+        -:  259:
+    #####:  260:  if (max_n_bytes == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  261:    return 0;
+        -:  262:
+    #####:  263:  bytes_read = safe_read (STDIN_FILENO, dest, max_n_bytes);
+call    0 never executed
+        -:  264:
+    #####:  265:  if (bytes_read == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  266:    have_read_eof = true;
+        -:  267:
+    #####:  268:  if (bytes_read == SAFE_READ_ERROR)
+branch  0 never executed
+branch  1 never executed
+        -:  269:    {
+    #####:  270:      error (0, errno, _("read error"));
+    #####:  271:      cleanup_fatal ();
+call    0 never executed
+        -:  272:    }
+        -:  273:
+    #####:  274:  return bytes_read;
+        -:  275:}
+        -:  276:
+        -:  277:/* Initialize existing line record P. */
+        -:  278:
+        -:  279:static void
+function clear_line_control called 0 returned 0% blocks executed 0%
+    #####:  280:clear_line_control (struct line *p)
+        -:  281:{
+    #####:  282:  p->used = 0;
+    #####:  283:  p->insert_index = 0;
+    #####:  284:  p->retrieve_index = 0;
+    #####:  285:}
+        -:  286:
+        -:  287:/* Return a new, initialized line record. */
+        -:  288:
+        -:  289:static struct line *
+function new_line_control called 0 returned 0% blocks executed 0%
+    #####:  290:new_line_control (void)
+        -:  291:{
+    #####:  292:  struct line *p = xmalloc (sizeof *p);
+call    0 never executed
+        -:  293:
+    #####:  294:  p->next = nullptr;
+    #####:  295:  clear_line_control (p);
+call    0 never executed
+        -:  296:
+    #####:  297:  return p;
+        -:  298:}
+        -:  299:
+        -:  300:/* Record LINE_START, which is the address of the start of a line
+        -:  301:   of length LINE_LEN in the large buffer, in the lines buffer of B. */
+        -:  302:
+        -:  303:static void
+function keep_new_line called 0 returned 0% blocks executed 0%
+    #####:  304:keep_new_line (struct buffer_record *b, char *line_start, idx_t line_len)
+        -:  305:{
+        -:  306:  struct line *l;
+        -:  307:
+        -:  308:  /* If there is no existing area to keep line info, get some. */
+    #####:  309:  if (b->line_start == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  310:    b->line_start = b->curr_line = new_line_control ();
+call    0 never executed
+        -:  311:
+        -:  312:  /* If existing area for lines is full, get more. */
+    #####:  313:  if (b->curr_line->used == CTRL_SIZE)
+branch  0 never executed
+branch  1 never executed
+        -:  314:    {
+    #####:  315:      b->curr_line->next = new_line_control ();
+call    0 never executed
+    #####:  316:      b->curr_line = b->curr_line->next;
+        -:  317:    }
+        -:  318:
+    #####:  319:  l = b->curr_line;
+        -:  320:
+        -:  321:  /* Record the start of the line, and update counters. */
+    #####:  322:  l->starts[l->insert_index].str = line_start;
+    #####:  323:  l->starts[l->insert_index].len = line_len;
+    #####:  324:  l->used++;
+    #####:  325:  l->insert_index++;
+    #####:  326:}
+        -:  327:
+        -:  328:/* Scan the buffer in B for newline characters
+        -:  329:   and record the line start locations and lengths in B.
+        -:  330:   Return the number of lines found in this buffer.
+        -:  331:
+        -:  332:   There may be an incomplete line at the end of the buffer;
+        -:  333:   a pointer is kept to this area, which will be used when
+        -:  334:   the next buffer is filled. */
+        -:  335:
+        -:  336:static idx_t
+function record_line_starts called 0 returned 0% blocks executed 0%
+    #####:  337:record_line_starts (struct buffer_record *b)
+        -:  338:{
+        -:  339:  char *line_start;		/* Start of current line. */
+        -:  340:  idx_t lines;			/* Number of lines found. */
+        -:  341:  idx_t line_length;		/* Length of each line found. */
+        -:  342:
+    #####:  343:  if (b->bytes_used == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  344:    return 0;
+        -:  345:
+    #####:  346:  lines = 0;
+    #####:  347:  line_start = b->buffer;
+    #####:  348:  char *buffer_end = line_start + b->bytes_used;
+    #####:  349:  *buffer_end = '\n';
+        -:  350:
+        -:  351:  while (true)
+    #####:  352:    {
+    #####:  353:      char *line_end = rawmemchr (line_start, '\n');
+    #####:  354:      if (line_end == buffer_end)
+branch  0 never executed
+branch  1 never executed
+    #####:  355:        break;
+    #####:  356:      line_length = line_end - line_start + 1;
+    #####:  357:      keep_new_line (b, line_start, line_length);
+call    0 never executed
+    #####:  358:      line_start = line_end + 1;
+    #####:  359:      lines++;
+        -:  360:    }
+        -:  361:
+        -:  362:  /* Check for an incomplete last line. */
+    #####:  363:  idx_t bytes_left = buffer_end - line_start;
+    #####:  364:  if (bytes_left)
+branch  0 never executed
+branch  1 never executed
+        -:  365:    {
+    #####:  366:      if (have_read_eof)
+branch  0 never executed
+branch  1 never executed
+        -:  367:        {
+    #####:  368:          keep_new_line (b, line_start, bytes_left);
+call    0 never executed
+    #####:  369:          lines++;
+        -:  370:        }
+        -:  371:      else
+    #####:  372:        save_to_hold_area (ximemdup (line_start, bytes_left), bytes_left);
+call    0 never executed
+call    1 never executed
+        -:  373:    }
+        -:  374:
+    #####:  375:  b->num_lines = lines;
+    #####:  376:  b->first_available = b->start_line = last_line_number + 1;
+    #####:  377:  last_line_number += lines;
+        -:  378:
+    #####:  379:  return lines;
+        -:  380:}
+        -:  381:
+        -:  382:/* Work around <https://gcc.gnu.org/bugzilla/show_bug.cgi?id=109614>.  */
+        -:  383:#if 13 <= __GNUC__
+        -:  384:# pragma GCC diagnostic ignored "-Wanalyzer-mismatching-deallocation"
+        -:  385:# pragma GCC diagnostic ignored "-Wanalyzer-use-after-free"
+        -:  386:# pragma GCC diagnostic ignored "-Wanalyzer-use-of-uninitialized-value"
+        -:  387:#endif
+        -:  388:
+        -:  389:static void
+function free_buffer called 0 returned 0% blocks executed 0%
+    #####:  390:free_buffer (struct buffer_record *buf)
+        -:  391:{
+    #####:  392:  for (struct line *l = buf->line_start; l;)
+branch  0 never executed
+branch  1 never executed
+        -:  393:    {
+    #####:  394:      struct line *n = l->next;
+    #####:  395:      free (l);
+    #####:  396:      l = n;
+        -:  397:    }
+    #####:  398:  free (buf->buffer);
+    #####:  399:  free (buf);
+    #####:  400:}
+        -:  401:
+        -:  402:/* Return a new buffer of at least MINSIZE bytes.  */
+        -:  403:
+        -:  404:static ATTRIBUTE_DEALLOC (free_buffer, 1)
+        -:  405:struct buffer_record *
+function get_new_buffer called 0 returned 0% blocks executed 0%
+    #####:  406:get_new_buffer (idx_t min_size)
+        -:  407:{
+    #####:  408:  struct buffer_record *new_buffer = xmalloc (sizeof *new_buffer);
+call    0 never executed
+    #####:  409:  new_buffer->bytes_alloc = 0;
+    #####:  410:  new_buffer->buffer = xpalloc (nullptr, &new_buffer->bytes_alloc, min_size,
+call    0 never executed
+        -:  411:                                -1, 1);
+    #####:  412:  new_buffer->bytes_used = 0;
+    #####:  413:  new_buffer->start_line = new_buffer->first_available = last_line_number + 1;
+    #####:  414:  new_buffer->num_lines = 0;
+    #####:  415:  new_buffer->line_start = new_buffer->curr_line = nullptr;
+    #####:  416:  new_buffer->next = nullptr;
+        -:  417:
+    #####:  418:  return new_buffer;
+        -:  419:}
+        -:  420:
+        -:  421:/* Append buffer BUF to the linked list of buffers that contain
+        -:  422:   some data yet to be processed. */
+        -:  423:
+        -:  424:static void
+function save_buffer called 0 returned 0% blocks executed 0%
+    #####:  425:save_buffer (struct buffer_record *buf)
+        -:  426:{
+        -:  427:  struct buffer_record *p;
+        -:  428:
+    #####:  429:  buf->next = nullptr;
+    #####:  430:  buf->curr_line = buf->line_start;
+        -:  431:
+    #####:  432:  if (head == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  433:    head = buf;
+        -:  434:  else
+        -:  435:    {
+    #####:  436:      for (p = head; p->next; p = p->next)
+branch  0 never executed
+branch  1 never executed
+        -:  437:        /* Do nothing. */ ;
+    #####:  438:      p->next = buf;
+        -:  439:    }
+    #####:  440:}
+        -:  441:
+        -:  442:/* Fill a buffer of input.
+        -:  443:
+        -:  444:   Set the initial size of the buffer to a default.
+        -:  445:   Fill the buffer (from the hold area and input stream)
+        -:  446:   and find the individual lines.
+        -:  447:   If no lines are found (the buffer is too small to hold the next line),
+        -:  448:   release the current buffer (whose contents would have been put in the
+        -:  449:   hold area) and repeat the process with another large buffer until at least
+        -:  450:   one entire line has been read.
+        -:  451:
+        -:  452:   Return true if a new buffer was obtained, otherwise false
+        -:  453:   (in which case end-of-file must have been encountered). */
+        -:  454:
+        -:  455:static bool
+function load_buffer called 0 returned 0% blocks executed 0%
+    #####:  456:load_buffer (void)
+        -:  457:{
+    #####:  458:  if (have_read_eof)
+branch  0 never executed
+branch  1 never executed
+    #####:  459:    return false;
+        -:  460:
+        -:  461:  /* We must make the buffer at least as large as the amount of data
+        -:  462:     in the partial line left over from the last call,
+        -:  463:     plus room for a sentinel '\n'. */
+    #####:  464:  idx_t bytes_wanted = MAX (START_SIZE, hold_count + 1);
+        -:  465:
+        -:  466:  while (true)
+    #####:  467:    {
+    #####:  468:      struct buffer_record *b = get_new_buffer (bytes_wanted);
+call    0 never executed
+    #####:  469:      idx_t bytes_alloc = b->bytes_alloc;
+    #####:  470:      idx_t bytes_avail = bytes_alloc;
+    #####:  471:      char *p = b->buffer;
+        -:  472:
+        -:  473:      /* First check the 'holding' area for a partial line. */
+    #####:  474:      if (hold_count)
+branch  0 never executed
+branch  1 never executed
+        -:  475:        {
+    #####:  476:          p = mempcpy (p, hold_area, hold_count);
+    #####:  477:          b->bytes_used += hold_count;
+    #####:  478:          bytes_avail -= hold_count;
+    #####:  479:          hold_count = 0;
+        -:  480:        }
+        -:  481:
+    #####:  482:      b->bytes_used += read_input (p, bytes_avail - 1);
+call    0 never executed
+        -:  483:
+    #####:  484:      if (record_line_starts (b) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  485:        {
+    #####:  486:          save_buffer (b);
+call    0 never executed
+    #####:  487:          return true;
+        -:  488:        }
+        -:  489:
+    #####:  490:      free_buffer (b);
+call    0 never executed
+    #####:  491:      if (have_read_eof)
+branch  0 never executed
+branch  1 never executed
+    #####:  492:        return false;
+    #####:  493:      if (ckd_add (&bytes_wanted, bytes_alloc, bytes_alloc >> 1))
+branch  0 never executed
+branch  1 never executed
+    #####:  494:        xalloc_die ();
+call    0 never executed
+        -:  495:    }
+        -:  496:}
+        -:  497:
+        -:  498:/* Return the line number of the first line that has not yet been retrieved. */
+        -:  499:
+        -:  500:static intmax_t
+function get_first_line_in_buffer called 0 returned 0% blocks executed 0%
+    #####:  501:get_first_line_in_buffer (void)
+        -:  502:{
+    #####:  503:  if (head == nullptr && !load_buffer ())
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  504:    error (EXIT_FAILURE, errno, _("input disappeared"));
+call    0 never executed
+        -:  505:
+    #####:  506:  return head->first_available;
+        -:  507:}
+        -:  508:
+        -:  509:/* Return a pointer to the logical first line in the buffer and make the
+        -:  510:   next line the logical first line.
+        -:  511:   Return nullptr if there is no more input. */
+        -:  512:
+        -:  513:static struct cstring *
+function remove_line called 0 returned 0% blocks executed 0%
+    #####:  514:remove_line (void)
+        -:  515:{
+        -:  516:  /* If non-null, this is the buffer for which the previous call
+        -:  517:     returned the final line.  So now, presuming that line has been
+        -:  518:     processed, we can free the buffer and reset this pointer.  */
+        -:  519:  static struct buffer_record *prev_buf = nullptr;
+        -:  520:
+        -:  521:  struct cstring *line;		/* Return value. */
+        -:  522:  struct line *l;		/* For convenience. */
+        -:  523:
+    #####:  524:  if (prev_buf)
+branch  0 never executed
+branch  1 never executed
+        -:  525:    {
+    #####:  526:      free_buffer (prev_buf);
+call    0 never executed
+    #####:  527:      prev_buf = nullptr;
+        -:  528:    }
+        -:  529:
+    #####:  530:  if (head == nullptr && !load_buffer ())
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  531:    return nullptr;
+        -:  532:
+    #####:  533:  if (current_line < head->first_available)
+branch  0 never executed
+branch  1 never executed
+    #####:  534:    current_line = head->first_available;
+        -:  535:
+    #####:  536:  ++(head->first_available);
+        -:  537:
+    #####:  538:  l = head->curr_line;
+        -:  539:
+    #####:  540:  line = &l->starts[l->retrieve_index];
+        -:  541:
+        -:  542:  /* Advance index to next line. */
+    #####:  543:  if (++l->retrieve_index == l->used)
+branch  0 never executed
+branch  1 never executed
+        -:  544:    {
+        -:  545:      /* Go on to the next line record. */
+    #####:  546:      head->curr_line = l->next;
+    #####:  547:      if (head->curr_line == nullptr || head->curr_line->used == 0)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  548:        {
+        -:  549:          /* Go on to the next data block.
+        -:  550:             but first record the current one so we can free it
+        -:  551:             once the line we're returning has been processed.  */
+    #####:  552:          prev_buf = head;
+    #####:  553:          head = head->next;
+        -:  554:        }
+        -:  555:    }
+        -:  556:
+    #####:  557:  return line;
+        -:  558:}
+        -:  559:
+        -:  560:/* Search the buffers for line LINENUM, reading more input if necessary.
+        -:  561:   Return a pointer to the line, or nullptr if it is not found in the file. */
+        -:  562:
+        -:  563:static struct cstring *
+function find_line called 0 returned 0% blocks executed 0%
+    #####:  564:find_line (intmax_t linenum)
+        -:  565:{
+        -:  566:  struct buffer_record *b;
+        -:  567:
+    #####:  568:  if (head == nullptr && !load_buffer ())
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  569:    return nullptr;
+        -:  570:
+    #####:  571:  if (linenum < head->start_line)
+branch  0 never executed
+branch  1 never executed
+    #####:  572:    return nullptr;
+        -:  573:
+    #####:  574:  for (b = head;;)
+        -:  575:    {
+    #####:  576:      if (linenum < b->start_line + b->num_lines)
+branch  0 never executed
+branch  1 never executed
+        -:  577:        {
+        -:  578:          /* The line is in this buffer. */
+        -:  579:          struct line *l;
+        -:  580:          idx_t offset;	/* How far into the buffer the line is. */
+        -:  581:
+    #####:  582:          l = b->line_start;
+    #####:  583:          offset = linenum - b->start_line;
+        -:  584:          /* Find the control record. */
+    #####:  585:          while (offset >= CTRL_SIZE)
+branch  0 never executed
+branch  1 never executed
+        -:  586:            {
+    #####:  587:              l = l->next;
+    #####:  588:              offset -= CTRL_SIZE;
+        -:  589:            }
+    #####:  590:          return &l->starts[offset];
+        -:  591:        }
+    #####:  592:      if (b->next == nullptr && !load_buffer ())
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  593:        return nullptr;
+    #####:  594:      b = b->next;		/* Try the next data block. */
+        -:  595:    }
+        -:  596:}
+        -:  597:
+        -:  598:/* Return true if at least one more line is available for input. */
+        -:  599:
+        -:  600:static bool
+function no_more_lines called 0 returned 0% blocks executed 0%
+    #####:  601:no_more_lines (void)
+        -:  602:{
+    #####:  603:  return find_line (current_line + 1) == nullptr;
+call    0 never executed
+        -:  604:}
+        -:  605:
+        -:  606:/* Open NAME as standard input.  */
+        -:  607:
+        -:  608:static void
+function set_input_file called 0 returned 0% blocks executed 0%
+    #####:  609:set_input_file (char const *name)
+        -:  610:{
+    #####:  611:  if (! STREQ (name, "-") && fd_reopen (STDIN_FILENO, name, O_RDONLY, 0) < 0)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  612:    error (EXIT_FAILURE, errno, _("cannot open %s for reading"),
+call    0 never executed
+call    1 never executed
+        -:  613:           quoteaf (name));
+    #####:  614:}
+        -:  615:
+        -:  616:/* Write all lines from the beginning of the buffer up to, but
+        -:  617:   not including, line LAST_LINE, to the current output file.
+        -:  618:   If IGNORE is true, do not output lines selected here.
+        -:  619:   ARGNUM is the index in ARGV of the current pattern. */
+        -:  620:
+        -:  621:static void
+function write_to_file called 0 returned 0% blocks executed 0%
+    #####:  622:write_to_file (intmax_t last_line, bool ignore, int argnum)
+        -:  623:{
+        -:  624:  struct cstring *line;
+        -:  625:  intmax_t first_line;		/* First available input line. */
+        -:  626:  intmax_t lines;		/* Number of lines to output. */
+        -:  627:  intmax_t i;
+        -:  628:
+    #####:  629:  first_line = get_first_line_in_buffer ();
+call    0 never executed
+        -:  630:
+    #####:  631:  if (first_line > last_line)
+branch  0 never executed
+branch  1 never executed
+        -:  632:    {
+    #####:  633:      error (0, 0, _("%s: line number out of range"),
+call    0 never executed
+        -:  634:             quote (global_argv[argnum]));
+    #####:  635:      cleanup_fatal ();
+call    0 never executed
+        -:  636:    }
+        -:  637:
+    #####:  638:  lines = last_line - first_line;
+        -:  639:
+    #####:  640:  for (i = 0; i < lines; i++)
+branch  0 never executed
+branch  1 never executed
+        -:  641:    {
+    #####:  642:      line = remove_line ();
+call    0 never executed
+    #####:  643:      if (line == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  644:        {
+    #####:  645:          error (0, 0, _("%s: line number out of range"),
+call    0 never executed
+        -:  646:                 quote (global_argv[argnum]));
+    #####:  647:          cleanup_fatal ();
+call    0 never executed
+        -:  648:        }
+    #####:  649:      if (!ignore)
+branch  0 never executed
+branch  1 never executed
+    #####:  650:        save_line_to_file (line);
+call    0 never executed
+        -:  651:    }
+    #####:  652:}
+        -:  653:
+        -:  654:/* Output any lines left after all regexps have been processed. */
+        -:  655:
+        -:  656:static void
+function dump_rest_of_file called 0 returned 0% blocks executed 0%
+    #####:  657:dump_rest_of_file (void)
+        -:  658:{
+        -:  659:  struct cstring *line;
+        -:  660:
+    #####:  661:  while ((line = remove_line ()) != nullptr)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  662:    save_line_to_file (line);
+call    0 never executed
+    #####:  663:}
+        -:  664:
+        -:  665:/* Handle an attempt to read beyond EOF under the control of record P,
+        -:  666:   on iteration REPETITION if nonzero. */
+        -:  667:
+        -:  668:static void
+function handle_line_error called 0 returned 0% blocks executed 0%
+    #####:  669:handle_line_error (const struct control *p, intmax_t repetition)
+        -:  670:{
+        -:  671:  char buf[INT_BUFSIZE_BOUND (intmax_t)];
+        -:  672:
+    #####:  673:  fprintf (stderr, _("%s: %s: line number out of range"),
+call    0 never executed
+call    1 never executed
+    #####:  674:           program_name, quote (imaxtostr (p->lines_required, buf)));
+call    0 never executed
+    #####:  675:  if (repetition)
+branch  0 never executed
+branch  1 never executed
+    #####:  676:    fprintf (stderr, _(" on repetition %s\n"), imaxtostr (repetition, buf));
+call    0 never executed
+call    1 never executed
+        -:  677:  else
+    #####:  678:    fprintf (stderr, "\n");
+call    0 never executed
+        -:  679:
+    #####:  680:  cleanup_fatal ();
+        -:  681:}
+        -:  682:
+        -:  683:/* Determine the line number that marks the end of this file,
+        -:  684:   then get those lines and save them to the output file.
+        -:  685:   P is the control record.
+        -:  686:   REPETITION is the repetition number. */
+        -:  687:
+        -:  688:static void
+function process_line_count called 0 returned 0% blocks executed 0%
+    #####:  689:process_line_count (const struct control *p, intmax_t repetition)
+        -:  690:{
+        -:  691:  intmax_t linenum;
+    #####:  692:  intmax_t last_line_to_save = p->lines_required * (repetition + 1);
+        -:  693:
+    #####:  694:  create_output_file ();
+call    0 never executed
+        -:  695:
+        -:  696:  /* Ensure that the line number specified is not 1 greater than
+        -:  697:     the number of lines in the file.
+        -:  698:     When suppressing matched lines, check before the loop. */
+    #####:  699:  if (no_more_lines () && suppress_matched)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  700:    handle_line_error (p, repetition);
+call    0 never executed
+        -:  701:
+    #####:  702:  linenum = get_first_line_in_buffer ();
+call    0 never executed
+    #####:  703:  while (linenum++ < last_line_to_save)
+branch  0 never executed
+branch  1 never executed
+        -:  704:    {
+    #####:  705:      struct cstring *line = remove_line ();
+call    0 never executed
+    #####:  706:      if (line == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  707:        handle_line_error (p, repetition);
+call    0 never executed
+    #####:  708:      save_line_to_file (line);
+call    0 never executed
+        -:  709:    }
+        -:  710:
+    #####:  711:  close_output_file ();
+call    0 never executed
+        -:  712:
+    #####:  713:  if (suppress_matched)
+branch  0 never executed
+branch  1 never executed
+    #####:  714:    remove_line ();
+call    0 never executed
+        -:  715:
+        -:  716:  /* Ensure that the line number specified is not 1 greater than
+        -:  717:     the number of lines in the file. */
+    #####:  718:  if (no_more_lines () && !suppress_matched)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  719:    handle_line_error (p, repetition);
+call    0 never executed
+    #####:  720:}
+        -:  721:
+        -:  722:static void
+function regexp_error called 0 returned 0% blocks executed 0%
+    #####:  723:regexp_error (struct control *p, intmax_t repetition, bool ignore)
+        -:  724:{
+    #####:  725:  fprintf (stderr, _("%s: %s: match not found"),
+call    0 never executed
+    #####:  726:           program_name, quote (global_argv[p->argnum]));
+call    0 never executed
+        -:  727:
+    #####:  728:  if (repetition)
+branch  0 never executed
+branch  1 never executed
+        -:  729:    {
+        -:  730:      char buf[INT_BUFSIZE_BOUND (intmax_t)];
+    #####:  731:      fprintf (stderr, _(" on repetition %s\n"), imaxtostr (repetition, buf));
+call    0 never executed
+call    1 never executed
+        -:  732:    }
+        -:  733:  else
+    #####:  734:    fprintf (stderr, "\n");
+call    0 never executed
+        -:  735:
+    #####:  736:  if (!ignore)
+branch  0 never executed
+branch  1 never executed
+        -:  737:    {
+    #####:  738:      dump_rest_of_file ();
+call    0 never executed
+    #####:  739:      close_output_file ();
+call    0 never executed
+        -:  740:    }
+    #####:  741:  cleanup_fatal ();
+        -:  742:}
+        -:  743:
+        -:  744:/* Read the input until a line matches the regexp in P, outputting
+        -:  745:   it unless P->IGNORE is true.
+        -:  746:   REPETITION is this repeat-count; 0 means the first time. */
+        -:  747:
+        -:  748:static void
+function process_regexp called 0 returned 0% blocks executed 0%
+    #####:  749:process_regexp (struct control *p, intmax_t repetition)
+        -:  750:{
+        -:  751:  struct cstring *line;		/* From input file. */
+        -:  752:  idx_t line_len;		/* To make "$" in regexps work. */
+        -:  753:  intmax_t break_line;		/* First line number of next file. */
+    #####:  754:  bool ignore = p->ignore;	/* If true, skip this section. */
+        -:  755:  regoff_t ret;
+        -:  756:
+    #####:  757:  if (!ignore)
+branch  0 never executed
+branch  1 never executed
+    #####:  758:    create_output_file ();
+call    0 never executed
+        -:  759:
+        -:  760:  /* If there is no offset for the regular expression, or
+        -:  761:     it is positive, then it is not necessary to buffer the lines. */
+        -:  762:
+    #####:  763:  if (p->offset >= 0)
+branch  0 never executed
+branch  1 never executed
+        -:  764:    {
+        -:  765:      while (true)
+        -:  766:        {
+    #####:  767:          line = find_line (++current_line);
+call    0 never executed
+    #####:  768:          if (line == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  769:            {
+    #####:  770:              if (p->repeat_forever)
+branch  0 never executed
+branch  1 never executed
+        -:  771:                {
+    #####:  772:                  if (!ignore)
+branch  0 never executed
+branch  1 never executed
+        -:  773:                    {
+    #####:  774:                      dump_rest_of_file ();
+call    0 never executed
+    #####:  775:                      close_output_file ();
+call    0 never executed
+        -:  776:                    }
+    #####:  777:                  exit (EXIT_SUCCESS);
+call    0 never executed
+        -:  778:                }
+        -:  779:              else
+    #####:  780:                regexp_error (p, repetition, ignore);
+call    0 never executed
+        -:  781:            }
+    #####:  782:          line_len = line->len;
+    #####:  783:          if (line->str[line_len - 1] == '\n')
+branch  0 never executed
+branch  1 never executed
+    #####:  784:            line_len--;
+    #####:  785:          ret = re_search (&p->re_compiled, line->str, line_len,
+call    0 never executed
+        -:  786:                           0, line_len, nullptr);
+    #####:  787:          if (ret == -2)
+branch  0 never executed
+branch  1 never executed
+        -:  788:            {
+        -:  789:              error (0, 0, _("error in regular expression search"));
+    #####:  790:              cleanup_fatal ();
+call    0 never executed
+        -:  791:            }
+    #####:  792:          if (ret == -1)
+branch  0 never executed
+branch  1 never executed
+        -:  793:            {
+    #####:  794:              line = remove_line ();
+call    0 never executed
+    #####:  795:              if (!ignore)
+branch  0 never executed
+branch  1 never executed
+    #####:  796:                save_line_to_file (line);
+call    0 never executed
+        -:  797:            }
+        -:  798:          else
+    #####:  799:            break;
+        -:  800:        }
+        -:  801:    }
+        -:  802:  else
+        -:  803:    {
+        -:  804:      /* Buffer the lines. */
+        -:  805:      while (true)
+        -:  806:        {
+    #####:  807:          line = find_line (++current_line);
+call    0 never executed
+    #####:  808:          if (line == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  809:            {
+    #####:  810:              if (p->repeat_forever)
+branch  0 never executed
+branch  1 never executed
+        -:  811:                {
+    #####:  812:                  if (!ignore)
+branch  0 never executed
+branch  1 never executed
+        -:  813:                    {
+    #####:  814:                      dump_rest_of_file ();
+call    0 never executed
+    #####:  815:                      close_output_file ();
+call    0 never executed
+        -:  816:                    }
+    #####:  817:                  exit (EXIT_SUCCESS);
+call    0 never executed
+        -:  818:                }
+        -:  819:              else
+    #####:  820:                regexp_error (p, repetition, ignore);
+call    0 never executed
+        -:  821:            }
+    #####:  822:          line_len = line->len;
+    #####:  823:          if (line->str[line_len - 1] == '\n')
+branch  0 never executed
+branch  1 never executed
+    #####:  824:            line_len--;
+    #####:  825:          ret = re_search (&p->re_compiled, line->str, line_len,
+call    0 never executed
+        -:  826:                           0, line_len, nullptr);
+    #####:  827:          if (ret == -2)
+branch  0 never executed
+branch  1 never executed
+        -:  828:            {
+        -:  829:              error (0, 0, _("error in regular expression search"));
+    #####:  830:              cleanup_fatal ();
+call    0 never executed
+        -:  831:            }
+    #####:  832:          if (ret != -1)
+branch  0 never executed
+branch  1 never executed
+    #####:  833:            break;
+        -:  834:        }
+        -:  835:    }
+        -:  836:
+        -:  837:  /* Account for any offset from this regexp. */
+    #####:  838:  break_line = current_line + p->offset;
+        -:  839:
+    #####:  840:  write_to_file (break_line, ignore, p->argnum);
+call    0 never executed
+        -:  841:
+    #####:  842:  if (!ignore)
+branch  0 never executed
+branch  1 never executed
+    #####:  843:    close_output_file ();
+call    0 never executed
+        -:  844:
+    #####:  845:  if (p->offset > 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  846:    current_line = break_line;
+        -:  847:
+    #####:  848:  if (suppress_matched)
+branch  0 never executed
+branch  1 never executed
+    #####:  849:    remove_line ();
+call    0 never executed
+    #####:  850:}
+        -:  851:
+        -:  852:/* Split the input file according to the control records we have built. */
+        -:  853:
+        -:  854:static void
+function split_file called 0 returned 0% blocks executed 0%
+    #####:  855:split_file (void)
+        -:  856:{
+    #####:  857:  for (idx_t i = 0; i < control_used; i++)
+branch  0 never executed
+branch  1 never executed
+        -:  858:    {
+        -:  859:      intmax_t j;
+    #####:  860:      if (controls[i].regexpr)
+branch  0 never executed
+branch  1 never executed
+        -:  861:        {
+    #####:  862:          for (j = 0; (controls[i].repeat_forever
+    #####:  863:                       || j <= controls[i].repeat); j++)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  864:            process_regexp (&controls[i], j);
+call    0 never executed
+        -:  865:        }
+        -:  866:      else
+        -:  867:        {
+    #####:  868:          for (j = 0; (controls[i].repeat_forever
+    #####:  869:                       || j <= controls[i].repeat); j++)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  870:            process_line_count (&controls[i], j);
+call    0 never executed
+        -:  871:        }
+        -:  872:    }
+        -:  873:
+    #####:  874:  create_output_file ();
+call    0 never executed
+    #####:  875:  dump_rest_of_file ();
+call    0 never executed
+    #####:  876:  close_output_file ();
+call    0 never executed
+    #####:  877:}
+        -:  878:
+        -:  879:/* Return the name of output file number NUM.
+        -:  880:
+        -:  881:   This function is called from a signal handler, so it should invoke
+        -:  882:   only reentrant functions that are async-signal-safe.  POSIX does
+        -:  883:   not guarantee this for the functions called below, but we don't
+        -:  884:   know of any hosts where this implementation isn't safe.  */
+        -:  885:
+        -:  886:static char *
+function make_filename called 0 returned 0% blocks executed 0%
+    #####:  887:make_filename (int num)
+        -:  888:{
+    #####:  889:  strcpy (filename_space, prefix);
+    #####:  890:  if (suffix)
+branch  0 never executed
+branch  1 never executed
+    #####:  891:    sprintf (filename_space + strlen (prefix), suffix, num);
+        -:  892:  else
+    #####:  893:    sprintf (filename_space + strlen (prefix), "%0*d", digits, num);
+    #####:  894:  return filename_space;
+        -:  895:}
+        -:  896:
+        -:  897:/* Create the next output file. */
+        -:  898:
+        -:  899:static void
+function create_output_file called 0 returned 0% blocks executed 0%
+    #####:  900:create_output_file (void)
+        -:  901:{
+    #####:  902:  int nfiles = files_created;
+        -:  903:  bool fopen_ok;
+        -:  904:  int fopen_errno;
+        -:  905:
+    #####:  906:  output_filename = make_filename (nfiles);
+call    0 never executed
+        -:  907:
+    #####:  908:  if (nfiles == INT_MAX)
+branch  0 never executed
+branch  1 never executed
+        -:  909:    {
+    #####:  910:      fopen_ok = false;
+    #####:  911:      fopen_errno = EOVERFLOW;
+        -:  912:    }
+        -:  913:  else
+        -:  914:    {
+        -:  915:      /* Create the output file in a critical section, to avoid races.  */
+        -:  916:      sigset_t oldset;
+    #####:  917:      sigprocmask (SIG_BLOCK, &caught_signals, &oldset);
+call    0 never executed
+    #####:  918:      output_stream = fopen (output_filename, "w");
+call    0 never executed
+    #####:  919:      fopen_ok = (output_stream != nullptr);
+    #####:  920:      fopen_errno = errno;
+    #####:  921:      files_created = nfiles + fopen_ok;
+    #####:  922:      sigprocmask (SIG_SETMASK, &oldset, nullptr);
+call    0 never executed
+        -:  923:    }
+        -:  924:
+    #####:  925:  if (! fopen_ok)
+branch  0 never executed
+branch  1 never executed
+        -:  926:    {
+    #####:  927:      error (0, fopen_errno, "%s", quotef (output_filename));
+call    0 never executed
+    #####:  928:      cleanup_fatal ();
+call    0 never executed
+        -:  929:    }
+    #####:  930:  bytes_written = 0;
+    #####:  931:}
+        -:  932:
+        -:  933:/* If requested, delete all the files we have created.  This function
+        -:  934:   must be called only from critical sections.  */
+        -:  935:
+        -:  936:static void
+function delete_all_files called 0 returned 0% blocks executed 0%
+    #####:  937:delete_all_files (bool in_signal_handler)
+        -:  938:{
+    #####:  939:  if (! remove_files)
+branch  0 never executed
+branch  1 never executed
+    #####:  940:    return;
+        -:  941:
+    #####:  942:  for (int i = files_created; 0 <= --i; )
+branch  0 never executed
+branch  1 never executed
+        -:  943:    {
+    #####:  944:      char const *name = make_filename (i);
+call    0 never executed
+    #####:  945:      if (unlink (name) != 0 && errno != ENOENT && !in_signal_handler)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+    #####:  946:        error (0, errno, "%s", quotef (name));
+call    0 never executed
+        -:  947:    }
+        -:  948:
+    #####:  949:  files_created = 0;
+        -:  950:}
+        -:  951:
+        -:  952:/* Close the current output file and print the count
+        -:  953:   of characters in this file. */
+        -:  954:
+        -:  955:static void
+function close_output_file called 0 returned 0% blocks executed 0%
+    #####:  956:close_output_file (void)
+        -:  957:{
+    #####:  958:  if (output_stream)
+branch  0 never executed
+branch  1 never executed
+        -:  959:    {
+    #####:  960:      if (ferror (output_stream))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  961:        {
+    #####:  962:          error (0, 0, _("write error for %s"), quoteaf (output_filename));
+call    0 never executed
+    #####:  963:          output_stream = nullptr;
+    #####:  964:          cleanup_fatal ();
+call    0 never executed
+        -:  965:        }
+    #####:  966:      if (fclose (output_stream) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  967:        {
+    #####:  968:          error (0, errno, "%s", quotef (output_filename));
+call    0 never executed
+    #####:  969:          output_stream = nullptr;
+    #####:  970:          cleanup_fatal ();
+call    0 never executed
+        -:  971:        }
+    #####:  972:      if (bytes_written == 0 && elide_empty_files)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  973:        {
+        -:  974:          sigset_t oldset;
+        -:  975:          bool unlink_ok;
+        -:  976:          int unlink_errno;
+        -:  977:
+        -:  978:          /* Remove the output file in a critical section, to avoid races.  */
+    #####:  979:          sigprocmask (SIG_BLOCK, &caught_signals, &oldset);
+call    0 never executed
+    #####:  980:          unlink_ok = (unlink (output_filename) == 0);
+call    0 never executed
+    #####:  981:          unlink_errno = errno;
+    #####:  982:          files_created--;
+    #####:  983:          sigprocmask (SIG_SETMASK, &oldset, nullptr);
+call    0 never executed
+        -:  984:
+    #####:  985:          if (! unlink_ok && unlink_errno != ENOENT)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  986:            error (0, unlink_errno, "%s", quotef (output_filename));
+call    0 never executed
+        -:  987:        }
+        -:  988:      else
+        -:  989:        {
+    #####:  990:          if (!suppress_count)
+branch  0 never executed
+branch  1 never executed
+        -:  991:            {
+        -:  992:              char buf[INT_BUFSIZE_BOUND (intmax_t)];
+    #####:  993:              fprintf (stdout, "%s\n", imaxtostr (bytes_written, buf));
+call    0 never executed
+call    1 never executed
+        -:  994:            }
+        -:  995:        }
+    #####:  996:      output_stream = nullptr;
+        -:  997:    }
+    #####:  998:}
+        -:  999:
+        -: 1000:/* Save line LINE to the output file and
+        -: 1001:   increment the character count for the current file. */
+        -: 1002:
+        -: 1003:static void
+function save_line_to_file called 0 returned 0% blocks executed 0%
+    #####: 1004:save_line_to_file (const struct cstring *line)
+        -: 1005:{
+    #####: 1006:  idx_t l = fwrite (line->str, sizeof (char), line->len, output_stream);
+call    0 never executed
+    #####: 1007:  if (l != line->len)
+branch  0 never executed
+branch  1 never executed
+        -: 1008:    {
+    #####: 1009:      error (0, errno, _("write error for %s"), quoteaf (output_filename));
+call    0 never executed
+    #####: 1010:      output_stream = nullptr;
+    #####: 1011:      cleanup_fatal ();
+call    0 never executed
+        -: 1012:    }
+    #####: 1013:  bytes_written += line->len;
+    #####: 1014:}
+        -: 1015:
+        -: 1016:/* Return a new, initialized control record. */
+        -: 1017:
+        -: 1018:static struct control *
+function new_control_record called 0 returned 0% blocks executed 0%
+    #####: 1019:new_control_record (void)
+        -: 1020:{
+        -: 1021:  static idx_t control_allocated = 0; /* Total space allocated. */
+        -: 1022:  struct control *p;
+        -: 1023:
+    #####: 1024:  if (control_used == control_allocated)
+branch  0 never executed
+branch  1 never executed
+    #####: 1025:    controls = xpalloc (controls, &control_allocated, 1, -1, sizeof *controls);
+call    0 never executed
+    #####: 1026:  p = &controls[control_used++];
+    #####: 1027:  p->regexpr = false;
+    #####: 1028:  p->repeat = 0;
+    #####: 1029:  p->repeat_forever = false;
+    #####: 1030:  p->lines_required = 0;
+    #####: 1031:  p->offset = 0;
+    #####: 1032:  return p;
+        -: 1033:}
+        -: 1034:
+        -: 1035:/* Check if there is a numeric offset after a regular expression.
+        -: 1036:   STR is the entire command line argument.
+        -: 1037:   P is the control record for this regular expression.
+        -: 1038:   NUM is the numeric part of STR. */
+        -: 1039:
+        -: 1040:static void
+function check_for_offset called 0 returned 0% blocks executed 0%
+    #####: 1041:check_for_offset (struct control *p, char const *str, char const *num)
+        -: 1042:{
+    #####: 1043:  if (xstrtoimax (num, nullptr, 10, &p->offset, "") != LONGINT_OK)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1044:    error (EXIT_FAILURE, 0, _("%s: integer expected after delimiter"),
+call    0 never executed
+call    1 never executed
+        -: 1045:           quote (str));
+    #####: 1046:}
+        -: 1047:
+        -: 1048:/* Given that the first character of command line arg STR is '{',
+        -: 1049:   make sure that the rest of the string is a valid repeat count
+        -: 1050:   and store its value in P.
+        -: 1051:   ARGNUM is the ARGV index of STR. */
+        -: 1052:
+        -: 1053:static void
+function parse_repeat_count called 0 returned 0% blocks executed 0%
+    #####: 1054:parse_repeat_count (int argnum, struct control *p, char *str)
+        -: 1055:{
+        -: 1056:  char *end;
+        -: 1057:
+    #####: 1058:  end = str + strlen (str) - 1;
+    #####: 1059:  if (*end != '}')
+branch  0 never executed
+branch  1 never executed
+    #####: 1060:    error (EXIT_FAILURE, 0, _("%s: '}' is required in repeat count"),
+call    0 never executed
+call    1 never executed
+        -: 1061:           quote (str));
+    #####: 1062:  *end = '\0';
+        -: 1063:
+    #####: 1064:  if (str + 1 == end - 1 && *(str + 1) == '*')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1065:    p->repeat_forever = true;
+        -: 1066:  else
+        -: 1067:    {
+        -: 1068:      uintmax_t val;
+    #####: 1069:      if (xstrtoumax (str + 1, nullptr, 10, &val, "") != LONGINT_OK
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1070:          || INTMAX_MAX < val)
+branch  0 never executed
+branch  1 never executed
+        -: 1071:        {
+    #####: 1072:          error (EXIT_FAILURE, 0,
+call    0 never executed
+call    1 never executed
+        -: 1073:                 _("%s}: integer required between '{' and '}'"),
+        -: 1074:                 quote (global_argv[argnum]));
+        -: 1075:        }
+    #####: 1076:      p->repeat = val;
+        -: 1077:    }
+        -: 1078:
+    #####: 1079:  *end = '}';
+    #####: 1080:}
+        -: 1081:
+        -: 1082:/* Extract the regular expression from STR and check for a numeric offset.
+        -: 1083:   STR should start with the regexp delimiter character.
+        -: 1084:   Return a new control record for the regular expression.
+        -: 1085:   ARGNUM is the ARGV index of STR.
+        -: 1086:   Unless IGNORE is true, mark these lines for output. */
+        -: 1087:
+        -: 1088:static struct control *
+function extract_regexp called 0 returned 0% blocks executed 0%
+    #####: 1089:extract_regexp (int argnum, bool ignore, char const *str)
+        -: 1090:{
+        -: 1091:  idx_t len;			/* Number of bytes in this regexp. */
+    #####: 1092:  char delim = *str;
+        -: 1093:  char const *closing_delim;
+        -: 1094:  struct control *p;
+        -: 1095:  char const *err;
+        -: 1096:
+    #####: 1097:  closing_delim = strrchr (str + 1, delim);
+    #####: 1098:  if (closing_delim == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####: 1099:    error (EXIT_FAILURE, 0,
+call    0 never executed
+        -: 1100:           _("%s: closing delimiter '%c' missing"), str, delim);
+        -: 1101:
+    #####: 1102:  len = closing_delim - str - 1;
+    #####: 1103:  p = new_control_record ();
+call    0 never executed
+    #####: 1104:  p->argnum = argnum;
+    #####: 1105:  p->ignore = ignore;
+        -: 1106:
+    #####: 1107:  p->regexpr = true;
+    #####: 1108:  p->re_compiled.buffer = nullptr;
+    #####: 1109:  p->re_compiled.allocated = 0;
+    #####: 1110:  p->re_compiled.fastmap = xmalloc (UCHAR_MAX + 1);
+call    0 never executed
+    #####: 1111:  p->re_compiled.translate = nullptr;
+    #####: 1112:  re_syntax_options =
+        -: 1113:    RE_SYNTAX_POSIX_BASIC & ~RE_CONTEXT_INVALID_DUP & ~RE_NO_EMPTY_RANGES;
+    #####: 1114:  err = re_compile_pattern (str + 1, len, &p->re_compiled);
+call    0 never executed
+    #####: 1115:  if (err)
+branch  0 never executed
+branch  1 never executed
+        -: 1116:    {
+    #####: 1117:      error (0, 0, _("%s: invalid regular expression: %s"), quote (str), err);
+call    0 never executed
+    #####: 1118:      cleanup_fatal ();
+call    0 never executed
+        -: 1119:    }
+        -: 1120:
+    #####: 1121:  if (closing_delim[1])
+branch  0 never executed
+branch  1 never executed
+    #####: 1122:    check_for_offset (p, str, closing_delim + 1);
+call    0 never executed
+        -: 1123:
+    #####: 1124:  return p;
+        -: 1125:}
+        -: 1126:
+        -: 1127:/* Extract the break patterns from args START through ARGC - 1 of ARGV.
+        -: 1128:   After each pattern, check if the next argument is a repeat count. */
+        -: 1129:
+        -: 1130:static void
+function parse_patterns called 0 returned 0% blocks executed 0%
+    #####: 1131:parse_patterns (int argc, int start, char **argv)
+        -: 1132:{
+        -: 1133:  struct control *p;		/* New control record created. */
+        -: 1134:  static intmax_t last_val = 0;
+        -: 1135:
+    #####: 1136:  for (int i = start; i < argc; i++)
+branch  0 never executed
+branch  1 never executed
+        -: 1137:    {
+    #####: 1138:      if (*argv[i] == '/' || *argv[i] == '%')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1139:        {
+    #####: 1140:          p = extract_regexp (i, *argv[i] == '%', argv[i]);
+call    0 never executed
+        -: 1141:        }
+        -: 1142:      else
+        -: 1143:        {
+    #####: 1144:          p = new_control_record ();
+call    0 never executed
+    #####: 1145:          p->argnum = i;
+        -: 1146:
+        -: 1147:          uintmax_t val;
+    #####: 1148:          if (xstrtoumax (argv[i], nullptr, 10, &val, "") != LONGINT_OK
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1149:              || INTMAX_MAX < val)
+branch  0 never executed
+branch  1 never executed
+    #####: 1150:            error (EXIT_FAILURE, 0, _("%s: invalid pattern"), quote (argv[i]));
+call    0 never executed
+call    1 never executed
+    #####: 1151:          if (val == 0)
+branch  0 never executed
+branch  1 never executed
+    #####: 1152:            error (EXIT_FAILURE, 0,
+call    0 never executed
+        -: 1153:                   _("%s: line number must be greater than zero"), argv[i]);
+    #####: 1154:          if (val < last_val)
+branch  0 never executed
+branch  1 never executed
+        -: 1155:            {
+        -: 1156:              char buf[INT_BUFSIZE_BOUND (intmax_t)];
+    #####: 1157:              error (EXIT_FAILURE, 0,
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -: 1158:                     _("line number %s is smaller than preceding line number,"
+        -: 1159:                       " %s"),
+        -: 1160:                     quote (argv[i]), imaxtostr (last_val, buf));
+        -: 1161:            }
+        -: 1162:
+    #####: 1163:          if (val == last_val)
+branch  0 never executed
+branch  1 never executed
+    #####: 1164:            error (0, 0,
+call    0 never executed
+        -: 1165:           _("warning: line number %s is the same as preceding line number"),
+        -: 1166:                   quote (argv[i]));
+        -: 1167:
+    #####: 1168:          last_val = val;
+        -: 1169:
+    #####: 1170:          p->lines_required = val;
+        -: 1171:        }
+        -: 1172:
+    #####: 1173:      if (i + 1 < argc && *argv[i + 1] == '{')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1174:        {
+        -: 1175:          /* We have a repeat count. */
+    #####: 1176:          i++;
+    #####: 1177:          parse_repeat_count (i, p, argv[i]);
+call    0 never executed
+        -: 1178:        }
+        -: 1179:    }
+    #####: 1180:}
+        -: 1181:
+        -: 1182:
+        -: 1183:
+        -: 1184:/* Names for the printf format flags ' and #.  These can be ORed together.  */
+        -: 1185:enum { FLAG_THOUSANDS = 1, FLAG_ALTERNATIVE = 2 };
+        -: 1186:
+        -: 1187:/* Scan the printf format flags in FORMAT, storing info about the
+        -: 1188:   flags into *FLAGS_PTR.  Return the number of flags found.  */
+        -: 1189:static idx_t
+function get_format_flags called 0 returned 0% blocks executed 0%
+    #####: 1190:get_format_flags (char const *format, int *flags_ptr)
+        -: 1191:{
+    #####: 1192:  int flags = 0;
+        -: 1193:
+    #####: 1194:  for (idx_t count = 0; ; count++)
+        -: 1195:    {
+    #####: 1196:      switch (format[count])
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1197:        {
+    #####: 1198:        case '-':
+        -: 1199:        case '0':
+    #####: 1200:          break;
+        -: 1201:
+    #####: 1202:        case '\'':
+    #####: 1203:          flags |= FLAG_THOUSANDS;
+    #####: 1204:          break;
+        -: 1205:
+    #####: 1206:        case '#':
+    #####: 1207:          flags |= FLAG_ALTERNATIVE;
+    #####: 1208:          break;
+        -: 1209:
+    #####: 1210:        default:
+    #####: 1211:          *flags_ptr = flags;
+    #####: 1212:          return count;
+        -: 1213:        }
+        -: 1214:    }
+        -: 1215:}
+        -: 1216:
+        -: 1217:/* Check that the printf format conversion specifier *FORMAT is valid
+        -: 1218:   and compatible with FLAGS.  Change it to 'd' if it is 'u',
+        -: 1219:   since the format will be used with a signed value.  */
+        -: 1220:static void
+function check_format_conv_type called 0 returned 0% blocks executed 0%
+    #####: 1221:check_format_conv_type (char *format, int flags)
+        -: 1222:{
+    #####: 1223:  unsigned char ch = *format;
+    #####: 1224:  int compatible_flags = FLAG_THOUSANDS;
+        -: 1225:
+    #####: 1226:  switch (ch)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+        -: 1227:    {
+    #####: 1228:    case 'd':
+        -: 1229:    case 'i':
+    #####: 1230:      break;
+        -: 1231:
+    #####: 1232:    case 'u':
+    #####: 1233:      *format = 'd';
+    #####: 1234:      break;
+        -: 1235:
+    #####: 1236:    case 'o':
+        -: 1237:    case 'x':
+        -: 1238:    case 'X':
+    #####: 1239:      compatible_flags = FLAG_ALTERNATIVE;
+    #####: 1240:      break;
+        -: 1241:
+    #####: 1242:    case 0:
+    #####: 1243:      error (EXIT_FAILURE, 0, _("missing conversion specifier in suffix"));
+call    0 never executed
+        -: 1244:
+    #####: 1245:    default:
+    #####: 1246:      if (isprint (ch))
+branch  0 never executed
+branch  1 never executed
+    #####: 1247:        error (EXIT_FAILURE, 0,
+call    0 never executed
+        -: 1248:               _("invalid conversion specifier in suffix: %c"), ch);
+        -: 1249:      else
+    #####: 1250:        error (EXIT_FAILURE, 0,
+call    0 never executed
+        -: 1251:               _("invalid conversion specifier in suffix: \\%.3o"), ch);
+        -: 1252:    }
+        -: 1253:
+    #####: 1254:  if (flags & ~ compatible_flags)
+branch  0 never executed
+branch  1 never executed
+    #####: 1255:    error (EXIT_FAILURE, 0,
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -: 1256:           _("invalid flags in conversion specification: %%%c%c"),
+        -: 1257:           (flags & ~ compatible_flags & FLAG_ALTERNATIVE ? '#' : '\''), ch);
+    #####: 1258:}
+        -: 1259:
+        -: 1260:/* Return the maximum number of bytes that can be generated by
+        -: 1261:   applying FORMAT to an int value.  If the format is
+        -: 1262:   invalid, diagnose the problem and exit.  */
+        -: 1263:static idx_t
+function max_out called 0 returned 0% blocks executed 0%
+    #####: 1264:max_out (char *format)
+        -: 1265:{
+    #####: 1266:  bool percent = false;
+        -: 1267:
+    #####: 1268:  for (char *f = format; *f; f++)
+branch  0 never executed
+branch  1 never executed
+    #####: 1269:    if (*f == '%' && *++f != '%')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1270:      {
+    #####: 1271:        if (percent)
+branch  0 never executed
+branch  1 never executed
+    #####: 1272:          error (EXIT_FAILURE, 0,
+call    0 never executed
+        -: 1273:                 _("too many %% conversion specifications in suffix"));
+    #####: 1274:        percent = true;
+        -: 1275:        int flags;
+    #####: 1276:        f += get_format_flags (f, &flags);
+call    0 never executed
+    #####: 1277:        while (ISDIGIT (*f))
+branch  0 never executed
+branch  1 never executed
+    #####: 1278:          f++;
+    #####: 1279:        if (*f == '.')
+branch  0 never executed
+branch  1 never executed
+    #####: 1280:          while (ISDIGIT (*++f))
+branch  0 never executed
+branch  1 never executed
+    #####: 1281:            continue;
+    #####: 1282:        check_format_conv_type (f, flags);
+call    0 never executed
+        -: 1283:      }
+        -: 1284:
+    #####: 1285:  if (! percent)
+branch  0 never executed
+branch  1 never executed
+    #####: 1286:    error (EXIT_FAILURE, 0,
+call    0 never executed
+        -: 1287:           _("missing %% conversion specification in suffix"));
+        -: 1288:
+    #####: 1289:  int maxlen = snprintf (nullptr, 0, format, INT_MAX);
+    #####: 1290:  if (maxlen < 0)
+branch  0 never executed
+branch  1 never executed
+    #####: 1291:    xalloc_die ();
+call    0 never executed
+    #####: 1292:  return maxlen;
+        -: 1293:}
+        -: 1294:
+        -: 1295:int
+function main called 4 returned 0% blocks executed 32%
+        4: 1296:main (int argc, char **argv)
+        -: 1297:{
+        -: 1298:  int optc;
+        -: 1299:
+        -: 1300:  initialize_main (&argc, &argv);
+        4: 1301:  set_program_name (argv[0]);
+call    0 returned 100%
+        4: 1302:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -: 1303:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -: 1304:  textdomain (PACKAGE);
+        -: 1305:
+        4: 1306:  atexit (close_stdout);
+call    0 returned 100%
+        -: 1307:
+        4: 1308:  global_argv = argv;
+        4: 1309:  controls = nullptr;
+        4: 1310:  control_used = 0;
+        4: 1311:  suppress_count = false;
+        4: 1312:  remove_files = true;
+        4: 1313:  suppress_matched = false;
+        4: 1314:  prefix = DEFAULT_PREFIX;
+        -: 1315:
+        4: 1316:  while ((optc = getopt_long (argc, argv, "f:b:kn:sqz", longopts, nullptr))
+call    0 returned 100%
+        4: 1317:         != -1)
+branch  0 taken 25%
+branch  1 taken 75% (fallthrough)
+        1: 1318:    switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 100%
+        -: 1319:      {
+    #####: 1320:      case 'f':
+    #####: 1321:        prefix = optarg;
+    #####: 1322:        break;
+        -: 1323:
+    #####: 1324:      case 'b':
+    #####: 1325:        suffix = optarg;
+    #####: 1326:        break;
+        -: 1327:
+    #####: 1328:      case 'k':
+    #####: 1329:        remove_files = false;
+    #####: 1330:        break;
+        -: 1331:
+    #####: 1332:      case 'n':
+    #####: 1333:        digits = xdectoimax (optarg, 0, MIN (INT_MAX, IDX_MAX), "",
+call    0 never executed
+        -: 1334:                             _("invalid number"), 0);
+    #####: 1335:        break;
+        -: 1336:
+    #####: 1337:      case 's':
+        -: 1338:      case 'q':
+    #####: 1339:        suppress_count = true;
+    #####: 1340:        break;
+        -: 1341:
+    #####: 1342:      case 'z':
+    #####: 1343:        elide_empty_files = true;
+    #####: 1344:        break;
+        -: 1345:
+    #####: 1346:      case SUPPRESS_MATCHED_OPTION:
+    #####: 1347:        suppress_matched = true;
+    #####: 1348:        break;
+        -: 1349:
+    #####: 1350:      case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -: 1351:
+    #####: 1352:      case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+        -: 1353:
+        1: 1354:      default:
+        1: 1355:        usage (EXIT_FAILURE);
+call    0 returned 0%
+        -: 1356:      }
+        -: 1357:
+        3: 1358:  if (argc - optind < 2)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -: 1359:    {
+        3: 1360:      if (argc <= optind)
+branch  0 taken 33% (fallthrough)
+branch  1 taken 67%
+        -: 1361:        error (0, 0, _("missing operand"));
+        -: 1362:      else
+        2: 1363:        error (0, 0, _("missing operand after %s"), quote (argv[argc - 1]));
+call    0 returned 100%
+        3: 1364:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -: 1365:    }
+        -: 1366:
+    #####: 1367:  idx_t prefix_len = strlen (prefix);
+    #####: 1368:  idx_t max_digit_string_len
+        -: 1369:    = (suffix
+    #####: 1370:       ? max_out (suffix)
+call    0 never executed
+    #####: 1371:       : MAX (INT_STRLEN_BOUND (int), digits));
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1372:  idx_t filename_size;
+    #####: 1373:  if (ckd_add (&filename_size, prefix_len, max_digit_string_len + 1))
+branch  0 never executed
+branch  1 never executed
+    #####: 1374:    xalloc_die ();
+call    0 never executed
+    #####: 1375:  filename_space = ximalloc (filename_size);
+call    0 never executed
+        -: 1376:
+    #####: 1377:  set_input_file (argv[optind++]);
+call    0 never executed
+        -: 1378:
+    #####: 1379:  parse_patterns (argc, optind, argv);
+call    0 never executed
+        -: 1380:
+        -: 1381:  {
+        -: 1382:    int i;
+        -: 1383:    static int const sig[] =
+        -: 1384:      {
+        -: 1385:        /* The usual suspects.  */
+        -: 1386:        SIGALRM, SIGHUP, SIGINT, SIGPIPE, SIGQUIT, SIGTERM,
+        -: 1387:#ifdef SIGPOLL
+        -: 1388:        SIGPOLL,
+        -: 1389:#endif
+        -: 1390:#ifdef SIGPROF
+        -: 1391:        SIGPROF,
+        -: 1392:#endif
+        -: 1393:#ifdef SIGVTALRM
+        -: 1394:        SIGVTALRM,
+        -: 1395:#endif
+        -: 1396:#ifdef SIGXCPU
+        -: 1397:        SIGXCPU,
+        -: 1398:#endif
+        -: 1399:#ifdef SIGXFSZ
+        -: 1400:        SIGXFSZ,
+        -: 1401:#endif
+        -: 1402:      };
+        -: 1403:    enum { nsigs = ARRAY_CARDINALITY (sig) };
+        -: 1404:
+        -: 1405:    struct sigaction act;
+        -: 1406:
+    #####: 1407:    sigemptyset (&caught_signals);
+call    0 never executed
+    #####: 1408:    for (i = 0; i < nsigs; i++)
+branch  0 never executed
+branch  1 never executed
+        -: 1409:      {
+    #####: 1410:        sigaction (sig[i], nullptr, &act);
+call    0 never executed
+    #####: 1411:        if (act.sa_handler != SIG_IGN)
+branch  0 never executed
+branch  1 never executed
+    #####: 1412:          sigaddset (&caught_signals, sig[i]);
+call    0 never executed
+        -: 1413:      }
+        -: 1414:
+    #####: 1415:    act.sa_handler = interrupt_handler;
+    #####: 1416:    act.sa_mask = caught_signals;
+    #####: 1417:    act.sa_flags = 0;
+        -: 1418:
+    #####: 1419:    for (i = 0; i < nsigs; i++)
+branch  0 never executed
+branch  1 never executed
+    #####: 1420:      if (sigismember (&caught_signals, sig[i]))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1421:        sigaction (sig[i], &act, nullptr);
+call    0 never executed
+        -: 1422:  }
+        -: 1423:
+    #####: 1424:  split_file ();
+call    0 never executed
+        -: 1425:
+    #####: 1426:  if (close (STDIN_FILENO) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1427:    {
+    #####: 1428:      error (0, errno, _("read error"));
+    #####: 1429:      cleanup_fatal ();
+call    0 never executed
+        -: 1430:    }
+        -: 1431:
+    #####: 1432:  return EXIT_SUCCESS;
+        -: 1433:}
+        -: 1434:
+        -: 1435:void
+function usage called 4 returned 0% blocks executed 21%
+        4: 1436:usage (int status)
+        -: 1437:{
+        4: 1438:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        4: 1439:    emit_try_help ();
+call    0 returned 100%
+        -: 1440:  else
+        -: 1441:    {
+    #####: 1442:      printf (_("\
+call    0 never executed
+        -: 1443:Usage: %s [OPTION]... FILE PATTERN...\n\
+        -: 1444:"),
+        -: 1445:              program_name);
+    #####: 1446:      fputs (_("\
+call    0 never executed
+        -: 1447:Output pieces of FILE separated by PATTERN(s) to files 'xx00', 'xx01', ...,\n\
+        -: 1448:and output byte counts of each piece to standard output.\n\
+        -: 1449:"), stdout);
+    #####: 1450:       fputs (_("\
+call    0 never executed
+        -: 1451:\n\
+        -: 1452:Read standard input if FILE is -\n\
+        -: 1453:"), stdout);
+        -: 1454:
+    #####: 1455:      emit_mandatory_arg_note ();
+call    0 never executed
+        -: 1456:
+    #####: 1457:      fputs (_("\
+call    0 never executed
+        -: 1458:  -b, --suffix-format=FORMAT  use sprintf FORMAT instead of %02d\n\
+        -: 1459:  -f, --prefix=PREFIX        use PREFIX instead of 'xx'\n\
+        -: 1460:  -k, --keep-files           do not remove output files on errors\n\
+        -: 1461:"), stdout);
+    #####: 1462:      fputs (_("\
+call    0 never executed
+        -: 1463:      --suppress-matched     suppress the lines matching PATTERN\n\
+        -: 1464:"), stdout);
+    #####: 1465:      fputs (_("\
+call    0 never executed
+        -: 1466:  -n, --digits=DIGITS        use specified number of digits instead of 2\n\
+        -: 1467:  -s, --quiet, --silent      do not print counts of output file sizes\n\
+        -: 1468:  -z, --elide-empty-files    suppress empty output files\n\
+        -: 1469:"), stdout);
+    #####: 1470:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####: 1471:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####: 1472:      fputs (_("\
+call    0 never executed
+        -: 1473:\n\
+        -: 1474:Each PATTERN may be:\n\
+        -: 1475:  INTEGER            copy up to but not including specified line number\n\
+        -: 1476:  /REGEXP/[OFFSET]   copy up to but not including a matching line\n\
+        -: 1477:  %REGEXP%[OFFSET]   skip to, but not including a matching line\n\
+        -: 1478:  {INTEGER}          repeat the previous pattern specified number of times\n\
+        -: 1479:  {*}                repeat the previous pattern as many times as possible\n\
+        -: 1480:\n\
+        -: 1481:A line OFFSET is an integer optionally preceded by '+' or '-'\n\
+        -: 1482:"), stdout);
+    #####: 1483:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -: 1484:    }
+        4: 1485:  exit (status);
+        -: 1486:}

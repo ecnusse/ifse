@@ -1,0 +1,66 @@
+        -:    0:Source:src/selinux.h
+        -:    0:Graph:install.gcno
+        -:    0:Data:install.gcda
+        -:    0:Runs:61
+        -:    1:/* selinux - core functions for maintaining SELinux labeling
+        -:    2:   Copyright (C) 2012-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Daniel Walsh <dwalsh@redhat.com> */
+        -:   18:
+        -:   19:#ifndef COREUTILS_SELINUX_H
+        -:   20:# define COREUTILS_SELINUX_H
+        -:   21:
+        -:   22:struct selabel_handle;
+        -:   23:
+        -:   24:/* Return true if ERR corresponds to an unsupported request,
+        -:   25:   or if there is no context or it's inaccessible.  */
+        -:   26:static inline bool
+function ignorable_ctx_err called 0 returned 0% blocks executed 0%
+    #####:   27:ignorable_ctx_err (int err)
+        -:   28:{
+    #####:   29:  return err == ENOTSUP || err == ENODATA;
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:   30:}
+        -:   31:
+        -:   32:# if HAVE_SELINUX_LABEL_H
+        -:   33:
+        -:   34:extern bool
+        -:   35:restorecon (struct selabel_handle *selabel_handle,
+        -:   36:            char const *path, bool recurse);
+        -:   37:extern int
+        -:   38:defaultcon (struct selabel_handle *selabel_handle,
+        -:   39:            char const *path, mode_t mode);
+        -:   40:
+        -:   41:# else
+        -:   42:
+        -:   43:static inline bool
+function restorecon called 0 returned 0% blocks executed 0%
+    #####:   44:restorecon (struct selabel_handle *selabel_handle,
+        -:   45:            char const *path, bool recurse)
+    #####:   46:{ errno = ENOTSUP; return false; }
+        -:   47:
+        -:   48:static inline int
+function defaultcon called 0 returned 0% blocks executed 0%
+    #####:   49:defaultcon (struct selabel_handle *selabel_handle,
+        -:   50:            char const *path, mode_t mode)
+    #####:   51:{ errno = ENOTSUP; return -1; }
+        -:   52:
+        -:   53:# endif
+        -:   54:
+        -:   55:#endif

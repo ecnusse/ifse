@@ -1,0 +1,877 @@
+        -:    0:Source:src/shuf.c
+        -:    0:Graph:shuf.gcno
+        -:    0:Data:shuf.gcda
+        -:    0:Runs:24
+        -:    1:/* Shuffle lines of text.
+        -:    2:
+        -:    3:   Copyright (C) 2006-2023 Free Software Foundation, Inc.
+        -:    4:
+        -:    5:   This program is free software: you can redistribute it and/or modify
+        -:    6:   it under the terms of the GNU General Public License as published by
+        -:    7:   the Free Software Foundation, either version 3 of the License, or
+        -:    8:   (at your option) any later version.
+        -:    9:
+        -:   10:   This program is distributed in the hope that it will be useful,
+        -:   11:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   12:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   13:   GNU General Public License for more details.
+        -:   14:
+        -:   15:   You should have received a copy of the GNU General Public License
+        -:   16:   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+        -:   17:
+        -:   18:   Written by Paul Eggert.  */
+        -:   19:
+        -:   20:#include <config.h>
+        -:   21:
+        -:   22:#include <sys/types.h>
+        -:   23:#include "system.h"
+        -:   24:
+        -:   25:#include "fadvise.h"
+        -:   26:#include "getopt.h"
+        -:   27:#include "linebuffer.h"
+        -:   28:#include "quote.h"
+        -:   29:#include "randint.h"
+        -:   30:#include "randperm.h"
+        -:   31:#include "read-file.h"
+        -:   32:#include "stdio--.h"
+        -:   33:#include "xstrtol.h"
+        -:   34:
+        -:   35:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   36:#define PROGRAM_NAME "shuf"
+        -:   37:
+        -:   38:#define AUTHORS proper_name ("Paul Eggert")
+        -:   39:
+        -:   40:/* For reservoir-sampling, allocate the reservoir lines in batches.  */
+        -:   41:enum { RESERVOIR_LINES_INCREMENT = 1024 };
+        -:   42:
+        -:   43:/* reservoir-sampling introduces CPU overhead for small inputs.
+        -:   44:   So only enable it for inputs >= this limit.
+        -:   45:   This limit was determined using these commands:
+        -:   46:     $ for p in $(seq 7); do src/seq $((10**$p)) > 10p$p.in; done
+        -:   47:     $ for p in $(seq 7); do time shuf-nores -n10 10p$p.in >/dev/null; done
+        -:   48:     $ for p in $(seq 7); do time shuf -n10 10p$p.in >/dev/null; done  .*/
+        -:   49:enum { RESERVOIR_MIN_INPUT = 8192 * 1024 };
+        -:   50:
+        -:   51:
+        -:   52:void
+function usage called 22 returned 0% blocks executed 25%
+       22:   53:usage (int status)
+        -:   54:{
+       22:   55:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       22:   56:    emit_try_help ();
+call    0 returned 100%
+        -:   57:  else
+        -:   58:    {
+    #####:   59:      printf (_("\
+call    0 never executed
+        -:   60:Usage: %s [OPTION]... [FILE]\n\
+        -:   61:  or:  %s -e [OPTION]... [ARG]...\n\
+        -:   62:  or:  %s -i LO-HI [OPTION]...\n\
+        -:   63:"),
+        -:   64:              program_name, program_name, program_name);
+    #####:   65:      fputs (_("\
+call    0 never executed
+        -:   66:Write a random permutation of the input lines to standard output.\n\
+        -:   67:"), stdout);
+        -:   68:
+    #####:   69:      emit_stdin_note ();
+call    0 never executed
+    #####:   70:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:   71:
+    #####:   72:      fputs (_("\
+call    0 never executed
+        -:   73:  -e, --echo                treat each ARG as an input line\n\
+        -:   74:  -i, --input-range=LO-HI   treat each number LO through HI as an input line\n\
+        -:   75:  -n, --head-count=COUNT    output at most COUNT lines\n\
+        -:   76:  -o, --output=FILE         write result to FILE instead of standard output\n\
+        -:   77:      --random-source=FILE  get random bytes from FILE\n\
+        -:   78:  -r, --repeat              output lines can be repeated\n\
+        -:   79:"), stdout);
+    #####:   80:      fputs (_("\
+call    0 never executed
+        -:   81:  -z, --zero-terminated     line delimiter is NUL, not newline\n\
+        -:   82:"), stdout);
+    #####:   83:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   84:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   85:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   86:    }
+        -:   87:
+       22:   88:  exit (status);
+        -:   89:}
+        -:   90:
+        -:   91:/* For long options that have no equivalent short option, use a
+        -:   92:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:   93:enum
+        -:   94:{
+        -:   95:  RANDOM_SOURCE_OPTION = CHAR_MAX + 1
+        -:   96:};
+        -:   97:
+        -:   98:static struct option const long_opts[] =
+        -:   99:{
+        -:  100:  {"echo", no_argument, nullptr, 'e'},
+        -:  101:  {"input-range", required_argument, nullptr, 'i'},
+        -:  102:  {"head-count", required_argument, nullptr, 'n'},
+        -:  103:  {"output", required_argument, nullptr, 'o'},
+        -:  104:  {"random-source", required_argument, nullptr, RANDOM_SOURCE_OPTION},
+        -:  105:  {"repeat", no_argument, nullptr, 'r'},
+        -:  106:  {"zero-terminated", no_argument, nullptr, 'z'},
+        -:  107:  {GETOPT_HELP_OPTION_DECL},
+        -:  108:  {GETOPT_VERSION_OPTION_DECL},
+        -:  109:  {0, 0, 0, 0},
+        -:  110:};
+        -:  111:
+        -:  112:static void
+function input_from_argv called 0 returned 0% blocks executed 0%
+    #####:  113:input_from_argv (char **operand, int n_operands, char eolbyte)
+        -:  114:{
+        -:  115:  char *p;
+    #####:  116:  size_t size = n_operands;
+        -:  117:  int i;
+        -:  118:
+    #####:  119:  for (i = 0; i < n_operands; i++)
+branch  0 never executed
+branch  1 never executed
+    #####:  120:    size += strlen (operand[i]);
+    #####:  121:  p = xmalloc (size);
+call    0 never executed
+        -:  122:
+    #####:  123:  for (i = 0; i < n_operands; i++)
+branch  0 never executed
+branch  1 never executed
+        -:  124:    {
+    #####:  125:      char *p1 = stpcpy (p, operand[i]);
+    #####:  126:      operand[i] = p;
+    #####:  127:      p = p1;
+    #####:  128:      *p++ = eolbyte;
+        -:  129:    }
+        -:  130:
+    #####:  131:  operand[n_operands] = p;
+    #####:  132:}
+        -:  133:
+        -:  134:/* Return the start of the next line after LINE, which is guaranteed
+        -:  135:   to end in EOLBYTE.  */
+        -:  136:
+        -:  137:static char *
+function next_line called 2 returned 100% blocks executed 100%
+        2:  138:next_line (char *line, char eolbyte)
+        -:  139:{
+        2:  140:  char *p = rawmemchr (line, eolbyte);
+        2:  141:  return p + 1;
+        -:  142:}
+        -:  143:
+        -:  144:/* Return the size of the input if possible or OFF_T_MAX if not.  */
+        -:  145:
+        -:  146:static off_t
+function input_size called 0 returned 0% blocks executed 0%
+    #####:  147:input_size (void)
+        -:  148:{
+        -:  149:  off_t file_size;
+        -:  150:
+        -:  151:  struct stat stat_buf;
+    #####:  152:  if (fstat (STDIN_FILENO, &stat_buf) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  153:    return OFF_T_MAX;
+    #####:  154:  if (usable_st_size (&stat_buf))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  155:    file_size = stat_buf.st_size;
+        -:  156:  else
+    #####:  157:    return OFF_T_MAX;
+        -:  158:
+    #####:  159:  off_t input_offset = lseek (STDIN_FILENO, 0, SEEK_CUR);
+call    0 never executed
+    #####:  160:  if (input_offset < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  161:    return OFF_T_MAX;
+        -:  162:
+    #####:  163:  file_size -= input_offset;
+        -:  164:
+    #####:  165:  return file_size;
+        -:  166:}
+        -:  167:
+        -:  168:/* Read all lines and store up to K permuted lines in *OUT_RSRV.
+        -:  169:   Return the number of lines read, up to a maximum of K.  */
+        -:  170:
+        -:  171:static size_t
+function read_input_reservoir_sampling called 0 returned 0% blocks executed 0%
+    #####:  172:read_input_reservoir_sampling (FILE *in, char eolbyte, size_t k,
+        -:  173:                               struct randint_source *s,
+        -:  174:                               struct linebuffer **out_rsrv)
+        -:  175:{
+    #####:  176:  randint n_lines = 0;
+    #####:  177:  size_t n_alloc_lines = MIN (k, RESERVOIR_LINES_INCREMENT);
+    #####:  178:  struct linebuffer *line = nullptr;
+        -:  179:  struct linebuffer *rsrv;
+        -:  180:
+    #####:  181:  rsrv = xcalloc (n_alloc_lines, sizeof (struct linebuffer));
+call    0 never executed
+        -:  182:
+        -:  183:  /* Fill the first K lines, directly into the reservoir.  */
+    #####:  184:  while (n_lines < k
+    #####:  185:         && (line =
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  186:             readlinebuffer_delim (&rsrv[n_lines], in, eolbyte)) != nullptr)
+call    0 never executed
+        -:  187:    {
+    #####:  188:      n_lines++;
+        -:  189:
+        -:  190:      /* Enlarge reservoir.  */
+    #####:  191:      if (n_lines >= n_alloc_lines)
+branch  0 never executed
+branch  1 never executed
+        -:  192:        {
+    #####:  193:          n_alloc_lines += RESERVOIR_LINES_INCREMENT;
+    #####:  194:          rsrv = xnrealloc (rsrv, n_alloc_lines, sizeof (struct linebuffer));
+call    0 never executed
+    #####:  195:          memset (&rsrv[n_lines], 0,
+        -:  196:                  RESERVOIR_LINES_INCREMENT * sizeof (struct linebuffer));
+        -:  197:        }
+        -:  198:    }
+        -:  199:
+        -:  200:  /* last line wasn't null - so there may be more lines to read.  */
+    #####:  201:  if (line != nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  202:    {
+        -:  203:      struct linebuffer dummy;
+    #####:  204:      initbuffer (&dummy);  /* space for lines not put in reservoir.  */
+call    0 never executed
+        -:  205:
+        -:  206:      /* Choose the fate of the next line, with decreasing probability (as
+        -:  207:         n_lines increases in size).
+        -:  208:
+        -:  209:         If the line will be used, store it directly in the reservoir.
+        -:  210:         Otherwise, store it in dummy space.
+        -:  211:
+        -:  212:         With 'struct linebuffer', storing into existing buffer will reduce
+        -:  213:         re-allocations (will only re-allocate if the new line is longer than
+        -:  214:         the currently allocated space).  */
+        -:  215:      do
+        -:  216:        {
+    #####:  217:          randint j = randint_choose (s, n_lines + 1);  /* 0 .. n_lines.  */
+call    0 never executed
+    #####:  218:          line = (j < k) ? (&rsrv[j]) : (&dummy);
+branch  0 never executed
+branch  1 never executed
+        -:  219:        }
+    #####:  220:      while (readlinebuffer_delim (line, in, eolbyte) != nullptr && n_lines++);
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  221:
+    #####:  222:      if (! n_lines)
+branch  0 never executed
+branch  1 never executed
+    #####:  223:        error (EXIT_FAILURE, EOVERFLOW, _("too many input lines"));
+call    0 never executed
+        -:  224:
+    #####:  225:      freebuffer (&dummy);
+call    0 never executed
+        -:  226:    }
+        -:  227:
+        -:  228:  /* no more input lines, or an input error.  */
+    #####:  229:  if (ferror (in))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  230:    error (EXIT_FAILURE, errno, _("read error"));
+call    0 never executed
+        -:  231:
+    #####:  232:  *out_rsrv = rsrv;
+    #####:  233:  return MIN (k, n_lines);
+        -:  234:}
+        -:  235:
+        -:  236:static int
+function write_permuted_output_reservoir called 0 returned 0% blocks executed 0%
+    #####:  237:write_permuted_output_reservoir (size_t n_lines, struct linebuffer *lines,
+        -:  238:                                 size_t const *permutation)
+        -:  239:{
+    #####:  240:  for (size_t i = 0; i < n_lines; i++)
+branch  0 never executed
+branch  1 never executed
+        -:  241:    {
+    #####:  242:      const struct linebuffer *p = &lines[permutation[i]];
+    #####:  243:      if (fwrite (p->buffer, sizeof (char), p->length, stdout) != p->length)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  244:        return -1;
+        -:  245:    }
+        -:  246:
+    #####:  247:  return 0;
+        -:  248:}
+        -:  249:
+        -:  250:/* Read data from file IN.  Input lines are delimited by EOLBYTE;
+        -:  251:   silently append a trailing EOLBYTE if the file ends in some other
+        -:  252:   byte.  Store a pointer to the resulting array of lines into *PLINE.
+        -:  253:   Return the number of lines read.  Report an error and exit on
+        -:  254:   failure.  */
+        -:  255:
+        -:  256:static size_t
+function read_input called 1 returned 100% blocks executed 79%
+        1:  257:read_input (FILE *in, char eolbyte, char ***pline)
+        -:  258:{
+        -:  259:  char *p;
+        1:  260:  char *buf = nullptr;
+        -:  261:  size_t used;
+        -:  262:  char *lim;
+        -:  263:  char **line;
+        -:  264:  size_t n_lines;
+        -:  265:
+        -:  266:  /* TODO: We should limit the amount of data read here,
+        -:  267:     to less than RESERVOIR_MIN_INPUT.  I.e., adjust fread_file() to support
+        -:  268:     taking a byte limit.  We'd then need to ensure we handle a line spanning
+        -:  269:     this boundary.  With that in place we could set use_reservoir_sampling
+        -:  270:     when used==RESERVOIR_MIN_INPUT, and have read_input_reservoir_sampling()
+        -:  271:     call a wrapper function to populate a linebuffer from the internal pline
+        -:  272:     or if none left, stdin.  Doing that would give better performance by
+        -:  273:     avoiding the reservoir CPU overhead when reading < RESERVOIR_MIN_INPUT
+        -:  274:     from a pipe, and allow us to dispense with the input_size() function.  */
+        1:  275:  if (!(buf = fread_file (in, 0, &used)))
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  276:    error (EXIT_FAILURE, errno, _("read error"));
+call    0 never executed
+        -:  277:
+        1:  278:  if (used && buf[used - 1] != eolbyte)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        1:  279:    buf[used++] = eolbyte;
+        -:  280:
+        1:  281:  lim = buf + used;
+        -:  282:
+        1:  283:  n_lines = 0;
+        2:  284:  for (p = buf; p < lim; p = next_line (p, eolbyte))
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        1:  285:    n_lines++;
+call    0 returned 100%
+        -:  286:
+        1:  287:  *pline = line = xnmalloc (n_lines + 1, sizeof *line);
+call    0 returned 100%
+        -:  288:
+        1:  289:  line[0] = p = buf;
+        2:  290:  for (size_t i = 1; i <= n_lines; i++)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        1:  291:    line[i] = p = next_line (p, eolbyte);
+call    0 returned 100%
+        -:  292:
+        1:  293:  return n_lines;
+        -:  294:}
+        -:  295:
+        -:  296:/* Output N_LINES lines to stdout from LINE array,
+        -:  297:   chosen by the indices in PERMUTATION.
+        -:  298:   PERMUTATION and LINE must have at least N_LINES elements.
+        -:  299:   Strings in LINE must include the line-terminator character.  */
+        -:  300:static int
+function write_permuted_lines called 1 returned 100% blocks executed 88%
+        1:  301:write_permuted_lines (size_t n_lines, char *const *line,
+        -:  302:                      size_t const *permutation)
+        -:  303:{
+        2:  304:  for (size_t i = 0; i < n_lines; i++)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -:  305:    {
+        1:  306:      char *const *p = line + permutation[i];
+        1:  307:      size_t len = p[1] - p[0];
+        1:  308:      if (fwrite (p[0], sizeof *p[0], len, stdout) != len)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  309:        return -1;
+        -:  310:    }
+        -:  311:
+        1:  312:  return 0;
+        -:  313:}
+        -:  314:
+        -:  315:/* Output N_LINES of numbers to stdout, from PERMUTATION array.
+        -:  316:   PERMUTATION must have at least N_LINES elements.  */
+        -:  317:static int
+function write_permuted_numbers called 0 returned 0% blocks executed 0%
+    #####:  318:write_permuted_numbers (size_t n_lines, size_t lo_input,
+        -:  319:                        size_t const *permutation, char eolbyte)
+        -:  320:{
+    #####:  321:  for (size_t i = 0; i < n_lines; i++)
+branch  0 never executed
+branch  1 never executed
+        -:  322:    {
+    #####:  323:      unsigned long int n = lo_input + permutation[i];
+    #####:  324:      if (printf ("%lu%c", n, eolbyte) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  325:        return -1;
+        -:  326:    }
+        -:  327:
+    #####:  328:  return 0;
+        -:  329:}
+        -:  330:
+        -:  331:/* Output COUNT numbers to stdout, chosen randomly from range
+        -:  332:   LO_INPUT through HI_INPUT.  */
+        -:  333:static int
+function write_random_numbers called 0 returned 0% blocks executed 0%
+    #####:  334:write_random_numbers (struct randint_source *s, size_t count,
+        -:  335:                      size_t lo_input, size_t hi_input, char eolbyte)
+        -:  336:{
+    #####:  337:  const randint range = hi_input - lo_input + 1;
+        -:  338:
+    #####:  339:  for (size_t i = 0; i < count; i++)
+branch  0 never executed
+branch  1 never executed
+        -:  340:    {
+    #####:  341:      unsigned long int j = lo_input + randint_choose (s, range);
+call    0 never executed
+    #####:  342:      if (printf ("%lu%c", j, eolbyte) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  343:        return -1;
+        -:  344:    }
+        -:  345:
+    #####:  346:  return 0;
+        -:  347:}
+        -:  348:
+        -:  349:/* Output COUNT lines to stdout from LINES array.
+        -:  350:   LINES must have at least N_LINES elements in it.
+        -:  351:   Strings in LINES_ must include the line-terminator character.  */
+        -:  352:static int
+function write_random_lines called 0 returned 0% blocks executed 0%
+    #####:  353:write_random_lines (struct randint_source *s, size_t count,
+        -:  354:                    char *const *lines, size_t n_lines)
+        -:  355:{
+    #####:  356:  for (size_t i = 0; i < count; i++)
+branch  0 never executed
+branch  1 never executed
+        -:  357:    {
+    #####:  358:      const randint j = randint_choose (s, n_lines);
+call    0 never executed
+    #####:  359:      char *const *p = lines + j;
+    #####:  360:      size_t len = p[1] - p[0];
+    #####:  361:      if (fwrite (p[0], sizeof *p[0], len, stdout) != len)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  362:        return -1;
+        -:  363:    }
+        -:  364:
+    #####:  365:  return 0;
+        -:  366:}
+        -:  367:
+        -:  368:int
+function main called 24 returned 4% blocks executed 36%
+       24:  369:main (int argc, char **argv)
+        -:  370:{
+       24:  371:  bool echo = false;
+       24:  372:  bool input_range = false;
+       24:  373:  size_t lo_input = SIZE_MAX;
+       24:  374:  size_t hi_input = 0;
+       24:  375:  size_t head_lines = SIZE_MAX;
+       24:  376:  char const *outfile = nullptr;
+       24:  377:  char *random_source = nullptr;
+       24:  378:  char eolbyte = '\n';
+       24:  379:  char **input_lines = nullptr;
+       24:  380:  bool use_reservoir_sampling = false;
+       24:  381:  bool repeat = false;
+        -:  382:
+        -:  383:  int optc;
+        -:  384:  int n_operands;
+        -:  385:  char **operand;
+        -:  386:  size_t n_lines;
+       24:  387:  char **line = nullptr;
+       24:  388:  struct linebuffer *reservoir = nullptr;
+        -:  389:  struct randint_source *randint_source;
+       24:  390:  size_t *permutation = nullptr;
+        -:  391:  int i;
+        -:  392:
+        -:  393:  initialize_main (&argc, &argv);
+       24:  394:  set_program_name (argv[0]);
+call    0 returned 100%
+       24:  395:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  396:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  397:  textdomain (PACKAGE);
+        -:  398:
+       24:  399:  atexit (close_stdout);
+call    0 returned 100%
+        -:  400:
+       24:  401:  while ((optc = getopt_long (argc, argv, "ei:n:o:rz", long_opts, nullptr))
+call    0 returned 100%
+       24:  402:         != -1)
+branch  0 taken 4%
+branch  1 taken 96% (fallthrough)
+        1:  403:    switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 100%
+        -:  404:      {
+    #####:  405:      case 'e':
+    #####:  406:        echo = true;
+    #####:  407:        break;
+        -:  408:
+    #####:  409:      case 'i':
+        -:  410:        {
+    #####:  411:          if (input_range)
+branch  0 never executed
+branch  1 never executed
+    #####:  412:            error (EXIT_FAILURE, 0, _("multiple -i options specified"));
+call    0 never executed
+    #####:  413:          input_range = true;
+        -:  414:
+        -:  415:          uintmax_t u;
+        -:  416:          char *lo_end;
+    #####:  417:          strtol_error err = xstrtoumax (optarg, &lo_end, 10, &u, nullptr);
+call    0 never executed
+    #####:  418:          if (err == LONGINT_OK)
+branch  0 never executed
+branch  1 never executed
+        -:  419:            {
+    #####:  420:              lo_input = u;
+    #####:  421:              if (lo_input != u)
+branch  0 never executed
+branch  1 never executed
+    #####:  422:                err = LONGINT_OVERFLOW;
+    #####:  423:              else if (*lo_end != '-')
+branch  0 never executed
+branch  1 never executed
+    #####:  424:                err = LONGINT_INVALID;
+        -:  425:              else
+        -:  426:                {
+    #####:  427:                  err = xstrtoumax (lo_end + 1, nullptr, 10, &u, "");
+call    0 never executed
+    #####:  428:                  if (err == LONGINT_OK)
+branch  0 never executed
+branch  1 never executed
+        -:  429:                    {
+    #####:  430:                      hi_input = u;
+    #####:  431:                      if (hi_input != u)
+branch  0 never executed
+branch  1 never executed
+    #####:  432:                        err = LONGINT_OVERFLOW;
+        -:  433:                    }
+        -:  434:                }
+        -:  435:            }
+        -:  436:
+    #####:  437:          n_lines = hi_input - lo_input + 1;
+        -:  438:
+    #####:  439:          if (err != LONGINT_OK || (lo_input <= hi_input) == (n_lines == 0))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  440:            error (EXIT_FAILURE, err == LONGINT_OVERFLOW ? EOVERFLOW : 0,
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+call    3 never executed
+        -:  441:                   "%s: %s", _("invalid input range"), quote (optarg));
+        -:  442:        }
+    #####:  443:        break;
+        -:  444:
+    #####:  445:      case 'n':
+        -:  446:        {
+        -:  447:          uintmax_t argval;
+    #####:  448:          strtol_error e = xstrtoumax (optarg, nullptr, 10, &argval, "");
+call    0 never executed
+        -:  449:
+    #####:  450:          if (e == LONGINT_OK)
+branch  0 never executed
+branch  1 never executed
+    #####:  451:            head_lines = MIN (head_lines, argval);
+    #####:  452:          else if (e != LONGINT_OVERFLOW)
+branch  0 never executed
+branch  1 never executed
+    #####:  453:            error (EXIT_FAILURE, 0, _("invalid line count: %s"),
+call    0 never executed
+call    1 never executed
+        -:  454:                   quote (optarg));
+        -:  455:        }
+    #####:  456:        break;
+        -:  457:
+    #####:  458:      case 'o':
+    #####:  459:        if (outfile && !STREQ (outfile, optarg))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  460:          error (EXIT_FAILURE, 0, _("multiple output files specified"));
+call    0 never executed
+    #####:  461:        outfile = optarg;
+    #####:  462:        break;
+        -:  463:
+    #####:  464:      case RANDOM_SOURCE_OPTION:
+    #####:  465:        if (random_source && !STREQ (random_source, optarg))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  466:          error (EXIT_FAILURE, 0, _("multiple random sources specified"));
+call    0 never executed
+    #####:  467:        random_source = optarg;
+    #####:  468:        break;
+        -:  469:
+    #####:  470:      case 'r':
+    #####:  471:        repeat = true;
+    #####:  472:        break;
+        -:  473:
+    #####:  474:      case 'z':
+    #####:  475:        eolbyte = '\0';
+    #####:  476:        break;
+        -:  477:
+    #####:  478:      case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  479:      case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        1:  480:      default:
+        1:  481:        usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  482:      }
+        -:  483:
+       23:  484:  n_operands = argc - optind;
+       23:  485:  operand = argv + optind;
+        -:  486:
+        -:  487:  /* Check invalid usage.  */
+      23*:  488:  if (echo && input_range)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  489:    {
+        -:  490:      error (0, 0, _("cannot combine -e and -i options"));
+    #####:  491:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  492:    }
+      23*:  493:  if (input_range ? 0 < n_operands : !echo && 1 < n_operands)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 91% (fallthrough)
+branch  5 taken 9%
+branch  6 taken 91% (fallthrough)
+branch  7 taken 9%
+        -:  494:    {
+      21*:  495:      error (0, 0, _("extra operand %s"), quote (operand[!input_range]));
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+call    2 returned 100%
+       21:  496:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  497:    }
+        -:  498:
+        -:  499:  /* Prepare input.  */
+        2:  500:  if (head_lines == 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  501:    {
+    #####:  502:      n_lines = 0;
+    #####:  503:      line = nullptr;
+        -:  504:    }
+        2:  505:  else if (echo)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  506:    {
+    #####:  507:      input_from_argv (operand, n_operands, eolbyte);
+call    0 never executed
+    #####:  508:      n_lines = n_operands;
+    #####:  509:      line = operand;
+        -:  510:    }
+        2:  511:  else if (input_range)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  512:    {
+    #####:  513:      n_lines = hi_input - lo_input + 1;
+    #####:  514:      line = nullptr;
+        -:  515:    }
+        -:  516:  else
+        -:  517:    {
+        -:  518:      /* If an input file is specified, re-open it as stdin.  */
+        2:  519:      if (n_operands == 1
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+        2:  520:          && ! (STREQ (operand[0], "-")
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        1:  521:                || freopen (operand[0], "r", stdin)))
+call    0 returned 100%
+       1*:  522:        error (EXIT_FAILURE, errno, "%s", quotef (operand[0]));
+call    0 returned 100%
+call    1 never executed
+        -:  523:
+        1:  524:      fadvise (stdin, FADVISE_SEQUENTIAL);
+call    0 returned 100%
+        -:  525:
+        1:  526:      if (repeat || head_lines == SIZE_MAX
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+    #####:  527:          || input_size () <= RESERVOIR_MIN_INPUT)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  528:        {
+        1:  529:          n_lines = read_input (stdin, eolbyte, &input_lines);
+call    0 returned 100%
+        1:  530:          line = input_lines;
+        -:  531:        }
+        -:  532:      else
+        -:  533:        {
+    #####:  534:          use_reservoir_sampling = true;
+    #####:  535:          n_lines = SIZE_MAX;   /* unknown number of input lines, for now.  */
+        -:  536:        }
+        -:  537:    }
+        -:  538:
+        -:  539:  /* The adjusted head line count; can be less than HEAD_LINES if the
+        -:  540:     input is small and if not repeating.  */
+       1*:  541:  size_t ahead_lines = repeat || head_lines < n_lines ? head_lines : n_lines;
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+        -:  542:
+       2*:  543:  randint_source = randint_all_new (random_source,
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+call    2 returned 100%
+        1:  544:                                    (use_reservoir_sampling || repeat
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  545:                                     ? SIZE_MAX
+        1:  546:                                     : randperm_bound (ahead_lines, n_lines)));
+        1:  547:  if (! randint_source)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  548:    error (EXIT_FAILURE, errno, "%s",
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+        -:  549:           quotef (random_source ? random_source : "getrandom"));
+        -:  550:
+        1:  551:  if (use_reservoir_sampling)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  552:    {
+        -:  553:      /* Instead of reading the entire file into 'line',
+        -:  554:         use reservoir-sampling to store just AHEAD_LINES random lines.  */
+    #####:  555:      n_lines = read_input_reservoir_sampling (stdin, eolbyte, ahead_lines,
+call    0 never executed
+        -:  556:                                               randint_source, &reservoir);
+    #####:  557:      ahead_lines = n_lines;
+        -:  558:    }
+        -:  559:
+        -:  560:  /* Close stdin now, rather than earlier, so that randint_all_new
+        -:  561:     doesn't have to worry about opening something other than
+        -:  562:     stdin.  */
+        1:  563:  if (! (head_lines == 0 || echo || input_range || fclose (stdin) == 0))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+call    6 returned 100%
+branch  7 taken 0% (fallthrough)
+branch  8 taken 100%
+    #####:  564:    error (EXIT_FAILURE, errno, _("read error"));
+call    0 never executed
+        -:  565:
+        1:  566:  if (!repeat)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  567:    permutation = randperm_new (randint_source, ahead_lines, n_lines);
+call    0 returned 100%
+        -:  568:
+       1*:  569:  if (outfile && ! freopen (outfile, "w", stdout))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  570:    error (EXIT_FAILURE, errno, "%s", quotef (outfile));
+call    0 never executed
+call    1 never executed
+        -:  571:
+        -:  572:  /* Generate output according to requested method */
+        1:  573:  if (repeat)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  574:    {
+    #####:  575:      if (head_lines == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  576:        i = 0;
+        -:  577:      else
+        -:  578:        {
+    #####:  579:          if (n_lines == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  580:            error (EXIT_FAILURE, 0, _("no lines to repeat"));
+call    0 never executed
+    #####:  581:          if (input_range)
+branch  0 never executed
+branch  1 never executed
+    #####:  582:            i = write_random_numbers (randint_source, ahead_lines,
+call    0 never executed
+        -:  583:                                      lo_input, hi_input, eolbyte);
+        -:  584:          else
+    #####:  585:            i = write_random_lines (randint_source, ahead_lines, line, n_lines);
+call    0 never executed
+        -:  586:        }
+        -:  587:    }
+        -:  588:  else
+        -:  589:    {
+        1:  590:      if (use_reservoir_sampling)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  591:        i = write_permuted_output_reservoir (n_lines, reservoir, permutation);
+call    0 never executed
+        1:  592:      else if (input_range)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  593:        i = write_permuted_numbers (ahead_lines, lo_input,
+call    0 never executed
+        -:  594:                                    permutation, eolbyte);
+        -:  595:      else
+        1:  596:        i = write_permuted_lines (ahead_lines, line, permutation);
+call    0 returned 100%
+        -:  597:    }
+        -:  598:
+        1:  599:  if (i != 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  600:    write_error ();
+call    0 never executed
+        -:  601:
+        1:  602:  main_exit (EXIT_SUCCESS);
+        -:  603:}

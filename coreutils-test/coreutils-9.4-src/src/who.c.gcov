@@ -1,0 +1,1114 @@
+        -:    0:Source:src/who.c
+        -:    0:Graph:who.gcno
+        -:    0:Data:who.gcda
+        -:    0:Runs:21
+        -:    1:/* GNU's who.
+        -:    2:   Copyright (C) 1992-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by jla; revised by djm; revised again by mstone */
+        -:   18:
+        -:   19:/* Output format:
+        -:   20:   name [state] line time [activity] [pid] [comment] [exit]
+        -:   21:   state: -T
+        -:   22:   name, line, time: not -q
+        -:   23:   idle: -u
+        -:   24:*/
+        -:   25:
+        -:   26:#include <config.h>
+        -:   27:#include <getopt.h>
+        -:   28:#include <stdckdint.h>
+        -:   29:#include <stdio.h>
+        -:   30:
+        -:   31:#include <sys/types.h>
+        -:   32:#include "system.h"
+        -:   33:
+        -:   34:#include "c-ctype.h"
+        -:   35:#include "canon-host.h"
+        -:   36:#include "readutmp.h"
+        -:   37:#include "hard-locale.h"
+        -:   38:#include "quote.h"
+        -:   39:
+        -:   40:#ifdef TTY_GROUP_NAME
+        -:   41:# include <grp.h>
+        -:   42:#endif
+        -:   43:
+        -:   44:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   45:#define PROGRAM_NAME "who"
+        -:   46:
+        -:   47:#define AUTHORS \
+        -:   48:  proper_name ("Joseph Arceneaux"), \
+        -:   49:  proper_name ("David MacKenzie"), \
+        -:   50:  proper_name ("Michael Stone")
+        -:   51:
+        -:   52:#ifdef RUN_LVL
+        -:   53:# define UT_TYPE_RUN_LVL(U) ((U)->ut_type == RUN_LVL)
+        -:   54:#else
+        -:   55:# define UT_TYPE_RUN_LVL(U) false
+        -:   56:#endif
+        -:   57:
+        -:   58:#ifdef INIT_PROCESS
+        -:   59:# define UT_TYPE_INIT_PROCESS(U) ((U)->ut_type == INIT_PROCESS)
+        -:   60:#else
+        -:   61:# define UT_TYPE_INIT_PROCESS(U) false
+        -:   62:#endif
+        -:   63:
+        -:   64:#ifdef LOGIN_PROCESS
+        -:   65:# define UT_TYPE_LOGIN_PROCESS(U) ((U)->ut_type == LOGIN_PROCESS)
+        -:   66:#else
+        -:   67:# define UT_TYPE_LOGIN_PROCESS(U) false
+        -:   68:#endif
+        -:   69:
+        -:   70:#ifdef DEAD_PROCESS
+        -:   71:# define UT_TYPE_DEAD_PROCESS(U) ((U)->ut_type == DEAD_PROCESS)
+        -:   72:#else
+        -:   73:# define UT_TYPE_DEAD_PROCESS(U) false
+        -:   74:#endif
+        -:   75:
+        -:   76:#ifdef NEW_TIME
+        -:   77:# define UT_TYPE_NEW_TIME(U) ((U)->ut_type == NEW_TIME)
+        -:   78:#else
+        -:   79:# define UT_TYPE_NEW_TIME(U) false
+        -:   80:#endif
+        -:   81:
+        -:   82:#define IDLESTR_LEN 6
+        -:   83:
+        -:   84:#if HAVE_STRUCT_XTMP_UT_PID
+        -:   85:# define PIDSTR_DECL_AND_INIT(Var, Utmp_ent) \
+        -:   86:  char Var[INT_STRLEN_BOUND (Utmp_ent->ut_pid) + 1]; \
+        -:   87:  sprintf (Var, "%ld", (long int) (Utmp_ent->ut_pid))
+        -:   88:#else
+        -:   89:# define PIDSTR_DECL_AND_INIT(Var, Utmp_ent) \
+        -:   90:  char const *Var = ""
+        -:   91:#endif
+        -:   92:
+        -:   93:#if HAVE_STRUCT_XTMP_UT_ID
+        -:   94:# define UT_ID(U) ((U)->ut_id)
+        -:   95:#else
+        -:   96:# define UT_ID(U) "??"
+        -:   97:#endif
+        -:   98:
+        -:   99:/* If true, attempt to canonicalize hostnames via a DNS lookup. */
+        -:  100:static bool do_lookup;
+        -:  101:
+        -:  102:/* If true, display only a list of usernames and count of
+        -:  103:   the users logged on.
+        -:  104:   Ignored for 'who am i'.  */
+        -:  105:static bool short_list;
+        -:  106:
+        -:  107:/* If true, display only name, line, and time fields.  */
+        -:  108:static bool short_output;
+        -:  109:
+        -:  110:/* If true, display the hours:minutes since each user has touched
+        -:  111:   the keyboard, or "." if within the last minute, or "old" if
+        -:  112:   not within the last day.  */
+        -:  113:static bool include_idle;
+        -:  114:
+        -:  115:/* If true, display a line at the top describing each field.  */
+        -:  116:static bool include_heading;
+        -:  117:
+        -:  118:/* If true, display a '+' for each user if mesg y, a '-' if mesg n,
+        -:  119:   or a '?' if their tty cannot be statted. */
+        -:  120:static bool include_mesg;
+        -:  121:
+        -:  122:/* If true, display process termination & exit status.  */
+        -:  123:static bool include_exit;
+        -:  124:
+        -:  125:/* If true, display the last boot time.  */
+        -:  126:static bool need_boottime;
+        -:  127:
+        -:  128:/* If true, display dead processes.  */
+        -:  129:static bool need_deadprocs;
+        -:  130:
+        -:  131:/* If true, display processes waiting for user login.  */
+        -:  132:static bool need_login;
+        -:  133:
+        -:  134:/* If true, display processes started by init.  */
+        -:  135:static bool need_initspawn;
+        -:  136:
+        -:  137:/* If true, display the last clock change.  */
+        -:  138:static bool need_clockchange;
+        -:  139:
+        -:  140:/* If true, display the current runlevel.  */
+        -:  141:static bool need_runlevel;
+        -:  142:
+        -:  143:/* If true, display user processes.  */
+        -:  144:static bool need_users;
+        -:  145:
+        -:  146:/* If true, display info only for the controlling tty.  */
+        -:  147:static bool my_line_only;
+        -:  148:
+        -:  149:/* The strftime format to use for login times, and its expected
+        -:  150:   output width.  */
+        -:  151:static char const *time_format;
+        -:  152:static int time_format_width;
+        -:  153:
+        -:  154:/* for long options with no corresponding short option, use enum */
+        -:  155:enum
+        -:  156:{
+        -:  157:  LOOKUP_OPTION = CHAR_MAX + 1
+        -:  158:};
+        -:  159:
+        -:  160:static struct option const longopts[] =
+        -:  161:{
+        -:  162:  {"all", no_argument, nullptr, 'a'},
+        -:  163:  {"boot", no_argument, nullptr, 'b'},
+        -:  164:  {"count", no_argument, nullptr, 'q'},
+        -:  165:  {"dead", no_argument, nullptr, 'd'},
+        -:  166:  {"heading", no_argument, nullptr, 'H'},
+        -:  167:  {"login", no_argument, nullptr, 'l'},
+        -:  168:  {"lookup", no_argument, nullptr, LOOKUP_OPTION},
+        -:  169:  {"message", no_argument, nullptr, 'T'},
+        -:  170:  {"mesg", no_argument, nullptr, 'T'},
+        -:  171:  {"process", no_argument, nullptr, 'p'},
+        -:  172:  {"runlevel", no_argument, nullptr, 'r'},
+        -:  173:  {"short", no_argument, nullptr, 's'},
+        -:  174:  {"time", no_argument, nullptr, 't'},
+        -:  175:  {"users", no_argument, nullptr, 'u'},
+        -:  176:  {"writable", no_argument, nullptr, 'T'},
+        -:  177:  {GETOPT_HELP_OPTION_DECL},
+        -:  178:  {GETOPT_VERSION_OPTION_DECL},
+        -:  179:  {nullptr, 0, nullptr, 0}
+        -:  180:};
+        -:  181:
+        -:  182:/* Return a string representing the time between WHEN and now.
+        -:  183:   BOOTTIME is the time of last reboot.
+        -:  184:   FIXME: locale? */
+        -:  185:static char const *
+function idle_string called 0 returned 0% blocks executed 0%
+    #####:  186:idle_string (time_t when, time_t boottime)
+        -:  187:{
+        -:  188:  static time_t now = TYPE_MINIMUM (time_t);
+        -:  189:
+    #####:  190:  if (now == TYPE_MINIMUM (time_t))
+branch  0 never executed
+branch  1 never executed
+    #####:  191:    time (&now);
+call    0 never executed
+        -:  192:
+        -:  193:  int seconds_idle;
+    #####:  194:  if (boottime < when && when <= now
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  195:      && ! ckd_sub (&seconds_idle, now, when)
+branch  0 never executed
+branch  1 never executed
+    #####:  196:      && seconds_idle < 24 * 60 * 60)
+branch  0 never executed
+branch  1 never executed
+        -:  197:    {
+    #####:  198:      if (seconds_idle < 60)
+branch  0 never executed
+branch  1 never executed
+    #####:  199:        return "  .  ";
+        -:  200:      else
+        -:  201:        {
+        -:  202:          static char idle_hhmm[IDLESTR_LEN];
+    #####:  203:          sprintf (idle_hhmm, "%02d:%02d",
+        -:  204:                   seconds_idle / (60 * 60),
+    #####:  205:                   (seconds_idle % (60 * 60)) / 60);
+    #####:  206:          return idle_hhmm;
+        -:  207:        }
+        -:  208:    }
+        -:  209:
+    #####:  210:  return _(" old ");
+        -:  211:}
+        -:  212:
+        -:  213:/* Return a time string.  */
+        -:  214:static char const *
+function time_string called 0 returned 0% blocks executed 0%
+    #####:  215:time_string (struct gl_utmp const *utmp_ent)
+        -:  216:{
+        -:  217:  static char buf[INT_STRLEN_BOUND (intmax_t) + sizeof "-%m-%d %H:%M"];
+    #####:  218:  struct tm *tmp = localtime (&utmp_ent->ut_ts.tv_sec);
+call    0 never executed
+        -:  219:
+    #####:  220:  if (tmp)
+branch  0 never executed
+branch  1 never executed
+        -:  221:    {
+    #####:  222:      strftime (buf, sizeof buf, time_format, tmp);
+    #####:  223:      return buf;
+        -:  224:    }
+        -:  225:  else
+    #####:  226:    return timetostr (utmp_ent->ut_ts.tv_sec, buf);
+call    0 never executed
+        -:  227:}
+        -:  228:
+        -:  229:/* Print formatted output line. Uses mostly arbitrary field sizes, probably
+        -:  230:   will need tweaking if any of the localization stuff is done, or for 64 bit
+        -:  231:   pids, etc. */
+        -:  232:static void
+function print_line called 0 returned 0% blocks executed 0%
+    #####:  233:print_line (char const *user, const char state,
+        -:  234:            char const *line,
+        -:  235:            char const *time_str, char const *idle, char const *pid,
+        -:  236:            char const *comment, char const *exitstr)
+        -:  237:{
+        -:  238:  static char mesg[3] = { ' ', 'x', '\0' };
+        -:  239:  char *buf;
+        -:  240:  char x_idle[1 + IDLESTR_LEN + 1];
+        -:  241:  char x_pid[1 + INT_STRLEN_BOUND (pid_t) + 1];
+        -:  242:  char *x_exitstr;
+        -:  243:  int err;
+        -:  244:
+    #####:  245:  mesg[1] = state;
+        -:  246:
+    #####:  247:  if (include_idle && !short_output && strlen (idle) < sizeof x_idle - 1)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  248:    sprintf (x_idle, " %-6s", idle);
+        -:  249:  else
+    #####:  250:    *x_idle = '\0';
+        -:  251:
+    #####:  252:  if (!short_output && strlen (pid) < sizeof x_pid - 1)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  253:    sprintf (x_pid, " %10s", pid);
+        -:  254:  else
+    #####:  255:    *x_pid = '\0';
+        -:  256:
+    #####:  257:  x_exitstr = xmalloc (include_exit ? 1 + MAX (12, strlen (exitstr)) + 1 : 1);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+    #####:  258:  if (include_exit)
+branch  0 never executed
+branch  1 never executed
+    #####:  259:    sprintf (x_exitstr, " %-12s", exitstr);
+        -:  260:  else
+    #####:  261:    *x_exitstr = '\0';
+        -:  262:
+    #####:  263:  err = asprintf (&buf,
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  264:                  "%-8s"
+        -:  265:                  "%s"
+        -:  266:                  " %-12s"
+        -:  267:                  " %-*s"
+        -:  268:                  "%s"
+        -:  269:                  "%s"
+        -:  270:                  " %-8s"
+        -:  271:                  "%s"
+        -:  272:                  ,
+        -:  273:                  user ? user : "   .",
+    #####:  274:                  include_mesg ? mesg : "",
+branch  0 never executed
+branch  1 never executed
+        -:  275:                  line,
+        -:  276:                  time_format_width,
+        -:  277:                  time_str,
+        -:  278:                  x_idle,
+        -:  279:                  x_pid,
+        -:  280:                  /* FIXME: it's not really clear whether the following
+        -:  281:                     field should be in the short_output.  A strict reading
+        -:  282:                     of SUSv2 would suggest not, but I haven't seen any
+        -:  283:                     implementations that actually work that way... */
+        -:  284:                  comment,
+        -:  285:                  x_exitstr
+        -:  286:                  );
+    #####:  287:  if (err == -1)
+branch  0 never executed
+branch  1 never executed
+    #####:  288:    xalloc_die ();
+call    0 never executed
+        -:  289:
+        -:  290:  {
+        -:  291:    /* Remove any trailing spaces.  */
+    #####:  292:    char *p = buf + strlen (buf);
+    #####:  293:    while (*--p == ' ')
+branch  0 never executed
+branch  1 never executed
+        -:  294:      /* empty */;
+    #####:  295:    *(p + 1) = '\0';
+        -:  296:  }
+        -:  297:
+    #####:  298:  puts (buf);
+call    0 never executed
+    #####:  299:  free (buf);
+    #####:  300:  free (x_exitstr);
+    #####:  301:}
+        -:  302:
+        -:  303:/* Return true if a terminal device given as PSTAT allows other users
+        -:  304:   to send messages to; false otherwise */
+        -:  305:static bool
+function is_tty_writable called 0 returned 0% blocks executed 0%
+    #####:  306:is_tty_writable (struct stat const *pstat)
+        -:  307:{
+        -:  308:#ifdef TTY_GROUP_NAME
+        -:  309:  /* Ensure the group of the TTY device matches TTY_GROUP_NAME, more info at
+        -:  310:     https://bugzilla.redhat.com/454261 */
+        -:  311:  struct group *ttygr = getgrnam (TTY_GROUP_NAME);
+        -:  312:  if (!ttygr || (pstat->st_gid != ttygr->gr_gid))
+        -:  313:    return false;
+        -:  314:#endif
+        -:  315:
+    #####:  316:  return pstat->st_mode & S_IWGRP;
+        -:  317:}
+        -:  318:
+        -:  319:/* Send properly parsed USER_PROCESS info to print_line.  The most
+        -:  320:   recent boot time is BOOTTIME. */
+        -:  321:static void
+function print_user called 0 returned 0% blocks executed 0%
+    #####:  322:print_user (struct gl_utmp const *utmp_ent, time_t boottime)
+        -:  323:{
+        -:  324:  struct stat stats;
+        -:  325:  time_t last_change;
+        -:  326:  char mesg;
+        -:  327:  char idlestr[IDLESTR_LEN + 1];
+    #####:  328:  PIDSTR_DECL_AND_INIT (pidstr, utmp_ent);
+        -:  329:  static char *hoststr;
+        -:  330:#if HAVE_STRUCT_XTMP_UT_HOST
+        -:  331:  static idx_t hostlen;
+        -:  332:#endif
+        -:  333:
+        -:  334:  /* If ut_line contains a space, the device name starts after the space.  */
+    #####:  335:  char *line = utmp_ent->ut_line;
+    #####:  336:  char *space = strchr (line, ' ');
+    #####:  337:  line = space ? space + 1 : line;
+branch  0 never executed
+branch  1 never executed
+        -:  338:
+        -:  339:  int dirfd;
+    #####:  340:  if (IS_ABSOLUTE_FILE_NAME (line))
+branch  0 never executed
+branch  1 never executed
+    #####:  341:    dirfd = AT_FDCWD;
+        -:  342:  else
+        -:  343:    {
+        -:  344:      static int dev_dirfd;
+    #####:  345:      if (!dev_dirfd)
+branch  0 never executed
+branch  1 never executed
+        -:  346:        {
+    #####:  347:          dev_dirfd = open ("/dev", O_PATHSEARCH | O_DIRECTORY);
+call    0 never executed
+    #####:  348:          if (dev_dirfd < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  349:            dev_dirfd = AT_FDCWD - 1;
+        -:  350:        }
+    #####:  351:      dirfd = dev_dirfd;
+        -:  352:    }
+        -:  353:
+    #####:  354:  if (AT_FDCWD <= dirfd && fstatat (dirfd, line, &stats, 0) == 0)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  355:    {
+    #####:  356:      mesg = is_tty_writable (&stats) ? '+' : '-';
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  357:      last_change = stats.st_atime;
+        -:  358:    }
+        -:  359:  else
+        -:  360:    {
+    #####:  361:      mesg = '?';
+    #####:  362:      last_change = 0;
+        -:  363:    }
+        -:  364:
+    #####:  365:  if (last_change)
+branch  0 never executed
+branch  1 never executed
+    #####:  366:    sprintf (idlestr, "%.*s", IDLESTR_LEN, idle_string (last_change, boottime));
+call    0 never executed
+        -:  367:  else
+    #####:  368:    sprintf (idlestr, "  ?");
+        -:  369:
+        -:  370:#if HAVE_STRUCT_XTMP_UT_HOST
+    #####:  371:  if (utmp_ent->ut_host[0])
+branch  0 never executed
+branch  1 never executed
+        -:  372:    {
+    #####:  373:      char *host = nullptr;
+    #####:  374:      char *display = nullptr;
+    #####:  375:      char *ut_host = utmp_ent->ut_host;
+        -:  376:
+        -:  377:      /* Look for an X display.  */
+    #####:  378:      display = strchr (ut_host, ':');
+    #####:  379:      if (display)
+branch  0 never executed
+branch  1 never executed
+    #####:  380:        *display++ = '\0';
+        -:  381:
+    #####:  382:      if (*ut_host && do_lookup)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  383:        {
+        -:  384:          /* See if we can canonicalize it.  */
+    #####:  385:          host = canon_host (ut_host);
+call    0 never executed
+        -:  386:        }
+        -:  387:
+    #####:  388:      if (! host)
+branch  0 never executed
+branch  1 never executed
+    #####:  389:        host = ut_host;
+        -:  390:
+    #####:  391:      if (display)
+branch  0 never executed
+branch  1 never executed
+        -:  392:        {
+    #####:  393:          idx_t needed = strlen (host) + strlen (display) + 4;
+    #####:  394:          if (hostlen < needed)
+branch  0 never executed
+branch  1 never executed
+        -:  395:            {
+    #####:  396:              free (hoststr);
+    #####:  397:              hoststr = xpalloc (nullptr, &hostlen, needed - hostlen, -1, 1);
+call    0 never executed
+        -:  398:            }
+    #####:  399:          char *p = hoststr;
+    #####:  400:          *p++ = '(';
+    #####:  401:          p = stpcpy (p, host);
+    #####:  402:          *p++ = ':';
+    #####:  403:          strcpy (stpcpy (p, display), ")");
+        -:  404:        }
+        -:  405:      else
+        -:  406:        {
+    #####:  407:          idx_t needed = strlen (host) + 3;
+    #####:  408:          if (hostlen < needed)
+branch  0 never executed
+branch  1 never executed
+        -:  409:            {
+    #####:  410:              free (hoststr);
+    #####:  411:              hoststr = xpalloc (nullptr, &hostlen, needed - hostlen, -1, 1);
+call    0 never executed
+        -:  412:            }
+    #####:  413:          char *p = hoststr;
+    #####:  414:          *p++ = '(';
+    #####:  415:          strcpy (stpcpy (p, host), ")");
+        -:  416:        }
+        -:  417:
+    #####:  418:      if (host != ut_host)
+branch  0 never executed
+branch  1 never executed
+    #####:  419:        free (host);
+        -:  420:    }
+        -:  421:  else
+        -:  422:    {
+    #####:  423:      if (hostlen < 1)
+branch  0 never executed
+branch  1 never executed
+    #####:  424:        hoststr = xpalloc (hoststr, &hostlen, 1, -1, 1);
+call    0 never executed
+    #####:  425:      *hoststr = '\0';
+        -:  426:    }
+        -:  427:#endif
+        -:  428:
+    #####:  429:  print_line (utmp_ent->ut_user, mesg,
+call    0 never executed
+    #####:  430:              utmp_ent->ut_line,
+call    0 never executed
+        -:  431:              time_string (utmp_ent), idlestr, pidstr,
+    #####:  432:              hoststr ? hoststr : "", "");
+branch  0 never executed
+branch  1 never executed
+    #####:  433:}
+        -:  434:
+        -:  435:static void
+function print_boottime called 0 returned 0% blocks executed 0%
+    #####:  436:print_boottime (struct gl_utmp const *utmp_ent)
+        -:  437:{
+    #####:  438:  print_line ("", ' ', _("system boot"),
+call    0 never executed
+call    1 never executed
+        -:  439:              time_string (utmp_ent), "", "", "", "");
+    #####:  440:}
+        -:  441:
+        -:  442:static char *
+function make_id_equals_comment called 0 returned 0% blocks executed 0%
+    #####:  443:make_id_equals_comment (struct gl_utmp const *utmp_ent)
+        -:  444:{
+    #####:  445:  char const *id = UT_ID (utmp_ent);
+    #####:  446:  idx_t idlen = strlen (id);
+    #####:  447:  char const *prefix = _("id=");
+    #####:  448:  idx_t prefixlen = strlen (prefix);
+    #####:  449:  char *comment = xmalloc (prefixlen + idlen + 1);
+call    0 never executed
+    #####:  450:  char *p = mempcpy (comment, prefix, prefixlen);
+    #####:  451:  p = mempcpy (p, id, idlen);
+    #####:  452:  *p = '\0';
+    #####:  453:  return comment;
+        -:  454:}
+        -:  455:
+        -:  456:static void
+function print_deadprocs called 0 returned 0% blocks executed 0%
+    #####:  457:print_deadprocs (struct gl_utmp const *utmp_ent)
+        -:  458:{
+        -:  459:  static char *exitstr;
+    #####:  460:  char *comment = make_id_equals_comment (utmp_ent);
+call    0 never executed
+    #####:  461:  PIDSTR_DECL_AND_INIT (pidstr, utmp_ent);
+        -:  462:
+    #####:  463:  if (!exitstr)
+branch  0 never executed
+branch  1 never executed
+    #####:  464:    exitstr = xmalloc (strlen (_("term="))
+call    0 never executed
+        -:  465:                       + INT_STRLEN_BOUND (utmp_ent->ut_exit.e_termination) + 1
+        -:  466:                       + strlen (_("exit="))
+        -:  467:                       + INT_STRLEN_BOUND (utmp_ent->ut_exit.e_exit)
+        -:  468:                       + 1);
+    #####:  469:  sprintf (exitstr, "%s%d %s%d", _("term="), utmp_ent->ut_exit.e_termination,
+    #####:  470:           _("exit="), utmp_ent->ut_exit.e_exit);
+        -:  471:
+        -:  472:  /* FIXME: add idle time? */
+        -:  473:
+    #####:  474:  print_line ("", ' ', utmp_ent->ut_line,
+call    0 never executed
+call    1 never executed
+        -:  475:              time_string (utmp_ent), "", pidstr, comment, exitstr);
+    #####:  476:  free (comment);
+    #####:  477:}
+        -:  478:
+        -:  479:static void
+function print_login called 0 returned 0% blocks executed 0%
+    #####:  480:print_login (struct gl_utmp const *utmp_ent)
+        -:  481:{
+    #####:  482:  char *comment = make_id_equals_comment (utmp_ent);
+call    0 never executed
+    #####:  483:  PIDSTR_DECL_AND_INIT (pidstr, utmp_ent);
+        -:  484:
+        -:  485:  /* FIXME: add idle time? */
+        -:  486:
+    #####:  487:  print_line (_("LOGIN"), ' ', utmp_ent->ut_line,
+call    0 never executed
+call    1 never executed
+        -:  488:              time_string (utmp_ent), "", pidstr, comment, "");
+    #####:  489:  free (comment);
+    #####:  490:}
+        -:  491:
+        -:  492:static void
+function print_initspawn called 0 returned 0% blocks executed 0%
+    #####:  493:print_initspawn (struct gl_utmp const *utmp_ent)
+        -:  494:{
+    #####:  495:  char *comment = make_id_equals_comment (utmp_ent);
+call    0 never executed
+    #####:  496:  PIDSTR_DECL_AND_INIT (pidstr, utmp_ent);
+        -:  497:
+    #####:  498:  print_line ("", ' ', utmp_ent->ut_line,
+call    0 never executed
+call    1 never executed
+        -:  499:              time_string (utmp_ent), "", pidstr, comment, "");
+    #####:  500:  free (comment);
+    #####:  501:}
+        -:  502:
+        -:  503:static void
+function print_clockchange called 0 returned 0% blocks executed 0%
+    #####:  504:print_clockchange (struct gl_utmp const *utmp_ent)
+        -:  505:{
+        -:  506:  /* FIXME: handle NEW_TIME & OLD_TIME both */
+    #####:  507:  print_line ("", ' ', _("clock change"),
+call    0 never executed
+call    1 never executed
+        -:  508:              time_string (utmp_ent), "", "", "", "");
+    #####:  509:}
+        -:  510:
+        -:  511:static void
+function print_runlevel called 0 returned 0% blocks executed 0%
+    #####:  512:print_runlevel (struct gl_utmp const *utmp_ent)
+        -:  513:{
+        -:  514:  static char *runlevline, *comment;
+    #####:  515:  unsigned char last = utmp_ent->ut_pid / 256;
+    #####:  516:  unsigned char curr = utmp_ent->ut_pid % 256;
+        -:  517:
+    #####:  518:  if (!runlevline)
+branch  0 never executed
+branch  1 never executed
+    #####:  519:    runlevline = xmalloc (strlen (_("run-level")) + 3);
+call    0 never executed
+    #####:  520:  sprintf (runlevline, "%s %c", _("run-level"), curr);
+        -:  521:
+    #####:  522:  if (!comment)
+branch  0 never executed
+branch  1 never executed
+    #####:  523:    comment = xmalloc (strlen (_("last=")) + 2);
+call    0 never executed
+    #####:  524:  sprintf (comment, "%s%c", _("last="), (last == 'N') ? 'S' : last);
+branch  0 never executed
+branch  1 never executed
+        -:  525:
+    #####:  526:  print_line ("", ' ', runlevline, time_string (utmp_ent),
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+    #####:  527:              "", "", c_isprint (last) ? comment : "", "");
+call    0 never executed
+        -:  528:
+    #####:  529:  return;
+        -:  530:}
+        -:  531:
+        -:  532:/* Print the username of each valid entry and the number of valid entries
+        -:  533:   in UTMP_BUF, which should have N elements. */
+        -:  534:static void
+function list_entries_who called 0 returned 0% blocks executed 0%
+    #####:  535:list_entries_who (idx_t n, struct gl_utmp const *utmp_buf)
+        -:  536:{
+    #####:  537:  idx_t entries = 0;
+    #####:  538:  char const *separator = "";
+        -:  539:
+    #####:  540:  while (n--)
+branch  0 never executed
+branch  1 never executed
+        -:  541:    {
+    #####:  542:      if (IS_USER_PROCESS (utmp_buf))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  543:        {
+        -:  544:          char *trimmed_name;
+        -:  545:
+    #####:  546:          trimmed_name = extract_trimmed_name (utmp_buf);
+call    0 never executed
+        -:  547:
+    #####:  548:          printf ("%s%s", separator, trimmed_name);
+call    0 never executed
+    #####:  549:          free (trimmed_name);
+    #####:  550:          separator = " ";
+    #####:  551:          entries++;
+        -:  552:        }
+    #####:  553:      utmp_buf++;
+        -:  554:    }
+    #####:  555:  printf (_("\n# users=%td\n"), entries);
+call    0 never executed
+    #####:  556:}
+        -:  557:
+        -:  558:static void
+function print_heading called 0 returned 0% blocks executed 0%
+    #####:  559:print_heading (void)
+        -:  560:{
+    #####:  561:  print_line (_("NAME"), ' ', _("LINE"), _("TIME"), _("IDLE"),
+call    0 never executed
+        -:  562:              _("PID"), _("COMMENT"), _("EXIT"));
+    #####:  563:}
+        -:  564:
+        -:  565:/* Display UTMP_BUF, which should have N entries. */
+        -:  566:static void
+function scan_entries called 1 returned 100% blocks executed 47%
+        1:  567:scan_entries (idx_t n, struct gl_utmp const *utmp_buf)
+        -:  568:{
+        -:  569:  char *ttyname_b IF_LINT ( = nullptr);
+        1:  570:  time_t boottime = TYPE_MINIMUM (time_t);
+        -:  571:
+        1:  572:  if (include_heading)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  573:    print_heading ();
+call    0 never executed
+        -:  574:
+        1:  575:  if (my_line_only)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  576:    {
+    #####:  577:      ttyname_b = ttyname (STDIN_FILENO);
+call    0 never executed
+    #####:  578:      if (!ttyname_b)
+branch  0 never executed
+branch  1 never executed
+    #####:  579:        return;
+    #####:  580:      if (STRNCMP_LIT (ttyname_b, "/dev/") == 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  581:        ttyname_b += sizeof "/dev/" - 1;	/* Discard /dev/ prefix.  */
+        -:  582:    }
+        -:  583:
+        2:  584:  while (n--)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -:  585:    {
+        1:  586:      if (!my_line_only
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  587:          || STREQ (ttyname_b, utmp_buf->ut_line))
+branch  0 never executed
+branch  1 never executed
+        -:  588:        {
+        1:  589:          if (need_users && IS_USER_PROCESS (utmp_buf))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 0% (fallthrough)
+branch  5 taken 100%
+    #####:  590:            print_user (utmp_buf, boottime);
+call    0 never executed
+       1*:  591:          else if (need_runlevel && UT_TYPE_RUN_LVL (utmp_buf))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  592:            print_runlevel (utmp_buf);
+call    0 never executed
+       1*:  593:          else if (need_boottime && UT_TYPE_BOOT_TIME (utmp_buf))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  594:            print_boottime (utmp_buf);
+call    0 never executed
+        -:  595:          /* I've never seen one of these, so I don't know what it should
+        -:  596:             look like :^)
+        -:  597:             FIXME: handle OLD_TIME also, perhaps show the delta? */
+       1*:  598:          else if (need_clockchange && UT_TYPE_NEW_TIME (utmp_buf))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  599:            print_clockchange (utmp_buf);
+call    0 never executed
+       1*:  600:          else if (need_initspawn && UT_TYPE_INIT_PROCESS (utmp_buf))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  601:            print_initspawn (utmp_buf);
+call    0 never executed
+       1*:  602:          else if (need_login && UT_TYPE_LOGIN_PROCESS (utmp_buf))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  603:            print_login (utmp_buf);
+call    0 never executed
+       1*:  604:          else if (need_deadprocs && UT_TYPE_DEAD_PROCESS (utmp_buf))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  605:            print_deadprocs (utmp_buf);
+call    0 never executed
+        -:  606:        }
+        -:  607:
+        1:  608:      if (UT_TYPE_BOOT_TIME (utmp_buf))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  609:        boottime = utmp_buf->ut_ts.tv_sec;
+        -:  610:
+        1:  611:      utmp_buf++;
+        -:  612:    }
+        -:  613:}
+        -:  614:
+        -:  615:/* Display a list of who is on the system, according to utmp file FILENAME.
+        -:  616:   Use read_utmp OPTIONS to read the file.  */
+        -:  617:static void
+function who called 1 returned 100% blocks executed 46%
+        1:  618:who (char const *filename, int options)
+        -:  619:{
+        -:  620:  idx_t n_users;
+        -:  621:  struct gl_utmp *utmp_buf;
+        1:  622:  if (short_list)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  623:    options |= READ_UTMP_USER_PROCESS;
+        1:  624:  if (read_utmp (filename, &n_users, &utmp_buf, options) != 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  625:    error (EXIT_FAILURE, errno, "%s", quotef (filename));
+call    0 never executed
+call    1 never executed
+        -:  626:
+        1:  627:  if (short_list)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  628:    list_entries_who (n_users, utmp_buf);
+call    0 never executed
+        -:  629:  else
+        1:  630:    scan_entries (n_users, utmp_buf);
+call    0 returned 100%
+        -:  631:
+        1:  632:  free (utmp_buf);
+        1:  633:}
+        -:  634:
+        -:  635:void
+function usage called 20 returned 0% blocks executed 21%
+       20:  636:usage (int status)
+        -:  637:{
+       20:  638:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       20:  639:    emit_try_help ();
+call    0 returned 100%
+        -:  640:  else
+        -:  641:    {
+    #####:  642:      printf (_("Usage: %s [OPTION]... [ FILE | ARG1 ARG2 ]\n"), program_name);
+call    0 never executed
+    #####:  643:      fputs (_("\
+call    0 never executed
+        -:  644:Print information about users who are currently logged in.\n\
+        -:  645:"), stdout);
+    #####:  646:      fputs (_("\
+call    0 never executed
+        -:  647:\n\
+        -:  648:  -a, --all         same as -b -d --login -p -r -t -T -u\n\
+        -:  649:  -b, --boot        time of last system boot\n\
+        -:  650:  -d, --dead        print dead processes\n\
+        -:  651:  -H, --heading     print line of column headings\n\
+        -:  652:"), stdout);
+    #####:  653:      fputs (_("\
+call    0 never executed
+        -:  654:  -l, --login       print system login processes\n\
+        -:  655:"), stdout);
+    #####:  656:      fputs (_("\
+call    0 never executed
+        -:  657:      --lookup      attempt to canonicalize hostnames via DNS\n\
+        -:  658:  -m                only hostname and user associated with stdin\n\
+        -:  659:  -p, --process     print active processes spawned by init\n\
+        -:  660:"), stdout);
+    #####:  661:      fputs (_("\
+call    0 never executed
+        -:  662:  -q, --count       all login names and number of users logged on\n\
+        -:  663:  -r, --runlevel    print current runlevel\n\
+        -:  664:  -s, --short       print only name, line, and time (default)\n\
+        -:  665:  -t, --time        print last system clock change\n\
+        -:  666:"), stdout);
+    #####:  667:      fputs (_("\
+call    0 never executed
+        -:  668:  -T, -w, --mesg    add user's message status as +, - or ?\n\
+        -:  669:  -u, --users       list users logged in\n\
+        -:  670:      --message     same as -T\n\
+        -:  671:      --writable    same as -T\n\
+        -:  672:"), stdout);
+    #####:  673:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  674:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  675:      printf (_("\
+call    0 never executed
+        -:  676:\n\
+        -:  677:If FILE is not specified, use %s.  %s as FILE is common.\n\
+        -:  678:If ARG1 ARG2 given, -m presumed: 'am i' or 'mom likes' are usual.\n\
+        -:  679:"), UTMP_FILE, WTMP_FILE);
+    #####:  680:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  681:    }
+       20:  682:  exit (status);
+        -:  683:}
+        -:  684:
+        -:  685:int
+function main called 21 returned 5% blocks executed 49%
+       21:  686:main (int argc, char **argv)
+        -:  687:{
+        -:  688:  int optc;
+       21:  689:  bool assumptions = true;
+        -:  690:
+        -:  691:  initialize_main (&argc, &argv);
+       21:  692:  set_program_name (argv[0]);
+call    0 returned 100%
+       21:  693:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  694:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  695:  textdomain (PACKAGE);
+        -:  696:
+       21:  697:  atexit (close_stdout);
+call    0 returned 100%
+        -:  698:
+       21:  699:  while ((optc = getopt_long (argc, argv, "abdlmpqrstuwHT", longopts, nullptr))
+call    0 returned 100%
+       21:  700:         != -1)
+branch  0 taken 5%
+branch  1 taken 95% (fallthrough)
+        -:  701:    {
+        1:  702:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 0%
+branch 13 taken 0%
+branch 14 taken 0%
+branch 15 taken 0%
+branch 16 taken 100%
+        -:  703:        {
+    #####:  704:        case 'a':
+    #####:  705:          need_boottime = true;
+    #####:  706:          need_deadprocs = true;
+    #####:  707:          need_login = true;
+    #####:  708:          need_initspawn = true;
+    #####:  709:          need_runlevel = true;
+    #####:  710:          need_clockchange = true;
+    #####:  711:          need_users = true;
+    #####:  712:          include_mesg = true;
+    #####:  713:          include_idle = true;
+    #####:  714:          include_exit = true;
+    #####:  715:          assumptions = false;
+    #####:  716:          break;
+        -:  717:
+    #####:  718:        case 'b':
+    #####:  719:          need_boottime = true;
+    #####:  720:          assumptions = false;
+    #####:  721:          break;
+        -:  722:
+    #####:  723:        case 'd':
+    #####:  724:          need_deadprocs = true;
+    #####:  725:          include_idle = true;
+    #####:  726:          include_exit = true;
+    #####:  727:          assumptions = false;
+    #####:  728:          break;
+        -:  729:
+    #####:  730:        case 'H':
+    #####:  731:          include_heading = true;
+    #####:  732:          break;
+        -:  733:
+    #####:  734:        case 'l':
+    #####:  735:          need_login = true;
+    #####:  736:          include_idle = true;
+    #####:  737:          assumptions = false;
+    #####:  738:          break;
+        -:  739:
+    #####:  740:        case 'm':
+    #####:  741:          my_line_only = true;
+    #####:  742:          break;
+        -:  743:
+    #####:  744:        case 'p':
+    #####:  745:          need_initspawn = true;
+    #####:  746:          assumptions = false;
+    #####:  747:          break;
+        -:  748:
+    #####:  749:        case 'q':
+    #####:  750:          short_list = true;
+    #####:  751:          break;
+        -:  752:
+    #####:  753:        case 'r':
+    #####:  754:          need_runlevel = true;
+    #####:  755:          include_idle = true;
+    #####:  756:          assumptions = false;
+    #####:  757:          break;
+        -:  758:
+    #####:  759:        case 's':
+    #####:  760:          short_output = true;
+    #####:  761:          break;
+        -:  762:
+    #####:  763:        case 't':
+    #####:  764:          need_clockchange = true;
+    #####:  765:          assumptions = false;
+    #####:  766:          break;
+        -:  767:
+    #####:  768:        case 'T':
+        -:  769:        case 'w':
+    #####:  770:          include_mesg = true;
+    #####:  771:          break;
+        -:  772:
+    #####:  773:        case 'u':
+    #####:  774:          need_users = true;
+    #####:  775:          include_idle = true;
+    #####:  776:          assumptions = false;
+    #####:  777:          break;
+        -:  778:
+    #####:  779:        case LOOKUP_OPTION:
+    #####:  780:          do_lookup = true;
+    #####:  781:          break;
+        -:  782:
+    #####:  783:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  784:
+    #####:  785:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+call    4 never executed
+        -:  786:
+        1:  787:        default:
+        1:  788:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  789:        }
+        -:  790:    }
+        -:  791:
+       20:  792:  if (assumptions)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  793:    {
+       20:  794:      need_users = true;
+       20:  795:      short_output = true;
+        -:  796:    }
+        -:  797:
+       20:  798:  if (include_exit)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  799:    {
+    #####:  800:      short_output = false;
+        -:  801:    }
+        -:  802:
+       20:  803:  if (hard_locale (LC_TIME))
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+        -:  804:    {
+    #####:  805:      time_format = "%Y-%m-%d %H:%M";
+    #####:  806:      time_format_width = 4 + 1 + 2 + 1 + 2 + 1 + 2 + 1 + 2;
+        -:  807:    }
+        -:  808:  else
+        -:  809:    {
+       20:  810:      time_format = "%b %e %H:%M";
+       20:  811:      time_format_width = 3 + 1 + 2 + 1 + 2 + 1 + 2;
+        -:  812:    }
+        -:  813:
+       20:  814:  switch (argc - optind)
+branch  0 taken 0%
+branch  1 taken 5%
+branch  2 taken 0%
+branch  3 taken 95%
+        -:  815:    {
+    #####:  816:    case 2:			/* who <blurf> <glop> */
+    #####:  817:      my_line_only = true;
+        -:  818:      FALLTHROUGH;
+        1:  819:    case -1:
+        -:  820:    case 0:			/* who */
+        1:  821:      who (UTMP_FILE, READ_UTMP_CHECK_PIDS);
+call    0 returned 100%
+        1:  822:      break;
+        -:  823:
+    #####:  824:    case 1:			/* who <utmp file> */
+    #####:  825:      who (argv[optind], 0);
+call    0 never executed
+    #####:  826:      break;
+        -:  827:
+       19:  828:    default:			/* lose */
+       19:  829:      error (0, 0, _("extra operand %s"), quote (argv[optind + 2]));
+call    0 returned 100%
+       19:  830:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  831:    }
+        -:  832:
+        1:  833:  return EXIT_SUCCESS;
+        -:  834:}

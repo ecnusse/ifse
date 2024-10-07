@@ -1,0 +1,444 @@
+        -:    0:Source:src/unexpand.c
+        -:    0:Graph:unexpand.gcno
+        -:    0:Data:unexpand.gcda
+        -:    0:Runs:38
+        -:    1:/* unexpand - convert blanks to tabs
+        -:    2:   Copyright (C) 1989-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* By default, convert only maximal strings of initial blanks and tabs
+        -:   18:   into tabs.
+        -:   19:   Preserves backspace characters in the output; they decrement the
+        -:   20:   column count for tab calculations.
+        -:   21:   The default action is equivalent to -8.
+        -:   22:
+        -:   23:   Options:
+        -:   24:   --tabs=tab1[,tab2[,...]]
+        -:   25:   -t tab1[,tab2[,...]]
+        -:   26:   -tab1[,tab2[,...]]	If only one tab stop is given, set the tabs tab1
+        -:   27:                        columns apart instead of the default 8.  Otherwise,
+        -:   28:                        set the tabs at columns tab1, tab2, etc. (numbered from
+        -:   29:                        0); preserve any blanks beyond the tab stops given.
+        -:   30:   --all
+        -:   31:   -a			Use tabs wherever they would replace 2 or more blanks,
+        -:   32:                        not just at the beginnings of lines.
+        -:   33:
+        -:   34:   David MacKenzie <djm@gnu.ai.mit.edu> */
+        -:   35:
+        -:   36:#include <config.h>
+        -:   37:
+        -:   38:#include <stdio.h>
+        -:   39:#include <getopt.h>
+        -:   40:#include <sys/types.h>
+        -:   41:#include "system.h"
+        -:   42:#include "expand-common.h"
+        -:   43:
+        -:   44:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   45:#define PROGRAM_NAME "unexpand"
+        -:   46:
+        -:   47:#define AUTHORS proper_name ("David MacKenzie")
+        -:   48:
+        -:   49:
+        -:   50:
+        -:   51:/* For long options that have no equivalent short option, use a
+        -:   52:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:   53:enum
+        -:   54:{
+        -:   55:  CONVERT_FIRST_ONLY_OPTION = CHAR_MAX + 1
+        -:   56:};
+        -:   57:
+        -:   58:static struct option const longopts[] =
+        -:   59:{
+        -:   60:  {"tabs", required_argument, nullptr, 't'},
+        -:   61:  {"all", no_argument, nullptr, 'a'},
+        -:   62:  {"first-only", no_argument, nullptr, CONVERT_FIRST_ONLY_OPTION},
+        -:   63:  {GETOPT_HELP_OPTION_DECL},
+        -:   64:  {GETOPT_VERSION_OPTION_DECL},
+        -:   65:  {nullptr, 0, nullptr, 0}
+        -:   66:};
+        -:   67:
+        -:   68:void
+function usage called 1 returned 0% blocks executed 25%
+        1:   69:usage (int status)
+        -:   70:{
+        1:   71:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:   72:    emit_try_help ();
+call    0 returned 100%
+        -:   73:  else
+        -:   74:    {
+    #####:   75:      printf (_("\
+call    0 never executed
+        -:   76:Usage: %s [OPTION]... [FILE]...\n\
+        -:   77:"),
+        -:   78:              program_name);
+    #####:   79:      fputs (_("\
+call    0 never executed
+        -:   80:Convert blanks in each FILE to tabs, writing to standard output.\n\
+        -:   81:"), stdout);
+        -:   82:
+    #####:   83:      emit_stdin_note ();
+call    0 never executed
+    #####:   84:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:   85:
+    #####:   86:      fputs (_("\
+call    0 never executed
+        -:   87:  -a, --all        convert all blanks, instead of just initial blanks\n\
+        -:   88:      --first-only  convert only leading sequences of blanks (overrides -a)\n\
+        -:   89:  -t, --tabs=N     have tabs N characters apart instead of 8 (enables -a)\n\
+        -:   90:"), stdout);
+    #####:   91:      emit_tab_list_info ();
+call    0 never executed
+    #####:   92:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   93:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   94:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   95:    }
+        1:   96:  exit (status);
+        -:   97:}
+        -:   98:
+        -:   99:/* Change blanks to tabs, writing to stdout.
+        -:  100:   Read each file in 'file_list', in order.  */
+        -:  101:
+        -:  102:static void
+function unexpand called 37 returned 100% blocks executed 43%
+       37:  103:unexpand (void)
+        -:  104:{
+        -:  105:  /* Input stream.  */
+       37:  106:  FILE *fp = next_file (nullptr);
+call    0 returned 100%
+        -:  107:
+        -:  108:  /* The array of pending blanks.  In non-POSIX locales, blanks can
+        -:  109:     include characters other than spaces, so the blanks must be
+        -:  110:     stored, not merely counted.  */
+        -:  111:  char *pending_blank;
+        -:  112:
+       37:  113:  if (!fp)
+branch  0 taken 76% (fallthrough)
+branch  1 taken 24%
+       28:  114:    return;
+        -:  115:
+        -:  116:  /* The worst case is a non-blank character, then one blank, then a
+        -:  117:     tab stop, then MAX_COLUMN_WIDTH - 1 blanks, then a non-blank; so
+        -:  118:     allocate MAX_COLUMN_WIDTH bytes to store the blanks.  */
+        9:  119:  pending_blank = xmalloc (max_column_width);
+call    0 returned 100%
+        -:  120:
+        -:  121:  while (true)
+    #####:  122:    {
+        -:  123:      /* Input character, or EOF.  */
+        -:  124:      int c;
+        -:  125:
+        -:  126:      /* If true, perform translations.  */
+        9:  127:      bool convert = true;
+        -:  128:
+        -:  129:
+        -:  130:      /* The following variables have valid values only when CONVERT
+        -:  131:         is true:  */
+        -:  132:
+        -:  133:      /* Column of next input character.  */
+        9:  134:      uintmax_t column = 0;
+        -:  135:
+        -:  136:      /* Column the next input tab stop is on.  */
+        9:  137:      uintmax_t next_tab_column = 0;
+        -:  138:
+        -:  139:      /* Index in TAB_LIST of next tab stop to examine.  */
+        9:  140:      size_t tab_index = 0;
+        -:  141:
+        -:  142:      /* If true, the first pending blank came just before a tab stop.  */
+        9:  143:      bool one_blank_before_tab_stop = false;
+        -:  144:
+        -:  145:      /* If true, the previous input character was a blank.  This is
+        -:  146:         initially true, since initial strings of blanks are treated
+        -:  147:         as if the line was preceded by a blank.  */
+        9:  148:      bool prev_blank = true;
+        -:  149:
+        -:  150:      /* Number of pending columns of blanks.  */
+        9:  151:      size_t pending = 0;
+        -:  152:
+        -:  153:
+        -:  154:      /* Convert a line of text.  */
+        -:  155:
+        -:  156:      do
+        -:  157:        {
+       34:  158:          while ((c = getc (fp)) < 0 && (fp = next_file (fp)))
+call    0 returned 100%
+branch  1 taken 29% (fallthrough)
+branch  2 taken 71%
+call    3 returned 100%
+branch  4 taken 10%
+branch  5 taken 90% (fallthrough)
+        1:  159:            continue;
+        -:  160:
+       33:  161:          if (convert)
+branch  0 taken 27% (fallthrough)
+branch  1 taken 73%
+        -:  162:            {
+        9:  163:              bool blank = !! isblank (c);
+        -:  164:
+        9:  165:              if (blank)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  166:                {
+        -:  167:                  bool last_tab;
+        -:  168:
+    #####:  169:                  next_tab_column = get_next_tab_column (column, &tab_index,
+call    0 never executed
+        -:  170:                                                         &last_tab);
+        -:  171:
+    #####:  172:                  if (last_tab)
+branch  0 never executed
+branch  1 never executed
+    #####:  173:                    convert = false;
+        -:  174:
+    #####:  175:                  if (convert)
+branch  0 never executed
+branch  1 never executed
+        -:  176:                    {
+    #####:  177:                      if (next_tab_column < column)
+branch  0 never executed
+branch  1 never executed
+    #####:  178:                        error (EXIT_FAILURE, 0, _("input line is too long"));
+call    0 never executed
+        -:  179:
+    #####:  180:                      if (c == '\t')
+branch  0 never executed
+branch  1 never executed
+        -:  181:                        {
+    #####:  182:                          column = next_tab_column;
+        -:  183:
+    #####:  184:                          if (pending)
+branch  0 never executed
+branch  1 never executed
+    #####:  185:                            pending_blank[0] = '\t';
+        -:  186:                        }
+        -:  187:                      else
+        -:  188:                        {
+    #####:  189:                          column++;
+        -:  190:
+    #####:  191:                          if (! (prev_blank && column == next_tab_column))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  192:                            {
+        -:  193:                              /* It is not yet known whether the pending blanks
+        -:  194:                                 will be replaced by tabs.  */
+    #####:  195:                              if (column == next_tab_column)
+branch  0 never executed
+branch  1 never executed
+    #####:  196:                                one_blank_before_tab_stop = true;
+    #####:  197:                              pending_blank[pending++] = c;
+    #####:  198:                              prev_blank = true;
+    #####:  199:                              continue;
+        -:  200:                            }
+        -:  201:
+        -:  202:                          /* Replace the pending blanks by a tab or two.  */
+    #####:  203:                          pending_blank[0] = c = '\t';
+        -:  204:                        }
+        -:  205:
+        -:  206:                      /* Discard pending blanks, unless it was a single
+        -:  207:                         blank just before the previous tab stop.  */
+    #####:  208:                      pending = one_blank_before_tab_stop;
+        -:  209:                    }
+        -:  210:                }
+        9:  211:              else if (c == '\b')
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  212:                {
+        -:  213:                  /* Go back one column, and force recalculation of the
+        -:  214:                     next tab stop.  */
+    #####:  215:                  column -= !!column;
+    #####:  216:                  next_tab_column = column;
+    #####:  217:                  tab_index -= !!tab_index;
+        -:  218:                }
+        -:  219:              else
+        -:  220:                {
+        9:  221:                  column++;
+        9:  222:                  if (!column)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  223:                    error (EXIT_FAILURE, 0, _("input line is too long"));
+call    0 never executed
+        -:  224:                }
+        -:  225:
+        9:  226:              if (pending)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  227:                {
+    #####:  228:                  if (pending > 1 && one_blank_before_tab_stop)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  229:                    pending_blank[0] = '\t';
+    #####:  230:                  if (fwrite (pending_blank, 1, pending, stdout) != pending)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  231:                    write_error ();
+call    0 never executed
+    #####:  232:                  pending = 0;
+    #####:  233:                  one_blank_before_tab_stop = false;
+        -:  234:                }
+        -:  235:
+        9:  236:              prev_blank = blank;
+       9*:  237:              convert &= convert_entire_line || blank;
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+        -:  238:            }
+        -:  239:
+       33:  240:          if (c < 0)
+branch  0 taken 27% (fallthrough)
+branch  1 taken 73%
+        -:  241:            {
+        9:  242:              free (pending_blank);
+        9:  243:              return;
+        -:  244:            }
+        -:  245:
+       24:  246:          if (putchar (c) < 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  247:            write_error ();
+call    0 never executed
+        -:  248:        }
+       24:  249:      while (c != '\n');
+branch  0 taken 100%
+branch  1 taken 0% (fallthrough)
+        -:  250:    }
+        -:  251:}
+        -:  252:
+        -:  253:int
+function main called 38 returned 97% blocks executed 43%
+       38:  254:main (int argc, char **argv)
+        -:  255:{
+       38:  256:  bool have_tabval = false;
+        -:  257:  uintmax_t tabval IF_LINT ( = 0);
+        -:  258:  int c;
+        -:  259:
+        -:  260:  /* If true, cancel the effect of any -a (explicit or implicit in -t),
+        -:  261:     so that only leading blanks will be considered.  */
+       38:  262:  bool convert_first_only = false;
+        -:  263:
+        -:  264:  initialize_main (&argc, &argv);
+       38:  265:  set_program_name (argv[0]);
+call    0 returned 100%
+       38:  266:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  267:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  268:  textdomain (PACKAGE);
+        -:  269:
+       38:  270:  atexit (close_stdout);
+call    0 returned 100%
+        -:  271:
+       38:  272:  while ((c = getopt_long (argc, argv, ",0123456789at:", longopts, nullptr))
+call    0 returned 100%
+       38:  273:         != -1)
+branch  0 taken 3%
+branch  1 taken 97% (fallthrough)
+        -:  274:    {
+        1:  275:      switch (c)
+branch  0 taken 100%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+        -:  276:        {
+        1:  277:        case '?':
+        1:  278:          usage (EXIT_FAILURE);
+call    0 returned 0%
+    #####:  279:        case 'a':
+    #####:  280:          convert_entire_line = true;
+    #####:  281:          break;
+    #####:  282:        case 't':
+    #####:  283:          convert_entire_line = true;
+    #####:  284:          parse_tab_stops (optarg);
+call    0 never executed
+    #####:  285:          break;
+    #####:  286:        case CONVERT_FIRST_ONLY_OPTION:
+    #####:  287:          convert_first_only = true;
+    #####:  288:          break;
+    #####:  289:        case ',':
+    #####:  290:          if (have_tabval)
+branch  0 never executed
+branch  1 never executed
+    #####:  291:            add_tab_stop (tabval);
+call    0 never executed
+    #####:  292:          have_tabval = false;
+    #####:  293:          break;
+    #####:  294:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  295:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####:  296:        default:
+    #####:  297:          if (!have_tabval)
+branch  0 never executed
+branch  1 never executed
+        -:  298:            {
+    #####:  299:              tabval = 0;
+    #####:  300:              have_tabval = true;
+        -:  301:            }
+    #####:  302:          if (!DECIMAL_DIGIT_ACCUMULATE (tabval, c - '0', uintmax_t))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  303:            error (EXIT_FAILURE, 0, _("tab stop value is too large"));
+call    0 never executed
+    #####:  304:          break;
+        -:  305:        }
+        -:  306:    }
+        -:  307:
+       37:  308:  if (convert_first_only)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  309:    convert_entire_line = false;
+        -:  310:
+       37:  311:  if (have_tabval)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  312:    add_tab_stop (tabval);
+call    0 never executed
+        -:  313:
+       37:  314:  finalize_tab_stops ();
+call    0 returned 100%
+        -:  315:
+       37:  316:  set_file_list ((optind < argc) ? &argv[optind] : nullptr);
+branch  0 taken 97% (fallthrough)
+branch  1 taken 3%
+call    2 returned 100%
+        -:  317:
+       37:  318:  unexpand ();
+call    0 returned 100%
+        -:  319:
+       37:  320:  cleanup_file_list_stdin ();
+call    0 returned 100%
+        -:  321:
+       37:  322:  return exit_status;
+        -:  323:}

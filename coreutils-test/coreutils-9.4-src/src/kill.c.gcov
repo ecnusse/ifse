@@ -1,0 +1,451 @@
+        -:    0:Source:src/kill.c
+        -:    0:Graph:kill.gcno
+        -:    0:Data:kill.gcda
+        -:    0:Runs:28
+        -:    1:/* kill -- send a signal to a process
+        -:    2:   Copyright (C) 2002-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Paul Eggert.  */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <stdckdint.h>
+        -:   21:#include <stdio.h>
+        -:   22:#include <getopt.h>
+        -:   23:#include <sys/types.h>
+        -:   24:#include <signal.h>
+        -:   25:
+        -:   26:#include "system.h"
+        -:   27:#include "sig2str.h"
+        -:   28:#include "operand2sig.h"
+        -:   29:#include "quote.h"
+        -:   30:
+        -:   31:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   32:#define PROGRAM_NAME "kill"
+        -:   33:
+        -:   34:#define AUTHORS proper_name ("Paul Eggert")
+        -:   35:
+        -:   36:#if ! (HAVE_DECL_STRSIGNAL || defined strsignal)
+        -:   37:# if ! (HAVE_DECL_SYS_SIGLIST || defined sys_siglist)
+        -:   38:#  if HAVE_DECL__SYS_SIGLIST || defined _sys_siglist
+        -:   39:#   define sys_siglist _sys_siglist
+        -:   40:#  elif HAVE_DECL___SYS_SIGLIST || defined __sys_siglist
+        -:   41:#   define sys_siglist __sys_siglist
+        -:   42:#  endif
+        -:   43:# endif
+        -:   44:# if HAVE_DECL_SYS_SIGLIST || defined sys_siglist
+        -:   45:#  define strsignal(signum) (0 <= (signum) && (signum) <= SIGNUM_BOUND \
+        -:   46:                             ? sys_siglist[signum] \
+        -:   47:                             : 0)
+        -:   48:# endif
+        -:   49:# ifndef strsignal
+        -:   50:#  define strsignal(signum) 0
+        -:   51:# endif
+        -:   52:#endif
+        -:   53:
+        -:   54:static char const short_options[] =
+        -:   55:  "0::1::2::3::4::5::6::7::8::9::"
+        -:   56:  "A::B::C::D::E::F::G::H::I::J::K::M::"
+        -:   57:  "N::O::P::Q::R::S::T::U::V::W::X::Y::Z::"
+        -:   58:  "Lln:s:t";
+        -:   59:
+        -:   60:static struct option const long_options[] =
+        -:   61:{
+        -:   62:  {"list", no_argument, nullptr, 'l'},
+        -:   63:  {"signal", required_argument, nullptr, 's'},
+        -:   64:  {"table", no_argument, nullptr, 't'},
+        -:   65:  {GETOPT_HELP_OPTION_DECL},
+        -:   66:  {GETOPT_VERSION_OPTION_DECL},
+        -:   67:  {nullptr, 0, nullptr, 0}
+        -:   68:};
+        -:   69:
+        -:   70:void
+function usage called 2 returned 0% blocks executed 25%
+        2:   71:usage (int status)
+        -:   72:{
+        2:   73:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        2:   74:    emit_try_help ();
+call    0 returned 100%
+        -:   75:  else
+        -:   76:    {
+    #####:   77:      printf (_("\
+call    0 never executed
+        -:   78:Usage: %s [-s SIGNAL | -SIGNAL] PID...\n\
+        -:   79:  or:  %s -l [SIGNAL]...\n\
+        -:   80:  or:  %s -t [SIGNAL]...\n\
+        -:   81:"),
+        -:   82:              program_name, program_name, program_name);
+    #####:   83:      fputs (_("\
+call    0 never executed
+        -:   84:Send signals to processes, or list signals.\n\
+        -:   85:"), stdout);
+        -:   86:
+    #####:   87:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:   88:
+    #####:   89:      fputs (_("\
+call    0 never executed
+        -:   90:  -s, --signal=SIGNAL, -SIGNAL\n\
+        -:   91:                   specify the name or number of the signal to be sent\n\
+        -:   92:  -l, --list       list signal names, or convert signal names to/from numbers\n\
+        -:   93:  -t, --table      print a table of signal information\n\
+        -:   94:"), stdout);
+    #####:   95:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   96:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   97:      fputs (_("\n\
+call    0 never executed
+        -:   98:SIGNAL may be a signal name like 'HUP', or a signal number like '1',\n\
+        -:   99:or the exit status of a process terminated by a signal.\n\
+        -:  100:PID is an integer; if negative it identifies a process group.\n\
+        -:  101:"), stdout);
+    #####:  102:      printf (USAGE_BUILTIN_WARNING, PROGRAM_NAME);
+call    0 never executed
+    #####:  103:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  104:    }
+        2:  105:  exit (status);
+        -:  106:}
+        -:  107:
+        -:  108:/* Print a row of 'kill -t' output.  NUM_WIDTH is the maximum signal
+        -:  109:   number width, and SIGNUM is the signal number to print.  The
+        -:  110:   maximum name width is NAME_WIDTH, and SIGNAME is the name to print.  */
+        -:  111:
+        -:  112:static void
+function print_table_row called 0 returned 0% blocks executed 0%
+    #####:  113:print_table_row (int num_width, int signum,
+        -:  114:                 int name_width, char const *signame)
+        -:  115:{
+    #####:  116:  char const *description = strsignal (signum);
+call    0 never executed
+    #####:  117:  printf ("%*d %-*s %s\n", num_width, signum, name_width, signame,
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  118:          description ? description : "?");
+    #####:  119:}
+        -:  120:
+        -:  121:/* Print a list of signal names.  If TABLE, print a table.
+        -:  122:   Print the names specified by ARGV if nonzero; otherwise,
+        -:  123:   print all known names.  Return a suitable exit status.  */
+        -:  124:
+        -:  125:static int
+function list_signals called 0 returned 0% blocks executed 0%
+    #####:  126:list_signals (bool table, char *const *argv)
+        -:  127:{
+        -:  128:  int signum;
+    #####:  129:  int status = EXIT_SUCCESS;
+        -:  130:  char signame[SIG2STR_MAX];
+        -:  131:
+    #####:  132:  if (table)
+branch  0 never executed
+branch  1 never executed
+        -:  133:    {
+    #####:  134:      int name_width = 0;
+        -:  135:
+        -:  136:      /* Compute the maximum width of a signal number.  */
+    #####:  137:      int num_width = 1;
+    #####:  138:      for (signum = 1; signum <= SIGNUM_BOUND / 10; signum *= 10)
+branch  0 never executed
+branch  1 never executed
+    #####:  139:        num_width++;
+        -:  140:
+        -:  141:      /* Compute the maximum width of a signal name.  */
+    #####:  142:      for (signum = 1; signum <= SIGNUM_BOUND; signum++)
+branch  0 never executed
+branch  1 never executed
+    #####:  143:        if (sig2str (signum, signame) == 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  144:          {
+    #####:  145:            idx_t len = strlen (signame);
+    #####:  146:            if (name_width < len)
+branch  0 never executed
+branch  1 never executed
+    #####:  147:              name_width = len;
+        -:  148:          }
+        -:  149:
+    #####:  150:      if (argv)
+branch  0 never executed
+branch  1 never executed
+    #####:  151:        for (; *argv; argv++)
+branch  0 never executed
+branch  1 never executed
+        -:  152:          {
+    #####:  153:            signum = operand2sig (*argv, signame);
+call    0 never executed
+    #####:  154:            if (signum < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  155:              status = EXIT_FAILURE;
+        -:  156:            else
+    #####:  157:              print_table_row (num_width, signum, name_width, signame);
+call    0 never executed
+        -:  158:          }
+        -:  159:      else
+    #####:  160:        for (signum = 1; signum <= SIGNUM_BOUND; signum++)
+branch  0 never executed
+branch  1 never executed
+    #####:  161:          if (sig2str (signum, signame) == 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  162:            print_table_row (num_width, signum, name_width, signame);
+call    0 never executed
+        -:  163:    }
+        -:  164:  else
+        -:  165:    {
+    #####:  166:      if (argv)
+branch  0 never executed
+branch  1 never executed
+    #####:  167:        for (; *argv; argv++)
+branch  0 never executed
+branch  1 never executed
+        -:  168:          {
+    #####:  169:            signum = operand2sig (*argv, signame);
+call    0 never executed
+    #####:  170:            if (signum < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  171:              status = EXIT_FAILURE;
+        -:  172:            else
+        -:  173:              {
+    #####:  174:                if (ISDIGIT (**argv))
+branch  0 never executed
+branch  1 never executed
+    #####:  175:                  puts (signame);
+call    0 never executed
+        -:  176:                else
+    #####:  177:                  printf ("%d\n", signum);
+call    0 never executed
+        -:  178:              }
+        -:  179:          }
+        -:  180:      else
+    #####:  181:        for (signum = 1; signum <= SIGNUM_BOUND; signum++)
+branch  0 never executed
+branch  1 never executed
+    #####:  182:          if (sig2str (signum, signame) == 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  183:            puts (signame);
+call    0 never executed
+        -:  184:    }
+        -:  185:
+    #####:  186:  return status;
+        -:  187:}
+        -:  188:
+        -:  189:/* Send signal SIGNUM to all the processes or process groups specified
+        -:  190:   by ARGV.  Return a suitable exit status.  */
+        -:  191:
+        -:  192:static int
+function send_signals called 26 returned 100% blocks executed 67%
+       26:  193:send_signals (int signum, char *const *argv)
+        -:  194:{
+       26:  195:  int status = EXIT_SUCCESS;
+       26:  196:  char const *arg = *argv;
+        -:  197:
+        -:  198:  do
+        -:  199:    {
+        -:  200:      char *endp;
+       31:  201:      intmax_t n = (errno = 0, strtoimax (arg, &endp, 10));
+call    0 returned 100%
+        -:  202:      pid_t pid;
+        -:  203:
+       31:  204:      if (errno == ERANGE || ckd_add (&pid, n, 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+       31:  205:          || arg == endp || *endp)
+branch  0 taken 10% (fallthrough)
+branch  1 taken 90%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+        -:  206:        {
+       31:  207:          error (0, 0, _("%s: invalid process id"), quote (arg));
+call    0 returned 100%
+       31:  208:          status = EXIT_FAILURE;
+        -:  209:        }
+    #####:  210:      else if (kill (pid, signum) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  211:        {
+    #####:  212:          error (0, errno, "%s", quote (arg));
+call    0 never executed
+    #####:  213:          status = EXIT_FAILURE;
+        -:  214:        }
+        -:  215:    }
+       31:  216:  while ((arg = *++argv));
+branch  0 taken 16%
+branch  1 taken 84% (fallthrough)
+        -:  217:
+       26:  218:  return status;
+        -:  219:}
+        -:  220:
+        -:  221:int
+function main called 28 returned 93% blocks executed 34%
+       28:  222:main (int argc, char **argv)
+        -:  223:{
+        -:  224:  int optc;
+       28:  225:  bool list = false;
+       28:  226:  bool table = false;
+       28:  227:  int signum = -1;
+        -:  228:  char signame[SIG2STR_MAX];
+        -:  229:
+        -:  230:  initialize_main (&argc, &argv);
+       28:  231:  set_program_name (argv[0]);
+call    0 returned 100%
+       28:  232:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  233:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  234:  textdomain (PACKAGE);
+        -:  235:
+       28:  236:  atexit (close_stdout);
+call    0 returned 100%
+        -:  237:
+       28:  238:  while ((optc = getopt_long (argc, argv, short_options, long_options, nullptr))
+call    0 returned 100%
+       28:  239:         != -1)
+branch  0 taken 4%
+branch  1 taken 96% (fallthrough)
+        1:  240:    switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 100%
+        -:  241:      {
+    #####:  242:      case '0': case '1': case '2': case '3': case '4':
+        -:  243:      case '5': case '6': case '7': case '8': case '9':
+    #####:  244:        if (optind != 2)
+branch  0 never executed
+branch  1 never executed
+        -:  245:          {
+        -:  246:            /* This option is actually a process-id.  */
+    #####:  247:            optind--;
+    #####:  248:            goto no_more_options;
+        -:  249:          }
+        -:  250:        FALLTHROUGH;
+        -:  251:      case 'A': case 'B': case 'C': case 'D': case 'E':
+        -:  252:      case 'F': case 'G': case 'H': case 'I': case 'J':
+        -:  253:      case 'K': /*case 'L':*/ case 'M': case 'N': case 'O':
+        -:  254:      case 'P': case 'Q': case 'R': case 'S': case 'T':
+        -:  255:      case 'U': case 'V': case 'W': case 'X': case 'Y':
+        -:  256:      case 'Z':
+    #####:  257:        if (! optarg)
+branch  0 never executed
+branch  1 never executed
+    #####:  258:          optarg = argv[optind - 1] + strlen (argv[optind - 1]);
+    #####:  259:        if (optarg != argv[optind - 1] + 2)
+branch  0 never executed
+branch  1 never executed
+        -:  260:          {
+        -:  261:            error (0, 0, _("invalid option -- %c"), optc);
+    #####:  262:            usage (EXIT_FAILURE);
+call    0 never executed
+        -:  263:          }
+    #####:  264:        optarg--;
+        -:  265:        FALLTHROUGH;
+    #####:  266:      case 'n': /* -n is not documented, but is for Bash compatibility.  */
+        -:  267:      case 's':
+    #####:  268:        if (0 <= signum)
+branch  0 never executed
+branch  1 never executed
+        -:  269:          {
+    #####:  270:            error (0, 0, _("%s: multiple signals specified"), quote (optarg));
+call    0 never executed
+    #####:  271:            usage (EXIT_FAILURE);
+call    0 never executed
+        -:  272:          }
+    #####:  273:        signum = operand2sig (optarg, signame);
+call    0 never executed
+    #####:  274:        if (signum < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  275:          usage (EXIT_FAILURE);
+call    0 never executed
+    #####:  276:        break;
+        -:  277:
+    #####:  278:      case 'L': /* -L is not documented, but is for procps compatibility.  */
+        -:  279:      case 't':
+    #####:  280:        table = true;
+        -:  281:        FALLTHROUGH;
+    #####:  282:      case 'l':
+    #####:  283:        if (list)
+branch  0 never executed
+branch  1 never executed
+        -:  284:          {
+        -:  285:            error (0, 0, _("multiple -l or -t options specified"));
+    #####:  286:            usage (EXIT_FAILURE);
+call    0 never executed
+        -:  287:          }
+    #####:  288:        list = true;
+    #####:  289:        break;
+        -:  290:
+    #####:  291:      case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  292:      case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        1:  293:      default:
+        1:  294:        usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  295:      }
+       27:  296: no_more_options:
+        -:  297:
+       27:  298:  if (signum < 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       27:  299:    signum = SIGTERM;
+    #####:  300:  else if (list)
+branch  0 never executed
+branch  1 never executed
+        -:  301:    {
+        -:  302:      error (0, 0, _("cannot combine signal with -l or -t"));
+    #####:  303:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  304:    }
+        -:  305:
+       27:  306:  if ( ! list && argc <= optind)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 4% (fallthrough)
+branch  3 taken 96%
+        -:  307:    {
+        -:  308:      error (0, 0, _("no process ID specified"));
+        1:  309:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  310:    }
+        -:  311:
+        -:  312:  return (list
+    #####:  313:          ? list_signals (table, optind < argc ? argv + optind : nullptr)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+       26:  314:          : send_signals (signum, argv + optind));
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 returned 100%
+        -:  315:}

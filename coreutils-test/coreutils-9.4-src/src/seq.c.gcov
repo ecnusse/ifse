@@ -1,0 +1,1084 @@
+        -:    0:Source:src/seq.c
+        -:    0:Graph:seq.gcno
+        -:    0:Data:seq.gcda
+        -:    0:Runs:8
+        -:    1:/* seq - print sequence of numbers to standard output.
+        -:    2:   Copyright (C) 1994-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Ulrich Drepper.  */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <getopt.h>
+        -:   21:#include <stdio.h>
+        -:   22:#include <sys/types.h>
+        -:   23:
+        -:   24:#include "system.h"
+        -:   25:#include "cl-strtod.h"
+        -:   26:#include "quote.h"
+        -:   27:#include "xstrtod.h"
+        -:   28:
+        -:   29:/* Roll our own isfinite/isnan rather than using <math.h>, so that we don't
+        -:   30:   have to worry about linking -lm just for isfinite.  */
+        -:   31:#ifndef isfinite
+        -:   32:# define isfinite(x) ((x) * 0 == 0)
+        -:   33:#endif
+        -:   34:#ifndef isnan
+        -:   35:# define isnan(x) ((x) != (x))
+        -:   36:#endif
+        -:   37:
+        -:   38:/* Limit below which seq_fast has more throughput.
+        -:   39:   Determined with: seq 0 200 inf | pv > /dev/null  */
+        -:   40:#define SEQ_FAST_STEP_LIMIT 200  /* Keep in sync with texinfo description.  */
+        -:   41:#define SEQ_FAST_STEP_LIMIT_DIGITS 3
+        -:   42:
+        -:   43:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   44:#define PROGRAM_NAME "seq"
+        -:   45:
+        -:   46:#define AUTHORS proper_name ("Ulrich Drepper")
+        -:   47:
+        -:   48:/* True if the locale settings were honored.  */
+        -:   49:static bool locale_ok;
+        -:   50:
+        -:   51:/* If true print all number with equal width.  */
+        -:   52:static bool equal_width;
+        -:   53:
+        -:   54:/* The string used to separate two numbers.  */
+        -:   55:static char const *separator;
+        -:   56:
+        -:   57:/* The string output after all numbers have been output.
+        -:   58:   Usually "\n" or "\0".  */
+        -:   59:static char const terminator[] = "\n";
+        -:   60:
+        -:   61:static struct option const long_options[] =
+        -:   62:{
+        -:   63:  { "equal-width", no_argument, nullptr, 'w'},
+        -:   64:  { "format", required_argument, nullptr, 'f'},
+        -:   65:  { "separator", required_argument, nullptr, 's'},
+        -:   66:  {GETOPT_HELP_OPTION_DECL},
+        -:   67:  {GETOPT_VERSION_OPTION_DECL},
+        -:   68:  { nullptr, 0, nullptr, 0}
+        -:   69:};
+        -:   70:
+        -:   71:void
+function usage called 8 returned 0% blocks executed 25%
+        8:   72:usage (int status)
+        -:   73:{
+        8:   74:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        8:   75:    emit_try_help ();
+call    0 returned 100%
+        -:   76:  else
+        -:   77:    {
+    #####:   78:      printf (_("\
+call    0 never executed
+        -:   79:Usage: %s [OPTION]... LAST\n\
+        -:   80:  or:  %s [OPTION]... FIRST LAST\n\
+        -:   81:  or:  %s [OPTION]... FIRST INCREMENT LAST\n\
+        -:   82:"), program_name, program_name, program_name);
+    #####:   83:      fputs (_("\
+call    0 never executed
+        -:   84:Print numbers from FIRST to LAST, in steps of INCREMENT.\n\
+        -:   85:"), stdout);
+        -:   86:
+    #####:   87:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:   88:
+    #####:   89:      fputs (_("\
+call    0 never executed
+        -:   90:  -f, --format=FORMAT      use printf style floating-point FORMAT\n\
+        -:   91:  -s, --separator=STRING   use STRING to separate numbers (default: \\n)\n\
+        -:   92:  -w, --equal-width        equalize width by padding with leading zeroes\n\
+        -:   93:"), stdout);
+    #####:   94:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   95:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   96:      fputs (_("\
+call    0 never executed
+        -:   97:\n\
+        -:   98:If FIRST or INCREMENT is omitted, it defaults to 1.  That is, an\n\
+        -:   99:omitted INCREMENT defaults to 1 even when LAST is smaller than FIRST.\n\
+        -:  100:The sequence of numbers ends when the sum of the current number and\n\
+        -:  101:INCREMENT would become greater than LAST.\n\
+        -:  102:FIRST, INCREMENT, and LAST are interpreted as floating point values.\n\
+        -:  103:INCREMENT is usually positive if FIRST is smaller than LAST, and\n\
+        -:  104:INCREMENT is usually negative if FIRST is greater than LAST.\n\
+        -:  105:INCREMENT must not be 0; none of FIRST, INCREMENT and LAST may be NaN.\n\
+        -:  106:"), stdout);
+    #####:  107:      fputs (_("\
+call    0 never executed
+        -:  108:FORMAT must be suitable for printing one argument of type 'double';\n\
+        -:  109:it defaults to %.PRECf if FIRST, INCREMENT, and LAST are all fixed point\n\
+        -:  110:decimal numbers with maximum precision PREC, and to %g otherwise.\n\
+        -:  111:"), stdout);
+    #####:  112:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  113:    }
+        8:  114:  exit (status);
+        -:  115:}
+        -:  116:
+        -:  117:/* A command-line operand.  */
+        -:  118:struct operand
+        -:  119:{
+        -:  120:  /* Its value, converted to 'long double'.  */
+        -:  121:  long double value;
+        -:  122:
+        -:  123:  /* Its print width, if it were printed out in a form similar to its
+        -:  124:     input form.  An input like "-.1" is treated like "-0.1", and an
+        -:  125:     input like "1." is treated like "1", but otherwise widths are
+        -:  126:     left alone.  */
+        -:  127:  size_t width;
+        -:  128:
+        -:  129:  /* Number of digits after the decimal point, or INT_MAX if the
+        -:  130:     number can't easily be expressed as a fixed-point number.  */
+        -:  131:  int precision;
+        -:  132:};
+        -:  133:typedef struct operand operand;
+        -:  134:
+        -:  135:/* Description of what a number-generating format will generate.  */
+        -:  136:struct layout
+        -:  137:{
+        -:  138:  /* Number of bytes before and after the number.  */
+        -:  139:  size_t prefix_len;
+        -:  140:  size_t suffix_len;
+        -:  141:};
+        -:  142:
+        -:  143:/* Read a long double value from the command line.
+        -:  144:   Return if the string is correct else signal error.  */
+        -:  145:
+        -:  146:static operand
+function scan_arg called 7 returned 0% blocks executed 14%
+        7:  147:scan_arg (char const *arg)
+        -:  148:{
+        -:  149:  operand ret;
+        -:  150:
+        7:  151:  if (! xstrtold (arg, nullptr, &ret.value, cl_strtold))
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+        -:  152:    {
+        7:  153:      error (0, 0, _("invalid floating point argument: %s"), quote (arg));
+call    0 returned 100%
+        7:  154:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  155:    }
+        -:  156:
+    #####:  157:  if (isnan (ret.value))
+branch  0 never executed
+branch  1 never executed
+        -:  158:    {
+    #####:  159:      error (0, 0, _("invalid %s argument: %s"), quote_n (0, "not-a-number"),
+call    0 never executed
+call    1 never executed
+        -:  160:             quote_n (1, arg));
+    #####:  161:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  162:    }
+        -:  163:
+        -:  164:  /* We don't output spaces or '+' so don't include in width */
+    #####:  165:  while (isspace (to_uchar (*arg)) || *arg == '+')
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  166:    arg++;
+        -:  167:
+        -:  168:  /* Default to auto width and precision.  */
+    #####:  169:  ret.width = 0;
+    #####:  170:  ret.precision = INT_MAX;
+        -:  171:
+        -:  172:  /* Use no precision (and possibly fast generation) for integers.  */
+    #####:  173:  char const *decimal_point = strchr (arg, '.');
+    #####:  174:  if (! decimal_point && ! strchr (arg, 'p') /* not a hex float */)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  175:    ret.precision = 0;
+        -:  176:
+        -:  177:  /* auto set width and precision for decimal inputs.  */
+    #####:  178:  if (! arg[strcspn (arg, "xX")] && isfinite (ret.value))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  179:    {
+    #####:  180:      size_t fraction_len = 0;
+    #####:  181:      ret.width = strlen (arg);
+        -:  182:
+    #####:  183:      if (decimal_point)
+branch  0 never executed
+branch  1 never executed
+        -:  184:        {
+    #####:  185:          fraction_len = strcspn (decimal_point + 1, "eE");
+    #####:  186:          if (fraction_len <= INT_MAX)
+branch  0 never executed
+branch  1 never executed
+    #####:  187:            ret.precision = fraction_len;
+    #####:  188:          ret.width += (fraction_len == 0                      /* #.  -> #   */
+        -:  189:                        ? -1
+    #####:  190:                        : (decimal_point == arg                /* .#  -> 0.# */
+branch  0 never executed
+branch  1 never executed
+    #####:  191:                           || ! ISDIGIT (decimal_point[-1]))); /* -.# -> 0.# */
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  192:        }
+    #####:  193:      char const *e = strchr (arg, 'e');
+    #####:  194:      if (! e)
+branch  0 never executed
+branch  1 never executed
+    #####:  195:        e = strchr (arg, 'E');
+    #####:  196:      if (e)
+branch  0 never executed
+branch  1 never executed
+        -:  197:        {
+    #####:  198:          long exponent = MAX (strtol (e + 1, nullptr, 10), -LONG_MAX);
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+call    3 never executed
+    #####:  199:          ret.precision += exponent < 0 ? -exponent
+branch  0 never executed
+branch  1 never executed
+    #####:  200:                                        : - MIN (ret.precision, exponent);
+        -:  201:          /* Don't account for e.... in the width since this is not output.  */
+    #####:  202:          ret.width -= strlen (arg) - (e - arg);
+        -:  203:          /* Adjust the width as per the exponent.  */
+    #####:  204:          if (exponent < 0)
+branch  0 never executed
+branch  1 never executed
+        -:  205:            {
+    #####:  206:              if (decimal_point)
+branch  0 never executed
+branch  1 never executed
+        -:  207:                {
+    #####:  208:                  if (e == decimal_point + 1) /* undo #. -> # above  */
+branch  0 never executed
+branch  1 never executed
+    #####:  209:                    ret.width++;
+        -:  210:                }
+        -:  211:              else
+    #####:  212:                ret.width++;
+    #####:  213:              exponent = -exponent;
+        -:  214:            }
+        -:  215:          else
+        -:  216:            {
+    #####:  217:              if (decimal_point && ret.precision == 0 && fraction_len)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  218:                ret.width--; /* discount space for '.'  */
+    #####:  219:              exponent -= MIN (fraction_len, exponent);
+        -:  220:            }
+    #####:  221:          ret.width += exponent;
+        -:  222:        }
+        -:  223:    }
+        -:  224:
+    #####:  225:  return ret;
+        -:  226:}
+        -:  227:
+        -:  228:/* If FORMAT is a valid printf format for a double argument, return
+        -:  229:   its long double equivalent, allocated from dynamic storage, and
+        -:  230:   store into *LAYOUT a description of the output layout; otherwise,
+        -:  231:   report an error and exit.  */
+        -:  232:
+        -:  233:static char const *
+function long_double_format called 0 returned 0% blocks executed 0%
+    #####:  234:long_double_format (char const *fmt, struct layout *layout)
+        -:  235:{
+        -:  236:  size_t i;
+    #####:  237:  size_t prefix_len = 0;
+    #####:  238:  size_t suffix_len = 0;
+        -:  239:  size_t length_modifier_offset;
+        -:  240:  bool has_L;
+        -:  241:
+    #####:  242:  for (i = 0; ! (fmt[i] == '%' && fmt[i + 1] != '%'); i += (fmt[i] == '%') + 1)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  243:    {
+    #####:  244:      if (!fmt[i])
+branch  0 never executed
+branch  1 never executed
+    #####:  245:        error (EXIT_FAILURE, 0,
+call    0 never executed
+call    1 never executed
+        -:  246:               _("format %s has no %% directive"), quote (fmt));
+    #####:  247:      prefix_len++;
+branch  0 never executed
+branch  1 never executed
+        -:  248:    }
+        -:  249:
+    #####:  250:  i++;
+    #####:  251:  i += strspn (fmt + i, "-+#0 '");
+    #####:  252:  i += strspn (fmt + i, "0123456789");
+    #####:  253:  if (fmt[i] == '.')
+branch  0 never executed
+branch  1 never executed
+        -:  254:    {
+    #####:  255:      i++;
+    #####:  256:      i += strspn (fmt + i, "0123456789");
+        -:  257:    }
+        -:  258:
+    #####:  259:  length_modifier_offset = i;
+    #####:  260:  has_L = (fmt[i] == 'L');
+    #####:  261:  i += has_L;
+    #####:  262:  if (fmt[i] == '\0')
+branch  0 never executed
+branch  1 never executed
+    #####:  263:    error (EXIT_FAILURE, 0, _("format %s ends in %%"), quote (fmt));
+call    0 never executed
+call    1 never executed
+    #####:  264:  if (! strchr ("efgaEFGA", fmt[i]))
+branch  0 never executed
+branch  1 never executed
+    #####:  265:    error (EXIT_FAILURE, 0,
+call    0 never executed
+call    1 never executed
+        -:  266:           _("format %s has unknown %%%c directive"), quote (fmt), fmt[i]);
+        -:  267:
+    #####:  268:  for (i++; ; i += (fmt[i] == '%') + 1)
+branch  0 never executed
+branch  1 never executed
+    #####:  269:    if (fmt[i] == '%' && fmt[i + 1] != '%')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  270:      error (EXIT_FAILURE, 0, _("format %s has too many %% directives"),
+call    0 never executed
+call    1 never executed
+        -:  271:             quote (fmt));
+    #####:  272:    else if (fmt[i])
+branch  0 never executed
+branch  1 never executed
+    #####:  273:      suffix_len++;
+        -:  274:    else
+        -:  275:      {
+    #####:  276:        size_t format_size = i + 1;
+    #####:  277:        char *ldfmt = xmalloc (format_size + 1);
+call    0 never executed
+    #####:  278:        memcpy (ldfmt, fmt, length_modifier_offset);
+    #####:  279:        ldfmt[length_modifier_offset] = 'L';
+    #####:  280:        strcpy (ldfmt + length_modifier_offset + 1,
+    #####:  281:                fmt + length_modifier_offset + has_L);
+    #####:  282:        layout->prefix_len = prefix_len;
+    #####:  283:        layout->suffix_len = suffix_len;
+    #####:  284:        return ldfmt;
+        -:  285:      }
+        -:  286:}
+        -:  287:
+        -:  288:/* Actually print the sequence of numbers in the specified range, with the
+        -:  289:   given or default stepping and format.  */
+        -:  290:
+        -:  291:static void
+function print_numbers called 0 returned 0% blocks executed 0%
+    #####:  292:print_numbers (char const *fmt, struct layout layout,
+        -:  293:               long double first, long double step, long double last)
+        -:  294:{
+    #####:  295:  bool out_of_range = (step < 0 ? first < last : last < first);
+branch  0 never executed
+branch  1 never executed
+        -:  296:
+    #####:  297:  if (! out_of_range)
+branch  0 never executed
+branch  1 never executed
+        -:  298:    {
+    #####:  299:      long double x = first;
+        -:  300:      long double i;
+        -:  301:
+    #####:  302:      for (i = 1; ; i++)
+    #####:  303:        {
+    #####:  304:          long double x0 = x;
+    #####:  305:          if (printf (fmt, x) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  306:            write_error ();
+call    0 never executed
+    #####:  307:          if (out_of_range)
+branch  0 never executed
+branch  1 never executed
+    #####:  308:            break;
+    #####:  309:          x = first + i * step;
+    #####:  310:          out_of_range = (step < 0 ? x < last : last < x);
+branch  0 never executed
+branch  1 never executed
+        -:  311:
+    #####:  312:          if (out_of_range)
+branch  0 never executed
+branch  1 never executed
+        -:  313:            {
+        -:  314:              /* If the number just past LAST prints as a value equal
+        -:  315:                 to LAST, and prints differently from the previous
+        -:  316:                 number, then print the number.  This avoids problems
+        -:  317:                 with rounding.  For example, with the x86 it causes
+        -:  318:                 "seq 0 0.000001 0.000003" to print 0.000003 instead
+        -:  319:                 of stopping at 0.000002.  */
+        -:  320:
+    #####:  321:              bool print_extra_number = false;
+        -:  322:              long double x_val;
+        -:  323:              char *x_str;
+        -:  324:              int x_strlen;
+    #####:  325:              if (locale_ok)
+branch  0 never executed
+branch  1 never executed
+    #####:  326:                setlocale (LC_NUMERIC, "C");
+call    0 never executed
+    #####:  327:              x_strlen = asprintf (&x_str, fmt, x);
+call    0 never executed
+    #####:  328:              if (locale_ok)
+branch  0 never executed
+branch  1 never executed
+    #####:  329:                setlocale (LC_NUMERIC, "");
+call    0 never executed
+    #####:  330:              if (x_strlen < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  331:                xalloc_die ();
+call    0 never executed
+    #####:  332:              x_str[x_strlen - layout.suffix_len] = '\0';
+        -:  333:
+    #####:  334:              if (xstrtold (x_str + layout.prefix_len, nullptr,
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  335:                            &x_val, cl_strtold)
+    #####:  336:                  && x_val == last)
+branch  0 never executed
+branch  1 never executed
+        -:  337:                {
+    #####:  338:                  char *x0_str = nullptr;
+    #####:  339:                  int x0_strlen = asprintf (&x0_str, fmt, x0);
+call    0 never executed
+    #####:  340:                  if (x0_strlen < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  341:                    xalloc_die ();
+call    0 never executed
+    #####:  342:                  x0_str[x0_strlen - layout.suffix_len] = '\0';
+    #####:  343:                  print_extra_number = !STREQ (x0_str, x_str);
+    #####:  344:                  free (x0_str);
+        -:  345:                }
+        -:  346:
+    #####:  347:              free (x_str);
+    #####:  348:              if (! print_extra_number)
+branch  0 never executed
+branch  1 never executed
+    #####:  349:                break;
+        -:  350:            }
+        -:  351:
+    #####:  352:          if (fputs (separator, stdout) == EOF)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  353:            write_error ();
+call    0 never executed
+        -:  354:        }
+        -:  355:
+    #####:  356:      if (fputs (terminator, stdout) == EOF)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  357:        write_error ();
+call    0 never executed
+        -:  358:    }
+    #####:  359:}
+        -:  360:
+        -:  361:/* Return the default format given FIRST, STEP, and LAST.  */
+        -:  362:static char const *
+function get_default_format called 0 returned 0% blocks executed 0%
+    #####:  363:get_default_format (operand first, operand step, operand last)
+        -:  364:{
+        -:  365:  static char format_buf[sizeof "%0.Lf" + 2 * INT_STRLEN_BOUND (int)];
+        -:  366:
+    #####:  367:  int prec = MAX (first.precision, step.precision);
+        -:  368:
+    #####:  369:  if (prec != INT_MAX && last.precision != INT_MAX)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  370:    {
+    #####:  371:      if (equal_width)
+branch  0 never executed
+branch  1 never executed
+        -:  372:        {
+        -:  373:          /* increase first_width by any increased precision in step */
+    #####:  374:          size_t first_width = first.width + (prec - first.precision);
+        -:  375:          /* adjust last_width to use precision from first/step */
+    #####:  376:          size_t last_width = last.width + (prec - last.precision);
+    #####:  377:          if (last.precision && prec == 0)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  378:            last_width--;  /* don't include space for '.' */
+    #####:  379:          if (last.precision == 0 && prec)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  380:            last_width++;  /* include space for '.' */
+    #####:  381:          if (first.precision == 0 && prec)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  382:            first_width++;  /* include space for '.' */
+    #####:  383:          size_t width = MAX (first_width, last_width);
+    #####:  384:          if (width <= INT_MAX)
+branch  0 never executed
+branch  1 never executed
+        -:  385:            {
+    #####:  386:              int w = width;
+    #####:  387:              sprintf (format_buf, "%%0%d.%dLf", w, prec);
+    #####:  388:              return format_buf;
+        -:  389:            }
+        -:  390:        }
+        -:  391:      else
+        -:  392:        {
+    #####:  393:          sprintf (format_buf, "%%.%dLf", prec);
+    #####:  394:          return format_buf;
+        -:  395:        }
+        -:  396:    }
+        -:  397:
+    #####:  398:  return "%Lg";
+        -:  399:}
+        -:  400:
+        -:  401:/* The NUL-terminated string S0 of length S_LEN represents a valid
+        -:  402:   non-negative decimal integer.  Adjust the string and length so
+        -:  403:   that the pair describe the next-larger value.  */
+        -:  404:static void
+function incr called 0 returned 0% blocks executed 0%
+    #####:  405:incr (char **s0, size_t *s_len)
+        -:  406:{
+    #####:  407:  char *s = *s0;
+    #####:  408:  char *endp = s + *s_len - 1;
+        -:  409:
+        -:  410:  do
+        -:  411:    {
+    #####:  412:      if ((*endp)++ < '9')
+branch  0 never executed
+branch  1 never executed
+    #####:  413:        return;
+    #####:  414:      *endp-- = '0';
+        -:  415:    }
+    #####:  416:  while (endp >= s);
+branch  0 never executed
+branch  1 never executed
+    #####:  417:  *--(*s0) = '1';
+    #####:  418:  ++*s_len;
+        -:  419:}
+        -:  420:
+        -:  421:/* Compare A and B (each a NUL-terminated digit string), with lengths
+        -:  422:   given by A_LEN and B_LEN.  Return +1 if A < B, -1 if B < A, else 0.  */
+        -:  423:static int
+function cmp called 0 returned 0% blocks executed 0%
+    #####:  424:cmp (char const *a, size_t a_len, char const *b, size_t b_len)
+        -:  425:{
+    #####:  426:  if (a_len < b_len)
+branch  0 never executed
+branch  1 never executed
+    #####:  427:    return -1;
+    #####:  428:  if (b_len < a_len)
+branch  0 never executed
+branch  1 never executed
+    #####:  429:    return 1;
+    #####:  430:  return (memcmp (a, b, a_len));
+        -:  431:}
+        -:  432:
+        -:  433:/* Trim leading 0's from S, but if S is all 0's, leave one.
+        -:  434:   Return a pointer to the trimmed string.  */
+        -:  435:ATTRIBUTE_PURE
+        -:  436:static char const *
+function trim_leading_zeros called 0 returned 0% blocks executed 0%
+    #####:  437:trim_leading_zeros (char const *s)
+        -:  438:{
+    #####:  439:  char const *p = s;
+    #####:  440:  while (*s == '0')
+branch  0 never executed
+branch  1 never executed
+    #####:  441:    ++s;
+        -:  442:
+        -:  443:  /* If there were only 0's, back up, to leave one.  */
+    #####:  444:  if (!*s && s != p)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  445:    --s;
+    #####:  446:  return s;
+        -:  447:}
+        -:  448:
+        -:  449:/* Print all whole numbers from A to B, inclusive -- to stdout, each
+        -:  450:   followed by a newline.  If B < A, return and print nothing.
+        -:  451:   Otherwise, do all the work and exit.  */
+        -:  452:static void
+function seq_fast called 0 returned 0% blocks executed 0%
+    #####:  453:seq_fast (char const *a, char const *b, uintmax_t step)
+        -:  454:{
+    #####:  455:  bool inf = STREQ (b, "inf");
+        -:  456:
+        -:  457:  /* Skip past any leading 0's.  Without this, our naive cmp
+        -:  458:     function would declare 000 to be larger than 99.  */
+    #####:  459:  a = trim_leading_zeros (a);
+    #####:  460:  b = trim_leading_zeros (b);
+        -:  461:
+    #####:  462:  size_t p_len = strlen (a);
+    #####:  463:  size_t q_len = inf ? 0 : strlen (b);
+branch  0 never executed
+branch  1 never executed
+        -:  464:
+        -:  465:  /* Allow for at least 31 digits without realloc.
+        -:  466:     1 more than p_len is needed for the inf case.  */
+        -:  467:#define INITIAL_ALLOC_DIGITS 31
+    #####:  468:  size_t inc_size = MAX (MAX (p_len + 1, q_len), INITIAL_ALLOC_DIGITS);
+        -:  469:  /* Ensure we only increase by at most 1 digit at buffer boundaries.  */
+        -:  470:  static_assert (SEQ_FAST_STEP_LIMIT_DIGITS < INITIAL_ALLOC_DIGITS - 1);
+        -:  471:
+        -:  472:  /* Copy input strings (incl NUL) to end of new buffers.  */
+    #####:  473:  char *p0 = xmalloc (inc_size + 1);
+call    0 never executed
+    #####:  474:  char *p = memcpy (p0 + inc_size - p_len, a, p_len + 1);
+        -:  475:  char *q;
+        -:  476:  char *q0;
+    #####:  477:  if (! inf)
+branch  0 never executed
+branch  1 never executed
+        -:  478:    {
+    #####:  479:      q0 = xmalloc (inc_size + 1);
+call    0 never executed
+    #####:  480:      q = memcpy (q0 + inc_size - q_len, b, q_len + 1);
+        -:  481:    }
+        -:  482:  else
+    #####:  483:    q = q0 = nullptr;
+        -:  484:
+    #####:  485:  bool ok = inf || cmp (p, p_len, q, q_len) <= 0;
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  486:  if (ok)
+branch  0 never executed
+branch  1 never executed
+        -:  487:    {
+        -:  488:      /* Reduce number of fwrite calls which is seen to
+        -:  489:         give a speed-up of more than 2x over the unbuffered code
+        -:  490:         when printing the first 10^9 integers.  */
+    #####:  491:      size_t buf_size = MAX (BUFSIZ, (inc_size + 1) * 2);
+    #####:  492:      char *buf = xmalloc (buf_size);
+call    0 never executed
+    #####:  493:      char const *buf_end = buf + buf_size;
+        -:  494:
+    #####:  495:      char *bufp = buf;
+        -:  496:
+        -:  497:      /* Write first number to buffer.  */
+    #####:  498:      bufp = mempcpy (bufp, p, p_len);
+        -:  499:
+        -:  500:      /* Append separator then number.  */
+        -:  501:      while (true)
+        -:  502:        {
+    #####:  503:          for (uintmax_t n_incr = step; n_incr; n_incr--)
+branch  0 never executed
+branch  1 never executed
+    #####:  504:            incr (&p, &p_len);
+call    0 never executed
+        -:  505:
+    #####:  506:          if (! inf && 0 < cmp (p, p_len, q, q_len))
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  507:            break;
+        -:  508:
+    #####:  509:          *bufp++ = *separator;
+        -:  510:
+        -:  511:          /* Double up the buffers when needed for the inf case.  */
+    #####:  512:          if (p_len == inc_size)
+branch  0 never executed
+branch  1 never executed
+        -:  513:            {
+    #####:  514:              inc_size *= 2;
+    #####:  515:              p0 = xrealloc (p0, inc_size + 1);
+call    0 never executed
+    #####:  516:              p = memmove (p0 + p_len, p0, p_len + 1);
+        -:  517:
+    #####:  518:              if (buf_size < (inc_size + 1) * 2)
+branch  0 never executed
+branch  1 never executed
+        -:  519:                {
+    #####:  520:                  size_t buf_offset = bufp - buf;
+    #####:  521:                  buf_size = (inc_size + 1) * 2;
+    #####:  522:                  buf = xrealloc (buf, buf_size);
+call    0 never executed
+    #####:  523:                  buf_end = buf + buf_size;
+    #####:  524:                  bufp = buf + buf_offset;
+        -:  525:                }
+        -:  526:            }
+        -:  527:
+    #####:  528:          bufp = mempcpy (bufp, p, p_len);
+        -:  529:          /* If no place for another separator + number then
+        -:  530:             output buffer so far, and reset to start of buffer.  */
+    #####:  531:          if (buf_end - (p_len + 1) < bufp)
+branch  0 never executed
+branch  1 never executed
+        -:  532:            {
+    #####:  533:              if (fwrite (buf, bufp - buf, 1, stdout) != 1)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  534:                write_error ();
+call    0 never executed
+    #####:  535:              bufp = buf;
+        -:  536:            }
+        -:  537:        }
+        -:  538:
+        -:  539:      /* Write any remaining buffered output, and the terminator.  */
+    #####:  540:      *bufp++ = *terminator;
+    #####:  541:      if (fwrite (buf, bufp - buf, 1, stdout) != 1)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  542:        write_error ();
+call    0 never executed
+        -:  543:    }
+        -:  544:
+    #####:  545:  if (ok)
+branch  0 never executed
+branch  1 never executed
+    #####:  546:    exit (EXIT_SUCCESS);
+call    0 never executed
+        -:  547:
+    #####:  548:  free (p0);
+    #####:  549:  free (q0);
+    #####:  550:}
+        -:  551:
+        -:  552:/* Return true if S consists of at least one digit and no non-digits.  */
+        -:  553:ATTRIBUTE_PURE
+        -:  554:static bool
+function all_digits_p called 9 returned 100% blocks executed 67%
+        9:  555:all_digits_p (char const *s)
+        -:  556:{
+        9:  557:  size_t n = strlen (s);
+       9*:  558:  return ISDIGIT (s[0]) && n == strspn (s, "0123456789");
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  559:}
+        -:  560:
+        -:  561:int
+function main called 8 returned 0% blocks executed 25%
+        8:  562:main (int argc, char **argv)
+        -:  563:{
+        -:  564:  int optc;
+        8:  565:  operand first = { 1, 1, 0 };
+        8:  566:  operand step = { 1, 1, 0 };
+        -:  567:  operand last;
+        8:  568:  struct layout layout = { 0, 0 };
+        -:  569:
+        -:  570:  /* The printf(3) format used for output.  */
+        8:  571:  char const *format_str = nullptr;
+        -:  572:
+        -:  573:  initialize_main (&argc, &argv);
+        8:  574:  set_program_name (argv[0]);
+call    0 returned 100%
+        8:  575:  locale_ok = !!setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  576:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  577:  textdomain (PACKAGE);
+        -:  578:
+        8:  579:  atexit (close_stdout);
+call    0 returned 100%
+        -:  580:
+        8:  581:  equal_width = false;
+        8:  582:  separator = "\n";
+        -:  583:
+        -:  584:  /* We have to handle negative numbers in the command line but this
+        -:  585:     conflicts with the command line arguments.  So explicitly check first
+        -:  586:     whether the next argument looks like a negative number.  */
+        8:  587:  while (optind < argc)
+branch  0 taken 88%
+branch  1 taken 12% (fallthrough)
+        -:  588:    {
+        7:  589:      if (argv[optind][0] == '-'
+branch  0 taken 71% (fallthrough)
+branch  1 taken 29%
+        5:  590:          && ((optc = argv[optind][1]) == '.' || ISDIGIT (optc)))
+branch  0 taken 40% (fallthrough)
+branch  1 taken 60%
+branch  2 taken 50% (fallthrough)
+branch  3 taken 50%
+        -:  591:        {
+        -:  592:          /* means negative number */
+        -:  593:          break;
+        -:  594:        }
+        -:  595:
+        3:  596:      optc = getopt_long (argc, argv, "+f:s:w", long_options, nullptr);
+call    0 returned 100%
+        3:  597:      if (optc == -1)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        3:  598:        break;
+        -:  599:
+    #####:  600:      switch (optc)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  601:        {
+    #####:  602:        case 'f':
+    #####:  603:          format_str = optarg;
+    #####:  604:          break;
+        -:  605:
+    #####:  606:        case 's':
+    #####:  607:          separator = optarg;
+    #####:  608:          break;
+        -:  609:
+    #####:  610:        case 'w':
+    #####:  611:          equal_width = true;
+    #####:  612:          break;
+        -:  613:
+    #####:  614:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  615:
+    #####:  616:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  617:
+    #####:  618:        default:
+    #####:  619:          usage (EXIT_FAILURE);
+call    0 never executed
+        -:  620:        }
+        -:  621:    }
+        -:  622:
+        8:  623:  int n_args = argc - optind;
+        8:  624:  if (n_args < 1)
+branch  0 taken 12% (fallthrough)
+branch  1 taken 88%
+        -:  625:    {
+        -:  626:      error (0, 0, _("missing operand"));
+        1:  627:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  628:    }
+        -:  629:
+        7:  630:  if (3 < n_args)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  631:    {
+    #####:  632:      error (0, 0, _("extra operand %s"), quote (argv[optind + 3]));
+call    0 never executed
+    #####:  633:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  634:    }
+        -:  635:
+        7:  636:  if (format_str)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  637:    format_str = long_double_format (format_str, &layout);
+call    0 never executed
+        -:  638:
+       7*:  639:  if (format_str != nullptr && equal_width)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  640:    {
+        -:  641:      error (0, 0, _("format string may not be specified"
+        -:  642:                     " when printing equal width strings"));
+    #####:  643:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  644:    }
+        -:  645:
+        -:  646:  /* If the following hold:
+        -:  647:     - no format string, [FIXME: relax this, eventually]
+        -:  648:     - integer start (or no start)
+        -:  649:     - integer end
+        -:  650:     - integer increment <= SEQ_FAST_STEP_LIMIT
+        -:  651:     then use the much more efficient integer-only code,
+        -:  652:     operating on arbitrarily large numbers.  */
+        7:  653:  bool fast_step_ok = false;
+        7:  654:  if (n_args != 3
+branch  0 taken 29% (fallthrough)
+branch  1 taken 71%
+        2:  655:      || (all_digits_p (argv[optind + 1])
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  656:          && xstrtold (argv[optind + 1], nullptr, &step.value, cl_strtold)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  657:          && 0 < step.value && step.value <= SEQ_FAST_STEP_LIMIT))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        5:  658:    fast_step_ok = true;
+        -:  659:
+        7:  660:  if (all_digits_p (argv[optind])
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  661:      && (n_args == 1 || all_digits_p (argv[optind + 1]))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  662:      && (n_args < 3 || (fast_step_ok
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  663:                         && all_digits_p (argv[optind + 2])))
+branch  0 never executed
+branch  1 never executed
+    #####:  664:      && !equal_width && !format_str && strlen (separator) == 1)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  665:    {
+    #####:  666:      char const *s1 = n_args == 1 ? "1" : argv[optind];
+branch  0 never executed
+branch  1 never executed
+    #####:  667:      char const *s2 = argv[optind + (n_args - 1)];
+    #####:  668:      seq_fast (s1, s2, step.value);
+call    0 never executed
+        -:  669:
+        -:  670:      /* Upon any failure, let the more general code deal with it.  */
+        -:  671:    }
+        -:  672:
+        7:  673:  last = scan_arg (argv[optind++]);
+call    0 returned 0%
+        -:  674:
+    #####:  675:  if (optind < argc)
+branch  0 never executed
+branch  1 never executed
+        -:  676:    {
+    #####:  677:      first = last;
+    #####:  678:      last = scan_arg (argv[optind++]);
+call    0 never executed
+        -:  679:
+    #####:  680:      if (optind < argc)
+branch  0 never executed
+branch  1 never executed
+        -:  681:        {
+    #####:  682:          step = last;
+    #####:  683:          if (step.value == 0)
+branch  0 never executed
+branch  1 never executed
+        -:  684:            {
+    #####:  685:              error (0, 0, _("invalid Zero increment value: %s"),
+call    0 never executed
+        -:  686:                     quote (argv[optind - 1]));
+    #####:  687:              usage (EXIT_FAILURE);
+call    0 never executed
+        -:  688:            }
+        -:  689:
+    #####:  690:          last = scan_arg (argv[optind++]);
+call    0 never executed
+        -:  691:        }
+        -:  692:    }
+        -:  693:
+        -:  694:  /* Try the fast method again, for integers of the form 1e1 etc.,
+        -:  695:     or "inf" end value.  */
+    #####:  696:  if (first.precision == 0 && step.precision == 0 && last.precision == 0
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  697:      && isfinite (first.value) && 0 <= first.value && 0 <= last.value
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  698:      && 0 < step.value && step.value <= SEQ_FAST_STEP_LIMIT
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  699:      && !equal_width && !format_str && strlen (separator) == 1)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  700:    {
+        -:  701:      char *s1;
+        -:  702:      char *s2;
+    #####:  703:      if (asprintf (&s1, "%0.Lf", first.value) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  704:        xalloc_die ();
+call    0 never executed
+    #####:  705:      if (! isfinite (last.value))
+branch  0 never executed
+branch  1 never executed
+    #####:  706:        s2 = xstrdup ("inf"); /* Ensure "inf" is used.  */
+call    0 never executed
+    #####:  707:      else if (asprintf (&s2, "%0.Lf", last.value) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  708:        xalloc_die ();
+call    0 never executed
+        -:  709:
+    #####:  710:      if (*s1 != '-' && *s2 != '-')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  711:        seq_fast (s1, s2, step.value);
+call    0 never executed
+        -:  712:
+    #####:  713:      free (s1);
+    #####:  714:      free (s2);
+        -:  715:      /* Upon any failure, let the more general code deal with it.  */
+        -:  716:    }
+        -:  717:
+    #####:  718:  if (format_str == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  719:    format_str = get_default_format (first, step, last);
+call    0 never executed
+        -:  720:
+    #####:  721:  print_numbers (format_str, layout, first.value, step.value, last.value);
+call    0 never executed
+        -:  722:
+    #####:  723:  main_exit (EXIT_SUCCESS);
+        -:  724:}

@@ -1,0 +1,2655 @@
+        -:    0:Source:src/od.c
+        -:    0:Graph:od.gcno
+        -:    0:Data:od.gcda
+        -:    0:Runs:2
+        -:    1:/* od -- dump files in octal and other formats
+        -:    2:   Copyright (C) 1992-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Jim Meyering.  */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:
+        -:   21:#include <stdckdint.h>
+        -:   22:#include <stdio.h>
+        -:   23:#include <getopt.h>
+        -:   24:#include <sys/types.h>
+        -:   25:#include "system.h"
+        -:   26:#include "argmatch.h"
+        -:   27:#include "assure.h"
+        -:   28:#include "ftoastr.h"
+        -:   29:#include "quote.h"
+        -:   30:#include "stat-size.h"
+        -:   31:#include "xbinary-io.h"
+        -:   32:#include "xprintf.h"
+        -:   33:#include "xstrtol.h"
+        -:   34:#include "xstrtol-error.h"
+        -:   35:
+        -:   36:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   37:#define PROGRAM_NAME "od"
+        -:   38:
+        -:   39:#define AUTHORS proper_name ("Jim Meyering")
+        -:   40:
+        -:   41:/* The default number of input bytes per output line.  */
+        -:   42:#define DEFAULT_BYTES_PER_BLOCK 16
+        -:   43:
+        -:   44:#if HAVE_UNSIGNED_LONG_LONG_INT
+        -:   45:typedef unsigned long long int unsigned_long_long_int;
+        -:   46:#else
+        -:   47:/* This is just a place-holder to avoid a few '#if' directives.
+        -:   48:   In this case, the type isn't actually used.  */
+        -:   49:typedef unsigned long int unsigned_long_long_int;
+        -:   50:#endif
+        -:   51:
+        -:   52:enum size_spec
+        -:   53:  {
+        -:   54:    NO_SIZE,
+        -:   55:    CHAR,
+        -:   56:    SHORT,
+        -:   57:    INT,
+        -:   58:    LONG,
+        -:   59:    LONG_LONG,
+        -:   60:    /* FIXME: add INTMAX support, too */
+        -:   61:    FLOAT_SINGLE,
+        -:   62:    FLOAT_DOUBLE,
+        -:   63:    FLOAT_LONG_DOUBLE,
+        -:   64:    N_SIZE_SPECS
+        -:   65:  };
+        -:   66:
+        -:   67:enum output_format
+        -:   68:  {
+        -:   69:    SIGNED_DECIMAL,
+        -:   70:    UNSIGNED_DECIMAL,
+        -:   71:    OCTAL,
+        -:   72:    HEXADECIMAL,
+        -:   73:    FLOATING_POINT,
+        -:   74:    NAMED_CHARACTER,
+        -:   75:    CHARACTER
+        -:   76:  };
+        -:   77:
+        -:   78:#define MAX_INTEGRAL_TYPE_SIZE sizeof (unsigned_long_long_int)
+        -:   79:
+        -:   80:/* The maximum number of bytes needed for a format string, including
+        -:   81:   the trailing nul.  Each format string expects a variable amount of
+        -:   82:   padding (guaranteed to be at least 1 plus the field width), then an
+        -:   83:   element that will be formatted in the field.  */
+        -:   84:enum
+        -:   85:  {
+        -:   86:    FMT_BYTES_ALLOCATED =
+        -:   87:           (sizeof "%*.99" + 1
+        -:   88:            + MAX (sizeof "ld",
+        -:   89:                   MAX (sizeof PRIdMAX,
+        -:   90:                        MAX (sizeof PRIoMAX,
+        -:   91:                             MAX (sizeof PRIuMAX,
+        -:   92:                                  sizeof PRIxMAX)))))
+        -:   93:  };
+        -:   94:
+        -:   95:/* Ensure that our choice for FMT_BYTES_ALLOCATED is reasonable.  */
+        -:   96:static_assert (MAX_INTEGRAL_TYPE_SIZE * CHAR_BIT / 3 <= 99);
+        -:   97:
+        -:   98:/* Each output format specification (from '-t spec' or from
+        -:   99:   old-style options) is represented by one of these structures.  */
+        -:  100:struct tspec
+        -:  101:  {
+        -:  102:    enum output_format fmt;
+        -:  103:    enum size_spec size; /* Type of input object.  */
+        -:  104:    /* FIELDS is the number of fields per line, BLANK is the number of
+        -:  105:       fields to leave blank.  WIDTH is width of one field, excluding
+        -:  106:       leading space, and PAD is total pad to divide among FIELDS.
+        -:  107:       PAD is at least as large as FIELDS.  */
+        -:  108:    void (*print_function) (size_t fields, size_t blank, void const *data,
+        -:  109:                            char const *fmt, int width, int pad);
+        -:  110:    char fmt_string[FMT_BYTES_ALLOCATED]; /* Of the style "%*d".  */
+        -:  111:    bool hexl_mode_trailer;
+        -:  112:    int field_width; /* Minimum width of a field, excluding leading space.  */
+        -:  113:    int pad_width; /* Total padding to be divided among fields.  */
+        -:  114:  };
+        -:  115:
+        -:  116:/* Convert the number of 8-bit bytes of a binary representation to
+        -:  117:   the number of characters (digits + sign if the type is signed)
+        -:  118:   required to represent the same quantity in the specified base/type.
+        -:  119:   For example, a 32-bit (4-byte) quantity may require a field width
+        -:  120:   as wide as the following for these types:
+        -:  121:   11	unsigned octal
+        -:  122:   11	signed decimal
+        -:  123:   10	unsigned decimal
+        -:  124:   8	unsigned hexadecimal  */
+        -:  125:
+        -:  126:static char const bytes_to_oct_digits[] =
+        -:  127:{0, 3, 6, 8, 11, 14, 16, 19, 22, 25, 27, 30, 32, 35, 38, 41, 43};
+        -:  128:
+        -:  129:static char const bytes_to_signed_dec_digits[] =
+        -:  130:{1, 4, 6, 8, 11, 13, 16, 18, 20, 23, 25, 28, 30, 33, 35, 37, 40};
+        -:  131:
+        -:  132:static char const bytes_to_unsigned_dec_digits[] =
+        -:  133:{0, 3, 5, 8, 10, 13, 15, 17, 20, 22, 25, 27, 29, 32, 34, 37, 39};
+        -:  134:
+        -:  135:static char const bytes_to_hex_digits[] =
+        -:  136:{0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32};
+        -:  137:
+        -:  138:/* It'll be a while before we see integral types wider than 16 bytes,
+        -:  139:   but if/when it happens, this check will catch it.  Without this check,
+        -:  140:   a wider type would provoke a buffer overrun.  */
+        -:  141:static_assert (MAX_INTEGRAL_TYPE_SIZE
+        -:  142:               < ARRAY_CARDINALITY (bytes_to_hex_digits));
+        -:  143:
+        -:  144:/* Make sure the other arrays have the same length.  */
+        -:  145:static_assert (sizeof bytes_to_oct_digits == sizeof bytes_to_signed_dec_digits);
+        -:  146:static_assert (sizeof bytes_to_oct_digits
+        -:  147:               == sizeof bytes_to_unsigned_dec_digits);
+        -:  148:static_assert (sizeof bytes_to_oct_digits == sizeof bytes_to_hex_digits);
+        -:  149:
+        -:  150:/* Convert enum size_spec to the size of the named type.  */
+        -:  151:static const int width_bytes[] =
+        -:  152:{
+        -:  153:  -1,
+        -:  154:  sizeof (char),
+        -:  155:  sizeof (short int),
+        -:  156:  sizeof (int),
+        -:  157:  sizeof (long int),
+        -:  158:  sizeof (unsigned_long_long_int),
+        -:  159:  sizeof (float),
+        -:  160:  sizeof (double),
+        -:  161:  sizeof (long double)
+        -:  162:};
+        -:  163:
+        -:  164:/* Ensure that for each member of 'enum size_spec' there is an
+        -:  165:   initializer in the width_bytes array.  */
+        -:  166:static_assert (ARRAY_CARDINALITY (width_bytes) == N_SIZE_SPECS);
+        -:  167:
+        -:  168:/* Names for some non-printing characters.  */
+        -:  169:static char const charname[33][4] =
+        -:  170:{
+        -:  171:  "nul", "soh", "stx", "etx", "eot", "enq", "ack", "bel",
+        -:  172:  "bs", "ht", "nl", "vt", "ff", "cr", "so", "si",
+        -:  173:  "dle", "dc1", "dc2", "dc3", "dc4", "nak", "syn", "etb",
+        -:  174:  "can", "em", "sub", "esc", "fs", "gs", "rs", "us",
+        -:  175:  "sp"
+        -:  176:};
+        -:  177:
+        -:  178:/* Address base (8, 10 or 16).  */
+        -:  179:static int address_base;
+        -:  180:
+        -:  181:/* The number of octal digits required to represent the largest
+        -:  182:   address value.  */
+        -:  183:#define MAX_ADDRESS_LENGTH \
+        -:  184:  ((sizeof (uintmax_t) * CHAR_BIT + CHAR_BIT - 1) / 3)
+        -:  185:
+        -:  186:/* Width of a normal address.  */
+        -:  187:static int address_pad_len;
+        -:  188:
+        -:  189:/* Minimum length when detecting --strings.  */
+        -:  190:static size_t string_min;
+        -:  191:
+        -:  192:/* True when in --strings mode.  */
+        -:  193:static bool flag_dump_strings;
+        -:  194:
+        -:  195:/* True if we should recognize the older non-option arguments
+        -:  196:   that specified at most one file and optional arguments specifying
+        -:  197:   offset and pseudo-start address.  */
+        -:  198:static bool traditional;
+        -:  199:
+        -:  200:/* True if an old-style 'pseudo-address' was specified.  */
+        -:  201:static bool flag_pseudo_start;
+        -:  202:
+        -:  203:/* The difference between the old-style pseudo starting address and
+        -:  204:   the number of bytes to skip.  */
+        -:  205:static uintmax_t pseudo_offset;
+        -:  206:
+        -:  207:/* Function that accepts an address and an optional following char,
+        -:  208:   and prints the address and char to stdout.  */
+        -:  209:static void (*format_address) (uintmax_t, char);
+        -:  210:
+        -:  211:/* The number of input bytes to skip before formatting and writing.  */
+        -:  212:static uintmax_t n_bytes_to_skip = 0;
+        -:  213:
+        -:  214:/* When false, MAX_BYTES_TO_FORMAT and END_OFFSET are ignored, and all
+        -:  215:   input is formatted.  */
+        -:  216:static bool limit_bytes_to_format = false;
+        -:  217:
+        -:  218:/* The maximum number of bytes that will be formatted.  */
+        -:  219:static uintmax_t max_bytes_to_format;
+        -:  220:
+        -:  221:/* The offset of the first byte after the last byte to be formatted.  */
+        -:  222:static uintmax_t end_offset;
+        -:  223:
+        -:  224:/* When true and two or more consecutive blocks are equal, format
+        -:  225:   only the first block and output an asterisk alone on the following
+        -:  226:   line to indicate that identical blocks have been elided.  */
+        -:  227:static bool abbreviate_duplicate_blocks = true;
+        -:  228:
+        -:  229:/* An array of specs describing how to format each input block.  */
+        -:  230:static struct tspec *spec;
+        -:  231:
+        -:  232:/* The number of format specs.  */
+        -:  233:static size_t n_specs;
+        -:  234:
+        -:  235:/* The allocated length of SPEC.  */
+        -:  236:static size_t n_specs_allocated;
+        -:  237:
+        -:  238:/* The number of input bytes formatted per output line.  It must be
+        -:  239:   a multiple of the least common multiple of the sizes associated with
+        -:  240:   the specified output types.  It should be as large as possible, but
+        -:  241:   no larger than 16 -- unless specified with the -w option.  */
+        -:  242:static size_t bytes_per_block;
+        -:  243:
+        -:  244:/* Human-readable representation of *file_list (for error messages).
+        -:  245:   It differs from file_list[-1] only when file_list[-1] is "-".  */
+        -:  246:static char const *input_filename;
+        -:  247:
+        -:  248:/* A null-terminated list of the file-arguments from the command line.  */
+        -:  249:static char const *const *file_list;
+        -:  250:
+        -:  251:/* Initializer for file_list if no file-arguments
+        -:  252:   were specified on the command line.  */
+        -:  253:static char const *const default_file_list[] = {"-", nullptr};
+        -:  254:
+        -:  255:/* The input stream associated with the current file.  */
+        -:  256:static FILE *in_stream;
+        -:  257:
+        -:  258:/* If true, at least one of the files we read was standard input.  */
+        -:  259:static bool have_read_stdin;
+        -:  260:
+        -:  261:/* Map the size in bytes to a type identifier.  */
+        -:  262:static enum size_spec integral_type_size[MAX_INTEGRAL_TYPE_SIZE + 1];
+        -:  263:
+        -:  264:#define MAX_FP_TYPE_SIZE sizeof (long double)
+        -:  265:static enum size_spec fp_type_size[MAX_FP_TYPE_SIZE + 1];
+        -:  266:
+        -:  267:#ifndef WORDS_BIGENDIAN
+        -:  268:# define WORDS_BIGENDIAN 0
+        -:  269:#endif
+        -:  270:
+        -:  271:/* Use native endianness by default.  */
+        -:  272:static bool input_swap;
+        -:  273:
+        -:  274:static char const short_options[] = "A:aBbcDdeFfHhIij:LlN:OoS:st:vw::Xx";
+        -:  275:
+        -:  276:/* For long options that have no equivalent short option, use a
+        -:  277:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:  278:enum
+        -:  279:{
+        -:  280:  TRADITIONAL_OPTION = CHAR_MAX + 1,
+        -:  281:  ENDIAN_OPTION,
+        -:  282:};
+        -:  283:
+        -:  284:enum endian_type
+        -:  285:{
+        -:  286:  endian_little,
+        -:  287:  endian_big
+        -:  288:};
+        -:  289:
+        -:  290:static char const *const endian_args[] =
+        -:  291:{
+        -:  292:  "little", "big", nullptr
+        -:  293:};
+        -:  294:
+        -:  295:static enum endian_type const endian_types[] =
+        -:  296:{
+        -:  297:  endian_little, endian_big
+        -:  298:};
+        -:  299:
+        -:  300:static struct option const long_options[] =
+        -:  301:{
+        -:  302:  {"skip-bytes", required_argument, nullptr, 'j'},
+        -:  303:  {"address-radix", required_argument, nullptr, 'A'},
+        -:  304:  {"read-bytes", required_argument, nullptr, 'N'},
+        -:  305:  {"format", required_argument, nullptr, 't'},
+        -:  306:  {"output-duplicates", no_argument, nullptr, 'v'},
+        -:  307:  {"strings", optional_argument, nullptr, 'S'},
+        -:  308:  {"traditional", no_argument, nullptr, TRADITIONAL_OPTION},
+        -:  309:  {"width", optional_argument, nullptr, 'w'},
+        -:  310:  {"endian", required_argument, nullptr, ENDIAN_OPTION },
+        -:  311:
+        -:  312:  {GETOPT_HELP_OPTION_DECL},
+        -:  313:  {GETOPT_VERSION_OPTION_DECL},
+        -:  314:  {nullptr, 0, nullptr, 0}
+        -:  315:};
+        -:  316:
+        -:  317:void
+function usage called 1 returned 0% blocks executed 15%
+        1:  318:usage (int status)
+        -:  319:{
+        1:  320:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  321:    emit_try_help ();
+call    0 returned 100%
+        -:  322:  else
+        -:  323:    {
+    #####:  324:      printf (_("\
+call    0 never executed
+        -:  325:Usage: %s [OPTION]... [FILE]...\n\
+        -:  326:  or:  %s [-abcdfilosx]... [FILE] [[+]OFFSET[.][b]]\n\
+        -:  327:  or:  %s --traditional [OPTION]... [FILE] [[+]OFFSET[.][b] [+][LABEL][.][b]]\n\
+        -:  328:"),
+        -:  329:              program_name, program_name, program_name);
+    #####:  330:      fputs (_("\n\
+call    0 never executed
+        -:  331:Write an unambiguous representation, octal bytes by default,\n\
+        -:  332:of FILE to standard output.  With more than one FILE argument,\n\
+        -:  333:concatenate them in the listed order to form the input.\n\
+        -:  334:"), stdout);
+        -:  335:
+    #####:  336:      emit_stdin_note ();
+call    0 never executed
+        -:  337:
+    #####:  338:      fputs (_("\
+call    0 never executed
+        -:  339:\n\
+        -:  340:If first and second call formats both apply, the second format is assumed\n\
+        -:  341:if the last operand begins with + or (if there are 2 operands) a digit.\n\
+        -:  342:An OFFSET operand means -j OFFSET.  LABEL is the pseudo-address\n\
+        -:  343:at first byte printed, incremented when dump is progressing.\n\
+        -:  344:For OFFSET and LABEL, a 0x or 0X prefix indicates hexadecimal;\n\
+        -:  345:suffixes may be . for octal and b for multiply by 512.\n\
+        -:  346:"), stdout);
+        -:  347:
+    #####:  348:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  349:
+    #####:  350:      fputs (_("\
+call    0 never executed
+        -:  351:  -A, --address-radix=RADIX   output format for file offsets; RADIX is one\n\
+        -:  352:                                of [doxn], for Decimal, Octal, Hex or None\n\
+        -:  353:      --endian={big|little}   swap input bytes according the specified order\n\
+        -:  354:  -j, --skip-bytes=BYTES      skip BYTES input bytes first\n\
+        -:  355:"), stdout);
+    #####:  356:      fputs (_("\
+call    0 never executed
+        -:  357:  -N, --read-bytes=BYTES      limit dump to BYTES input bytes\n\
+        -:  358:  -S BYTES, --strings[=BYTES]  show only NUL terminated strings\n\
+        -:  359:                                of at least BYTES (3) printable characters\n\
+        -:  360:  -t, --format=TYPE           select output format or formats\n\
+        -:  361:  -v, --output-duplicates     do not use * to mark line suppression\n\
+        -:  362:  -w[BYTES], --width[=BYTES]  output BYTES bytes per output line;\n\
+        -:  363:                                32 is implied when BYTES is not specified\n\
+        -:  364:      --traditional           accept arguments in third form above\n\
+        -:  365:"), stdout);
+    #####:  366:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  367:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  368:      fputs (_("\
+call    0 never executed
+        -:  369:\n\
+        -:  370:\n\
+        -:  371:Traditional format specifications may be intermixed; they accumulate:\n\
+        -:  372:  -a   same as -t a,  select named characters, ignoring high-order bit\n\
+        -:  373:  -b   same as -t o1, select octal bytes\n\
+        -:  374:  -c   same as -t c,  select printable characters or backslash escapes\n\
+        -:  375:  -d   same as -t u2, select unsigned decimal 2-byte units\n\
+        -:  376:"), stdout);
+    #####:  377:      fputs (_("\
+call    0 never executed
+        -:  378:  -f   same as -t fF, select floats\n\
+        -:  379:  -i   same as -t dI, select decimal ints\n\
+        -:  380:  -l   same as -t dL, select decimal longs\n\
+        -:  381:  -o   same as -t o2, select octal 2-byte units\n\
+        -:  382:  -s   same as -t d2, select decimal 2-byte units\n\
+        -:  383:  -x   same as -t x2, select hexadecimal 2-byte units\n\
+        -:  384:"), stdout);
+    #####:  385:      fputs (_("\
+call    0 never executed
+        -:  386:\n\
+        -:  387:\n\
+        -:  388:TYPE is made up of one or more of these specifications:\n\
+        -:  389:  a          named character, ignoring high-order bit\n\
+        -:  390:  c          printable character or backslash escape\n\
+        -:  391:"), stdout);
+    #####:  392:      fputs (_("\
+call    0 never executed
+        -:  393:  d[SIZE]    signed decimal, SIZE bytes per integer\n\
+        -:  394:  f[SIZE]    floating point, SIZE bytes per float\n\
+        -:  395:  o[SIZE]    octal, SIZE bytes per integer\n\
+        -:  396:  u[SIZE]    unsigned decimal, SIZE bytes per integer\n\
+        -:  397:  x[SIZE]    hexadecimal, SIZE bytes per integer\n\
+        -:  398:"), stdout);
+    #####:  399:      fputs (_("\
+call    0 never executed
+        -:  400:\n\
+        -:  401:SIZE is a number.  For TYPE in [doux], SIZE may also be C for\n\
+        -:  402:sizeof(char), S for sizeof(short), I for sizeof(int) or L for\n\
+        -:  403:sizeof(long).  If TYPE is f, SIZE may also be F for sizeof(float), D\n\
+        -:  404:for sizeof(double) or L for sizeof(long double).\n\
+        -:  405:"), stdout);
+    #####:  406:      fputs (_("\
+call    0 never executed
+        -:  407:\n\
+        -:  408:Adding a z suffix to any type displays printable characters at the end of\n\
+        -:  409:each output line.\n\
+        -:  410:"), stdout);
+    #####:  411:      fputs (_("\
+call    0 never executed
+        -:  412:\n\
+        -:  413:\n\
+        -:  414:BYTES is hex with 0x or 0X prefix, and may have a multiplier suffix:\n\
+        -:  415:  b    512\n\
+        -:  416:  KB   1000\n\
+        -:  417:  K    1024\n\
+        -:  418:  MB   1000*1000\n\
+        -:  419:  M    1024*1024\n\
+        -:  420:and so on for G, T, P, E, Z, Y, R, Q.\n\
+        -:  421:Binary prefixes can be used, too: KiB=K, MiB=M, and so on.\n\
+        -:  422:"), stdout);
+    #####:  423:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  424:    }
+        1:  425:  exit (status);
+        -:  426:}
+        -:  427:
+        -:  428:/* Define the print functions.  */
+        -:  429:
+        -:  430:#define PRINT_FIELDS(N, T, FMT_STRING_DECL, ACTION)                     \
+        -:  431:static void                                                             \
+        -:  432:N (size_t fields, size_t blank, void const *block,                      \
+        -:  433:   FMT_STRING_DECL, int width, int pad)                                 \
+        -:  434:{                                                                       \
+        -:  435:  T const *p = block;                                                   \
+        -:  436:  uintmax_t i;                                                          \
+        -:  437:  int pad_remaining = pad;                                              \
+        -:  438:  for (i = fields; blank < i; i--)                                      \
+        -:  439:    {                                                                   \
+        -:  440:      int next_pad = pad * (i - 1) / fields;                            \
+        -:  441:      int adjusted_width = pad_remaining - next_pad + width;            \
+        -:  442:      T x;                                                              \
+        -:  443:      if (input_swap && sizeof (T) > 1)                                 \
+        -:  444:        {                                                               \
+        -:  445:          size_t j;                                                     \
+        -:  446:          union {                                                       \
+        -:  447:            T x;                                                        \
+        -:  448:            char b[sizeof (T)];                                         \
+        -:  449:          } u;                                                          \
+        -:  450:          for (j = 0; j < sizeof (T); j++)                              \
+        -:  451:            u.b[j] = ((char const *) p)[sizeof (T) - 1 - j];            \
+        -:  452:          x = u.x;                                                      \
+        -:  453:        }                                                               \
+        -:  454:      else                                                              \
+        -:  455:        x = *p;                                                         \
+        -:  456:      p++;                                                              \
+        -:  457:      ACTION;                                                           \
+        -:  458:      pad_remaining = next_pad;                                         \
+        -:  459:    }                                                                   \
+        -:  460:}
+        -:  461:
+        -:  462:#define PRINT_TYPE(N, T)                                                \
+        -:  463:  PRINT_FIELDS (N, T, char const *fmt_string,                           \
+        -:  464:                xprintf (fmt_string, adjusted_width, x))
+        -:  465:
+        -:  466:#define PRINT_FLOATTYPE(N, T, FTOASTR, BUFSIZE)                         \
+        -:  467:  PRINT_FIELDS (N, T, MAYBE_UNUSED char const *fmt_string,              \
+        -:  468:                char buf[BUFSIZE];                                      \
+        -:  469:                FTOASTR (buf, sizeof buf, 0, 0, x);                     \
+        -:  470:                xprintf ("%*s", adjusted_width, buf))
+        -:  471:
+function print_s_char called 0 returned 0% blocks executed 0%
+    #####:  472:PRINT_TYPE (print_s_char, signed char)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+function print_char called 0 returned 0% blocks executed 0%
+    #####:  473:PRINT_TYPE (print_char, unsigned char)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+function print_s_short called 0 returned 0% blocks executed 0%
+    #####:  474:PRINT_TYPE (print_s_short, short int)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+branch  5 never executed
+branch  6 never executed
+function print_short called 1 returned 100% blocks executed 64%
+       7*:  475:PRINT_TYPE (print_short, unsigned short int)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+call    4 returned 100%
+branch  5 taken 86%
+branch  6 taken 14% (fallthrough)
+function print_int called 0 returned 0% blocks executed 0%
+    #####:  476:PRINT_TYPE (print_int, unsigned int)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+branch  5 never executed
+branch  6 never executed
+function print_long called 0 returned 0% blocks executed 0%
+    #####:  477:PRINT_TYPE (print_long, unsigned long int)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+branch  5 never executed
+branch  6 never executed
+function print_long_long called 0 returned 0% blocks executed 0%
+    #####:  478:PRINT_TYPE (print_long_long, unsigned_long_long_int)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+branch  5 never executed
+branch  6 never executed
+        -:  479:
+function print_float called 0 returned 0% blocks executed 0%
+    #####:  480:PRINT_FLOATTYPE (print_float, float, ftoastr, FLT_BUFSIZE_BOUND)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+call    5 never executed
+branch  6 never executed
+branch  7 never executed
+function print_double called 0 returned 0% blocks executed 0%
+    #####:  481:PRINT_FLOATTYPE (print_double, double, dtoastr, DBL_BUFSIZE_BOUND)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+call    5 never executed
+branch  6 never executed
+branch  7 never executed
+function print_long_double called 0 returned 0% blocks executed 0%
+    #####:  482:PRINT_FLOATTYPE (print_long_double, long double, ldtoastr, LDBL_BUFSIZE_BOUND)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+call    5 never executed
+branch  6 never executed
+branch  7 never executed
+        -:  483:
+        -:  484:#undef PRINT_TYPE
+        -:  485:#undef PRINT_FLOATTYPE
+        -:  486:
+        -:  487:static void
+function dump_hexl_mode_trailer called 0 returned 0% blocks executed 0%
+    #####:  488:dump_hexl_mode_trailer (size_t n_bytes, char const *block)
+        -:  489:{
+    #####:  490:  fputs ("  >", stdout);
+call    0 never executed
+    #####:  491:  for (size_t i = n_bytes; i > 0; i--)
+branch  0 never executed
+branch  1 never executed
+        -:  492:    {
+    #####:  493:      unsigned char c = *block++;
+    #####:  494:      unsigned char c2 = (isprint (c) ? c : '.');
+branch  0 never executed
+branch  1 never executed
+    #####:  495:      putchar (c2);
+call    0 never executed
+        -:  496:    }
+    #####:  497:  putchar ('<');
+call    0 never executed
+    #####:  498:}
+        -:  499:
+        -:  500:static void
+function print_named_ascii called 0 returned 0% blocks executed 0%
+    #####:  501:print_named_ascii (size_t fields, size_t blank, void const *block,
+        -:  502:                   MAYBE_UNUSED char const *unused_fmt_string,
+        -:  503:                   int width, int pad)
+        -:  504:{
+    #####:  505:  unsigned char const *p = block;
+        -:  506:  uintmax_t i;
+    #####:  507:  int pad_remaining = pad;
+    #####:  508:  for (i = fields; blank < i; i--)
+branch  0 never executed
+branch  1 never executed
+        -:  509:    {
+    #####:  510:      int next_pad = pad * (i - 1) / fields;
+    #####:  511:      int masked_c = *p++ & 0x7f;
+        -:  512:      char const *s;
+        -:  513:      char buf[2];
+        -:  514:
+    #####:  515:      if (masked_c == 127)
+branch  0 never executed
+branch  1 never executed
+    #####:  516:        s = "del";
+    #####:  517:      else if (masked_c <= 040)
+branch  0 never executed
+branch  1 never executed
+    #####:  518:        s = charname[masked_c];
+        -:  519:      else
+        -:  520:        {
+    #####:  521:          buf[0] = masked_c;
+    #####:  522:          buf[1] = 0;
+    #####:  523:          s = buf;
+        -:  524:        }
+        -:  525:
+    #####:  526:      xprintf ("%*s", pad_remaining - next_pad + width, s);
+call    0 never executed
+    #####:  527:      pad_remaining = next_pad;
+        -:  528:    }
+    #####:  529:}
+        -:  530:
+        -:  531:static void
+function print_ascii called 0 returned 0% blocks executed 0%
+    #####:  532:print_ascii (size_t fields, size_t blank, void const *block,
+        -:  533:             MAYBE_UNUSED char const *unused_fmt_string, int width,
+        -:  534:             int pad)
+        -:  535:{
+    #####:  536:  unsigned char const *p = block;
+        -:  537:  uintmax_t i;
+    #####:  538:  int pad_remaining = pad;
+    #####:  539:  for (i = fields; blank < i; i--)
+branch  0 never executed
+branch  1 never executed
+        -:  540:    {
+    #####:  541:      int next_pad = pad * (i - 1) / fields;
+    #####:  542:      unsigned char c = *p++;
+        -:  543:      char const *s;
+        -:  544:      char buf[4];
+        -:  545:
+    #####:  546:      switch (c)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+branch  8 never executed
+        -:  547:        {
+    #####:  548:        case '\0':
+    #####:  549:          s = "\\0";
+    #####:  550:          break;
+        -:  551:
+    #####:  552:        case '\a':
+    #####:  553:          s = "\\a";
+    #####:  554:          break;
+        -:  555:
+    #####:  556:        case '\b':
+    #####:  557:          s = "\\b";
+    #####:  558:          break;
+        -:  559:
+    #####:  560:        case '\f':
+    #####:  561:          s = "\\f";
+    #####:  562:          break;
+        -:  563:
+    #####:  564:        case '\n':
+    #####:  565:          s = "\\n";
+    #####:  566:          break;
+        -:  567:
+    #####:  568:        case '\r':
+    #####:  569:          s = "\\r";
+    #####:  570:          break;
+        -:  571:
+    #####:  572:        case '\t':
+    #####:  573:          s = "\\t";
+    #####:  574:          break;
+        -:  575:
+    #####:  576:        case '\v':
+    #####:  577:          s = "\\v";
+    #####:  578:          break;
+        -:  579:
+    #####:  580:        default:
+    #####:  581:          sprintf (buf, (isprint (c) ? "%c" : "%03o"), c);
+branch  0 never executed
+branch  1 never executed
+    #####:  582:          s = buf;
+        -:  583:        }
+        -:  584:
+    #####:  585:      xprintf ("%*s", pad_remaining - next_pad + width, s);
+call    0 never executed
+    #####:  586:      pad_remaining = next_pad;
+        -:  587:    }
+    #####:  588:}
+        -:  589:
+        -:  590:/* Convert a null-terminated (possibly zero-length) string S to an
+        -:  591:   int value.  If S points to a non-digit set *P to S,
+        -:  592:   *VAL to 0, and return true.  Otherwise, accumulate the integer value of
+        -:  593:   the string of digits.  If the string of digits represents a value
+        -:  594:   larger than INT_MAX, don't modify *VAL or *P and return false.
+        -:  595:   Otherwise, advance *P to the first non-digit after S, set *VAL to
+        -:  596:   the result of the conversion and return true.  */
+        -:  597:
+        -:  598:static bool
+function simple_strtoi called 0 returned 0% blocks executed 0%
+    #####:  599:simple_strtoi (char const *s, char const **p, int *val)
+        -:  600:{
+        -:  601:  int sum;
+        -:  602:
+    #####:  603:  for (sum = 0; ISDIGIT (*s); s++)
+branch  0 never executed
+branch  1 never executed
+    #####:  604:    if (ckd_mul (&sum, sum, 10) || ckd_add (&sum, sum, *s - '0'))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  605:      return false;
+    #####:  606:  *p = s;
+    #####:  607:  *val = sum;
+    #####:  608:  return true;
+        -:  609:}
+        -:  610:
+        -:  611:/* If S points to a single valid modern od format string, put
+        -:  612:   a description of that format in *TSPEC, make *NEXT point at the
+        -:  613:   character following the just-decoded format (if *NEXT is non-null),
+        -:  614:   and return true.  If S is not valid, don't modify *NEXT or *TSPEC,
+        -:  615:   give a diagnostic, and return false.  For example, if S were
+        -:  616:   "d4afL" *NEXT would be set to "afL" and *TSPEC would be
+        -:  617:     {
+        -:  618:       fmt = SIGNED_DECIMAL;
+        -:  619:       size = INT or LONG; (whichever integral_type_size[4] resolves to)
+        -:  620:       print_function = print_int; (assuming size == INT)
+        -:  621:       field_width = 11;
+        -:  622:       fmt_string = "%*d";
+        -:  623:      }
+        -:  624:   pad_width is determined later, but is at least as large as the
+        -:  625:   number of fields printed per row.
+        -:  626:   S_ORIG is solely for reporting errors.  It should be the full format
+        -:  627:   string argument.
+        -:  628:   */
+        -:  629:
+        -:  630:static bool ATTRIBUTE_NONNULL ()
+function decode_one_format called 1 returned 100% blocks executed 16%
+        1:  631:decode_one_format (char const *s_orig, char const *s, char const **next,
+        -:  632:                   struct tspec *tspec)
+        -:  633:{
+        -:  634:  enum size_spec size_spec;
+        -:  635:  int size;
+        -:  636:  enum output_format fmt;
+        -:  637:  void (*print_function) (size_t, size_t, void const *, char const *,
+        -:  638:                          int, int);
+        -:  639:  char const *p;
+        -:  640:  char c;
+        -:  641:  int field_width;
+        -:  642:
+        1:  643:  switch (*s)
+branch  0 taken 100%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+        -:  644:    {
+        1:  645:    case 'd':
+        -:  646:    case 'o':
+        -:  647:    case 'u':
+        -:  648:    case 'x':
+        1:  649:      c = *s;
+        1:  650:      ++s;
+        1:  651:      switch (*s)
+branch  0 taken 0%
+branch  1 taken 100%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+        -:  652:        {
+    #####:  653:        case 'C':
+    #####:  654:          ++s;
+    #####:  655:          size = sizeof (char);
+    #####:  656:          break;
+        -:  657:
+        1:  658:        case 'S':
+        1:  659:          ++s;
+        1:  660:          size = sizeof (short int);
+        1:  661:          break;
+        -:  662:
+    #####:  663:        case 'I':
+    #####:  664:          ++s;
+    #####:  665:          size = sizeof (int);
+    #####:  666:          break;
+        -:  667:
+    #####:  668:        case 'L':
+    #####:  669:          ++s;
+    #####:  670:          size = sizeof (long int);
+    #####:  671:          break;
+        -:  672:
+    #####:  673:        default:
+    #####:  674:          if (! simple_strtoi (s, &p, &size))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  675:            {
+        -:  676:              /* The integer at P in S would overflow an int.
+        -:  677:                 A digit string that long is sufficiently odd looking
+        -:  678:                 that the following diagnostic is sufficient.  */
+    #####:  679:              error (0, 0, _("invalid type string %s"), quote (s_orig));
+call    0 never executed
+    #####:  680:              return false;
+        -:  681:            }
+    #####:  682:          if (p == s)
+branch  0 never executed
+branch  1 never executed
+    #####:  683:            size = sizeof (int);
+        -:  684:          else
+        -:  685:            {
+    #####:  686:              if (MAX_INTEGRAL_TYPE_SIZE < size
+branch  0 never executed
+branch  1 never executed
+    #####:  687:                  || integral_type_size[size] == NO_SIZE)
+branch  0 never executed
+branch  1 never executed
+        -:  688:                {
+    #####:  689:                  error (0, 0, _("invalid type string %s;\nthis system"
+call    0 never executed
+        -:  690:                                 " doesn't provide a %d-byte integral type"),
+        -:  691:                         quote (s_orig), size);
+    #####:  692:                  return false;
+        -:  693:                }
+    #####:  694:              s = p;
+        -:  695:            }
+    #####:  696:          break;
+        -:  697:        }
+        -:  698:
+        -:  699:#define ISPEC_TO_FORMAT(Spec, Min_format, Long_format, Max_format)	\
+        -:  700:  ((Spec) == LONG_LONG ? (Max_format)					\
+        -:  701:   : ((Spec) == LONG ? (Long_format)					\
+        -:  702:      : (Min_format)))							\
+        -:  703:
+        1:  704:      size_spec = integral_type_size[size];
+        -:  705:
+        1:  706:      switch (c)
+branch  0 taken 0%
+branch  1 taken 100%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+        -:  707:        {
+    #####:  708:        case 'd':
+    #####:  709:          fmt = SIGNED_DECIMAL;
+    #####:  710:          field_width = bytes_to_signed_dec_digits[size];
+    #####:  711:          sprintf (tspec->fmt_string, "%%*%s",
+branch  0 never executed
+branch  1 never executed
+    #####:  712:                   ISPEC_TO_FORMAT (size_spec, "d", "ld", PRIdMAX));
+branch  0 never executed
+branch  1 never executed
+    #####:  713:          break;
+        -:  714:
+        1:  715:        case 'o':
+        1:  716:          fmt = OCTAL;
+       2*:  717:          sprintf (tspec->fmt_string, "%%*.%d%s",
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  718:                   (field_width = bytes_to_oct_digits[size]),
+       1*:  719:                   ISPEC_TO_FORMAT (size_spec, "o", "lo", PRIoMAX));
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        1:  720:          break;
+        -:  721:
+    #####:  722:        case 'u':
+    #####:  723:          fmt = UNSIGNED_DECIMAL;
+    #####:  724:          field_width = bytes_to_unsigned_dec_digits[size];
+    #####:  725:          sprintf (tspec->fmt_string, "%%*%s",
+branch  0 never executed
+branch  1 never executed
+    #####:  726:                   ISPEC_TO_FORMAT (size_spec, "u", "lu", PRIuMAX));
+branch  0 never executed
+branch  1 never executed
+    #####:  727:          break;
+        -:  728:
+    #####:  729:        case 'x':
+    #####:  730:          fmt = HEXADECIMAL;
+    #####:  731:          sprintf (tspec->fmt_string, "%%*.%d%s",
+branch  0 never executed
+branch  1 never executed
+    #####:  732:                   (field_width = bytes_to_hex_digits[size]),
+    #####:  733:                   ISPEC_TO_FORMAT (size_spec, "x", "lx", PRIxMAX));
+branch  0 never executed
+branch  1 never executed
+    #####:  734:          break;
+        -:  735:
+    #####:  736:        default:
+    #####:  737:          unreachable ();
+call    0 never executed
+        -:  738:        }
+        -:  739:
+        -:  740:      switch (size_spec)
+        -:  741:        {
+    #####:  742:        case CHAR:
+    #####:  743:          print_function = (fmt == SIGNED_DECIMAL
+        -:  744:                            ? print_s_char
+    #####:  745:                            : print_char);
+branch  0 never executed
+branch  1 never executed
+    #####:  746:          break;
+        -:  747:
+        1:  748:        case SHORT:
+        1:  749:          print_function = (fmt == SIGNED_DECIMAL
+        -:  750:                            ? print_s_short
+       1*:  751:                            : print_short);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        1:  752:          break;
+        -:  753:
+    #####:  754:        case INT:
+    #####:  755:          print_function = print_int;
+    #####:  756:          break;
+        -:  757:
+    #####:  758:        case LONG:
+    #####:  759:          print_function = print_long;
+    #####:  760:          break;
+        -:  761:
+    #####:  762:        case LONG_LONG:
+    #####:  763:          print_function = print_long_long;
+    #####:  764:          break;
+        -:  765:
+    #####:  766:        default:
+    #####:  767:          affirm (false);
+call    0 never executed
+        -:  768:        }
+        1:  769:      break;
+        -:  770:
+    #####:  771:    case 'f':
+    #####:  772:      fmt = FLOATING_POINT;
+    #####:  773:      ++s;
+    #####:  774:      switch (*s)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  775:        {
+    #####:  776:        case 'F':
+    #####:  777:          ++s;
+    #####:  778:          size = sizeof (float);
+    #####:  779:          break;
+        -:  780:
+    #####:  781:        case 'D':
+    #####:  782:          ++s;
+    #####:  783:          size = sizeof (double);
+    #####:  784:          break;
+        -:  785:
+    #####:  786:        case 'L':
+    #####:  787:          ++s;
+    #####:  788:          size = sizeof (long double);
+    #####:  789:          break;
+        -:  790:
+    #####:  791:        default:
+    #####:  792:          if (! simple_strtoi (s, &p, &size))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  793:            {
+        -:  794:              /* The integer at P in S would overflow an int.
+        -:  795:                 A digit string that long is sufficiently odd looking
+        -:  796:                 that the following diagnostic is sufficient.  */
+    #####:  797:              error (0, 0, _("invalid type string %s"), quote (s_orig));
+call    0 never executed
+    #####:  798:              return false;
+        -:  799:            }
+    #####:  800:          if (p == s)
+branch  0 never executed
+branch  1 never executed
+    #####:  801:            size = sizeof (double);
+        -:  802:          else
+        -:  803:            {
+    #####:  804:              if (size > MAX_FP_TYPE_SIZE
+branch  0 never executed
+branch  1 never executed
+    #####:  805:                  || fp_type_size[size] == NO_SIZE)
+branch  0 never executed
+branch  1 never executed
+        -:  806:                {
+    #####:  807:                  error (0, 0,
+call    0 never executed
+        -:  808:                         _("invalid type string %s;\n"
+        -:  809:                           "this system doesn't provide a %d-byte"
+        -:  810:                           " floating point type"),
+        -:  811:                         quote (s_orig), size);
+    #####:  812:                  return false;
+        -:  813:                }
+    #####:  814:              s = p;
+        -:  815:            }
+    #####:  816:          break;
+        -:  817:        }
+    #####:  818:      size_spec = fp_type_size[size];
+        -:  819:
+        -:  820:      {
+    #####:  821:        struct lconv const *locale = localeconv ();
+call    0 never executed
+    #####:  822:        size_t decimal_point_len =
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  823:          (locale->decimal_point[0] ? strlen (locale->decimal_point) : 1);
+branch  0 never executed
+branch  1 never executed
+        -:  824:
+        -:  825:        switch (size_spec)
+        -:  826:          {
+    #####:  827:          case FLOAT_SINGLE:
+    #####:  828:            print_function = print_float;
+    #####:  829:            field_width = FLT_STRLEN_BOUND_L (decimal_point_len);
+    #####:  830:            break;
+        -:  831:
+    #####:  832:          case FLOAT_DOUBLE:
+    #####:  833:            print_function = print_double;
+    #####:  834:            field_width = DBL_STRLEN_BOUND_L (decimal_point_len);
+    #####:  835:            break;
+        -:  836:
+    #####:  837:          case FLOAT_LONG_DOUBLE:
+    #####:  838:            print_function = print_long_double;
+    #####:  839:            field_width = LDBL_STRLEN_BOUND_L (decimal_point_len);
+    #####:  840:            break;
+        -:  841:
+    #####:  842:          default:
+    #####:  843:            affirm (false);
+call    0 never executed
+        -:  844:          }
+        -:  845:
+    #####:  846:        break;
+        -:  847:      }
+        -:  848:
+    #####:  849:    case 'a':
+    #####:  850:      ++s;
+    #####:  851:      fmt = NAMED_CHARACTER;
+    #####:  852:      size_spec = CHAR;
+    #####:  853:      print_function = print_named_ascii;
+    #####:  854:      field_width = 3;
+    #####:  855:      break;
+        -:  856:
+    #####:  857:    case 'c':
+    #####:  858:      ++s;
+    #####:  859:      fmt = CHARACTER;
+    #####:  860:      size_spec = CHAR;
+    #####:  861:      print_function = print_ascii;
+    #####:  862:      field_width = 3;
+    #####:  863:      break;
+        -:  864:
+    #####:  865:    default:
+    #####:  866:      error (0, 0, _("invalid character '%c' in type string %s"),
+call    0 never executed
+        -:  867:             *s, quote (s_orig));
+    #####:  868:      return false;
+        -:  869:    }
+        -:  870:
+        1:  871:  tspec->size = size_spec;
+        1:  872:  tspec->fmt = fmt;
+        1:  873:  tspec->print_function = print_function;
+        -:  874:
+        1:  875:  tspec->field_width = field_width;
+        1:  876:  tspec->hexl_mode_trailer = (*s == 'z');
+        1:  877:  if (tspec->hexl_mode_trailer)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  878:    s++;
+        -:  879:
+        1:  880:  *next = s;
+        1:  881:  return true;
+        -:  882:}
+        -:  883:
+        -:  884:/* Given a list of one or more input filenames FILE_LIST, set the global
+        -:  885:   file pointer IN_STREAM and the global string INPUT_FILENAME to the
+        -:  886:   first one that can be successfully opened. Modify FILE_LIST to
+        -:  887:   reference the next filename in the list.  A file name of "-" is
+        -:  888:   interpreted as standard input.  If any file open fails, give an error
+        -:  889:   message and return false.  */
+        -:  890:
+        -:  891:static bool
+function open_next_file called 2 returned 100% blocks executed 50%
+        2:  892:open_next_file (void)
+        -:  893:{
+        2:  894:  bool ok = true;
+        -:  895:
+        -:  896:  do
+        -:  897:    {
+        2:  898:      input_filename = *file_list;
+        2:  899:      if (input_filename == nullptr)
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+        1:  900:        return ok;
+        1:  901:      ++file_list;
+        -:  902:
+        1:  903:      if (STREQ (input_filename, "-"))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  904:        {
+        1:  905:          input_filename = _("standard input");
+        1:  906:          in_stream = stdin;
+        1:  907:          have_read_stdin = true;
+        1:  908:          xset_binary_mode (STDIN_FILENO, O_BINARY);
+call    0 returned 100%
+        -:  909:        }
+        -:  910:      else
+        -:  911:        {
+    #####:  912:          in_stream = fopen (input_filename, (O_BINARY ? "rb" : "r"));
+call    0 never executed
+    #####:  913:          if (in_stream == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  914:            {
+    #####:  915:              error (0, errno, "%s", quotef (input_filename));
+call    0 never executed
+    #####:  916:              ok = false;
+        -:  917:            }
+        -:  918:        }
+        -:  919:    }
+        1:  920:  while (in_stream == nullptr);
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+        -:  921:
+       1*:  922:  if (limit_bytes_to_format && !flag_dump_strings)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  923:    setvbuf (in_stream, nullptr, _IONBF, 0);
+call    0 never executed
+        -:  924:
+        1:  925:  return ok;
+        -:  926:}
+        -:  927:
+        -:  928:/* Test whether there have been errors on in_stream, and close it if
+        -:  929:   it is not standard input.  Return false if there has been an error
+        -:  930:   on in_stream or stdout; return true otherwise.  This function will
+        -:  931:   report more than one error only if both a read and a write error
+        -:  932:   have occurred.  IN_ERRNO, if nonzero, is the error number
+        -:  933:   corresponding to the most recent action for IN_STREAM.  */
+        -:  934:
+        -:  935:static bool
+function check_and_close called 1 returned 100% blocks executed 48%
+        1:  936:check_and_close (int in_errno)
+        -:  937:{
+        1:  938:  bool ok = true;
+        -:  939:
+        1:  940:  if (in_stream != nullptr)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  941:    {
+        1:  942:      if (!ferror (in_stream))
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+        1:  943:        in_errno = 0;
+        1:  944:      if (STREQ (file_list[-1], "-"))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  945:        clearerr (in_stream);
+call    0 returned 100%
+    #####:  946:      else if (fclose (in_stream) != 0 && !in_errno)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  947:        in_errno = errno;
+        1:  948:      if (in_errno)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  949:        {
+    #####:  950:          error (0, in_errno, "%s", quotef (input_filename));
+call    0 never executed
+    #####:  951:          ok = false;
+        -:  952:        }
+        -:  953:
+        1:  954:      in_stream = nullptr;
+        -:  955:    }
+        -:  956:
+        1:  957:  if (ferror (stdout))
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+        -:  958:    {
+        -:  959:      error (0, 0, _("write error"));
+    #####:  960:      ok = false;
+        -:  961:    }
+        -:  962:
+        1:  963:  return ok;
+        -:  964:}
+        -:  965:
+        -:  966:/* Decode the modern od format string S.  Append the decoded
+        -:  967:   representation to the global array SPEC, reallocating SPEC if
+        -:  968:   necessary.  Return true if S is valid.  */
+        -:  969:
+        -:  970:static bool ATTRIBUTE_NONNULL ()
+function decode_format_string called 1 returned 100% blocks executed 85%
+        1:  971:decode_format_string (char const *s)
+        -:  972:{
+        1:  973:  char const *s_orig = s;
+        -:  974:
+        2:  975:  while (*s != '\0')
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -:  976:    {
+        -:  977:      char const *next;
+        -:  978:
+        1:  979:      if (n_specs_allocated <= n_specs)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  980:        spec = X2NREALLOC (spec, &n_specs_allocated);
+call    0 returned 100%
+        -:  981:
+        1:  982:      if (! decode_one_format (s_orig, s, &next, &spec[n_specs]))
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  983:        return false;
+        -:  984:
+       1*:  985:      affirm (s != next);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+        1:  986:      s = next;
+        1:  987:      ++n_specs;
+        -:  988:    }
+        -:  989:
+        1:  990:  return true;
+        -:  991:}
+        -:  992:
+        -:  993:/* Given a list of one or more input filenames FILE_LIST, set the global
+        -:  994:   file pointer IN_STREAM to position N_SKIP in the concatenation of
+        -:  995:   those files.  If any file operation fails or if there are fewer than
+        -:  996:   N_SKIP bytes in the combined input, give an error message and return
+        -:  997:   false.  When possible, use seek rather than read operations to
+        -:  998:   advance IN_STREAM.  */
+        -:  999:
+        -: 1000:static bool
+function skip called 1 returned 100% blocks executed 5%
+        1: 1001:skip (uintmax_t n_skip)
+        -: 1002:{
+        1: 1003:  bool ok = true;
+        1: 1004:  int in_errno = 0;
+        -: 1005:
+        1: 1006:  if (n_skip == 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1: 1007:    return true;
+        -: 1008:
+    #####: 1009:  while (in_stream != nullptr)	/* EOF.  */
+branch  0 never executed
+branch  1 never executed
+        -: 1010:    {
+        -: 1011:      struct stat file_stats;
+        -: 1012:
+        -: 1013:      /* First try seeking.  For large offsets, this extra work is
+        -: 1014:         worthwhile.  If the offset is below some threshold it may be
+        -: 1015:         more efficient to move the pointer by reading.  There are two
+        -: 1016:         issues when trying to seek:
+        -: 1017:           - the file must be seekable.
+        -: 1018:           - before seeking to the specified position, make sure
+        -: 1019:             that the new position is in the current file.
+        -: 1020:             Try to do that by getting file's size using fstat.
+        -: 1021:             But that will work only for regular files.  */
+        -: 1022:
+    #####: 1023:      if (fstat (fileno (in_stream), &file_stats) == 0)
+call    0 never executed
+call    1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1024:        {
+    #####: 1025:          bool usable_size = usable_st_size (&file_stats);
+call    0 never executed
+        -: 1026:
+        -: 1027:          /* The st_size field is valid for regular files.
+        -: 1028:             If the number of bytes left to skip is larger than
+        -: 1029:             the size of the current file, we can decrement n_skip
+        -: 1030:             and go on to the next file.  Skip this optimization also
+        -: 1031:             when st_size is no greater than the block size, because
+        -: 1032:             some kernels report nonsense small file sizes for
+        -: 1033:             proc-like file systems.  */
+    #####: 1034:          if (usable_size && ST_BLKSIZE (file_stats) < file_stats.st_size)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+        -: 1035:            {
+    #####: 1036:              if ((uintmax_t) file_stats.st_size < n_skip)
+branch  0 never executed
+branch  1 never executed
+    #####: 1037:                n_skip -= file_stats.st_size;
+        -: 1038:              else
+        -: 1039:                {
+    #####: 1040:                  if (fseeko (in_stream, n_skip, SEEK_CUR) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1041:                    {
+    #####: 1042:                      in_errno = errno;
+    #####: 1043:                      ok = false;
+        -: 1044:                    }
+    #####: 1045:                  n_skip = 0;
+        -: 1046:                }
+        -: 1047:            }
+        -: 1048:
+    #####: 1049:          else if (!usable_size && fseeko (in_stream, n_skip, SEEK_CUR) == 0)
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####: 1050:            n_skip = 0;
+        -: 1051:
+        -: 1052:          /* If it's not a regular file with nonnegative size,
+        -: 1053:             or if it's so small that it might be in a proc-like file system,
+        -: 1054:             position the file pointer by reading.  */
+        -: 1055:
+        -: 1056:          else
+        -: 1057:            {
+        -: 1058:              char buf[BUFSIZ];
+    #####: 1059:              size_t n_bytes_read, n_bytes_to_read = BUFSIZ;
+        -: 1060:
+    #####: 1061:              while (0 < n_skip)
+branch  0 never executed
+branch  1 never executed
+        -: 1062:                {
+    #####: 1063:                  if (n_skip < n_bytes_to_read)
+branch  0 never executed
+branch  1 never executed
+    #####: 1064:                    n_bytes_to_read = n_skip;
+    #####: 1065:                  n_bytes_read = fread (buf, 1, n_bytes_to_read, in_stream);
+call    0 never executed
+    #####: 1066:                  n_skip -= n_bytes_read;
+    #####: 1067:                  if (n_bytes_read != n_bytes_to_read)
+branch  0 never executed
+branch  1 never executed
+        -: 1068:                    {
+    #####: 1069:                      if (ferror (in_stream))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1070:                        {
+    #####: 1071:                          in_errno = errno;
+    #####: 1072:                          ok = false;
+    #####: 1073:                          n_skip = 0;
+    #####: 1074:                          break;
+        -: 1075:                        }
+    #####: 1076:                      if (feof (in_stream))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1077:                        break;
+        -: 1078:                    }
+        -: 1079:                }
+        -: 1080:            }
+        -: 1081:
+    #####: 1082:          if (n_skip == 0)
+branch  0 never executed
+branch  1 never executed
+    #####: 1083:            break;
+        -: 1084:        }
+        -: 1085:
+        -: 1086:      else   /* cannot fstat() file */
+        -: 1087:        {
+    #####: 1088:          error (0, errno, "%s", quotef (input_filename));
+call    0 never executed
+    #####: 1089:          ok = false;
+        -: 1090:        }
+        -: 1091:
+    #####: 1092:      ok &= check_and_close (in_errno);
+call    0 never executed
+        -: 1093:
+    #####: 1094:      ok &= open_next_file ();
+call    0 never executed
+        -: 1095:    }
+        -: 1096:
+    #####: 1097:  if (n_skip != 0)
+branch  0 never executed
+branch  1 never executed
+    #####: 1098:    error (EXIT_FAILURE, 0, _("cannot skip past end of combined input"));
+call    0 never executed
+        -: 1099:
+    #####: 1100:  return ok;
+        -: 1101:}
+        -: 1102:
+        -: 1103:static void
+function format_address_none called 0 returned 0% blocks executed 0%
+    #####: 1104:format_address_none (MAYBE_UNUSED uintmax_t address,
+        -: 1105:                     MAYBE_UNUSED char c)
+        -: 1106:{
+    #####: 1107:}
+        -: 1108:
+        -: 1109:static void
+function format_address_std called 2 returned 100% blocks executed 60%
+        2: 1110:format_address_std (uintmax_t address, char c)
+        -: 1111:{
+        -: 1112:  char buf[MAX_ADDRESS_LENGTH + 2];
+        2: 1113:  char *p = buf + sizeof buf;
+        -: 1114:  char const *pbound;
+        -: 1115:
+        2: 1116:  *--p = '\0';
+        2: 1117:  *--p = c;
+        2: 1118:  pbound = p - address_pad_len;
+        -: 1119:
+        -: 1120:  /* Use a special case of the code for each base.  This is measurably
+        -: 1121:     faster than generic code.  */
+        2: 1122:  switch (address_base)
+branch  0 taken 100%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+        -: 1123:    {
+        3: 1124:    case 8:
+        -: 1125:      do
+        3: 1126:        *--p = '0' + (address & 7);
+        3: 1127:      while ((address >>= 3) != 0);
+branch  0 taken 33% (fallthrough)
+branch  1 taken 67%
+        2: 1128:      break;
+        -: 1129:
+    #####: 1130:    case 10:
+        -: 1131:      do
+    #####: 1132:        *--p = '0' + (address % 10);
+    #####: 1133:      while ((address /= 10) != 0);
+branch  0 never executed
+branch  1 never executed
+    #####: 1134:      break;
+        -: 1135:
+    #####: 1136:    case 16:
+        -: 1137:      do
+    #####: 1138:        *--p = "0123456789abcdef"[address & 15];
+    #####: 1139:      while ((address >>= 4) != 0);
+branch  0 never executed
+branch  1 never executed
+    #####: 1140:      break;
+        -: 1141:    }
+        -: 1142:
+       13: 1143:  while (pbound < p)
+branch  0 taken 85%
+branch  1 taken 15% (fallthrough)
+       11: 1144:    *--p = '0';
+        -: 1145:
+        2: 1146:  fputs (p, stdout);
+call    0 returned 100%
+        2: 1147:}
+        -: 1148:
+        -: 1149:static void
+function format_address_paren called 0 returned 0% blocks executed 0%
+    #####: 1150:format_address_paren (uintmax_t address, char c)
+        -: 1151:{
+    #####: 1152:  putchar ('(');
+call    0 never executed
+    #####: 1153:  format_address_std (address, ')');
+call    0 never executed
+    #####: 1154:  if (c)
+branch  0 never executed
+branch  1 never executed
+    #####: 1155:    putchar (c);
+call    0 never executed
+    #####: 1156:}
+        -: 1157:
+        -: 1158:static void
+function format_address_label called 0 returned 0% blocks executed 0%
+    #####: 1159:format_address_label (uintmax_t address, char c)
+        -: 1160:{
+    #####: 1161:  format_address_std (address, ' ');
+call    0 never executed
+    #####: 1162:  format_address_paren (address + pseudo_offset, c);
+call    0 never executed
+    #####: 1163:}
+        -: 1164:
+        -: 1165:/* Write N_BYTES bytes from CURR_BLOCK to standard output once for each
+        -: 1166:   of the N_SPEC format specs.  CURRENT_OFFSET is the byte address of
+        -: 1167:   CURR_BLOCK in the concatenation of input files, and it is printed
+        -: 1168:   (optionally) only before the output line associated with the first
+        -: 1169:   format spec.  When duplicate blocks are being abbreviated, the output
+        -: 1170:   for a sequence of identical input blocks is the output for the first
+        -: 1171:   block followed by an asterisk alone on a line.  It is valid to compare
+        -: 1172:   the blocks PREV_BLOCK and CURR_BLOCK only when N_BYTES == BYTES_PER_BLOCK.
+        -: 1173:   That condition may be false only for the last input block.  */
+        -: 1174:
+        -: 1175:static void
+function write_block called 1 returned 100% blocks executed 55%
+        1: 1176:write_block (uintmax_t current_offset, size_t n_bytes,
+        -: 1177:             char const *prev_block, char const *curr_block)
+        -: 1178:{
+        -: 1179:  static bool first = true;
+        -: 1180:  static bool prev_pair_equal = false;
+        -: 1181:
+        -: 1182:#define EQUAL_BLOCKS(b1, b2) (memcmp (b1, b2, bytes_per_block) == 0)
+        -: 1183:
+        1: 1184:  if (abbreviate_duplicate_blocks
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       1*: 1185:      && !first && n_bytes == bytes_per_block
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####: 1186:      && EQUAL_BLOCKS (prev_block, curr_block))
+branch  0 never executed
+branch  1 never executed
+        -: 1187:    {
+    #####: 1188:      if (prev_pair_equal)
+branch  0 never executed
+branch  1 never executed
+        -: 1189:        {
+        -: 1190:          /* The two preceding blocks were equal, and the current
+        -: 1191:             block is the same as the last one, so print nothing.  */
+        -: 1192:        }
+        -: 1193:      else
+        -: 1194:        {
+    #####: 1195:          printf ("*\n");
+call    0 never executed
+    #####: 1196:          prev_pair_equal = true;
+        -: 1197:        }
+        -: 1198:    }
+        -: 1199:  else
+        -: 1200:    {
+        1: 1201:      prev_pair_equal = false;
+        2: 1202:      for (size_t i = 0; i < n_specs; i++)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -: 1203:        {
+        1: 1204:          int datum_width = width_bytes[spec[i].size];
+        1: 1205:          int fields_per_block = bytes_per_block / datum_width;
+        1: 1206:          int blank_fields = (bytes_per_block - n_bytes) / datum_width;
+        1: 1207:          if (i == 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1: 1208:            format_address (current_offset, '\0');
+call    0 returned 100%
+        -: 1209:          else
+    #####: 1210:            printf ("%*s", address_pad_len, "");
+call    0 never executed
+        1: 1211:          (*spec[i].print_function) (fields_per_block, blank_fields,
+        1: 1212:                                     curr_block, spec[i].fmt_string,
+        1: 1213:                                     spec[i].field_width, spec[i].pad_width);
+call    0 returned 100%
+        1: 1214:          if (spec[i].hexl_mode_trailer)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1215:            {
+        -: 1216:              /* space-pad out to full line width, then dump the trailer */
+    #####: 1217:              int field_width = spec[i].field_width;
+    #####: 1218:              int pad_width = (spec[i].pad_width * blank_fields
+        -: 1219:                               / fields_per_block);
+    #####: 1220:              printf ("%*s", blank_fields * field_width + pad_width, "");
+call    0 never executed
+    #####: 1221:              dump_hexl_mode_trailer (n_bytes, curr_block);
+call    0 never executed
+        -: 1222:            }
+        1: 1223:          putchar ('\n');
+call    0 returned 100%
+        -: 1224:        }
+        -: 1225:    }
+        1: 1226:  first = false;
+        1: 1227:}
+        -: 1228:
+        -: 1229:/* Read a single byte into *C from the concatenation of the input files
+        -: 1230:   named in the global array FILE_LIST.  On the first call to this
+        -: 1231:   function, the global variable IN_STREAM is expected to be an open
+        -: 1232:   stream associated with the input file INPUT_FILENAME.  If IN_STREAM
+        -: 1233:   is at end-of-file, close it and update the global variables IN_STREAM
+        -: 1234:   and INPUT_FILENAME so they correspond to the next file in the list.
+        -: 1235:   Then try to read a byte from the newly opened file.  Repeat if
+        -: 1236:   necessary until EOF is reached for the last file in FILE_LIST, then
+        -: 1237:   set *C to EOF and return.  Subsequent calls do likewise.  Return
+        -: 1238:   true if successful.  */
+        -: 1239:
+        -: 1240:static bool
+function read_char called 0 returned 0% blocks executed 0%
+    #####: 1241:read_char (int *c)
+        -: 1242:{
+    #####: 1243:  bool ok = true;
+        -: 1244:
+    #####: 1245:  *c = EOF;
+        -: 1246:
+    #####: 1247:  while (in_stream != nullptr)	/* EOF.  */
+branch  0 never executed
+branch  1 never executed
+        -: 1248:    {
+    #####: 1249:      *c = fgetc (in_stream);
+call    0 never executed
+        -: 1250:
+    #####: 1251:      if (*c != EOF)
+branch  0 never executed
+branch  1 never executed
+    #####: 1252:        break;
+        -: 1253:
+    #####: 1254:      ok &= check_and_close (errno);
+call    0 never executed
+        -: 1255:
+    #####: 1256:      ok &= open_next_file ();
+call    0 never executed
+        -: 1257:    }
+        -: 1258:
+    #####: 1259:  return ok;
+        -: 1260:}
+        -: 1261:
+        -: 1262:/* Read N bytes into BLOCK from the concatenation of the input files
+        -: 1263:   named in the global array FILE_LIST.  On the first call to this
+        -: 1264:   function, the global variable IN_STREAM is expected to be an open
+        -: 1265:   stream associated with the input file INPUT_FILENAME.  If all N
+        -: 1266:   bytes cannot be read from IN_STREAM, close IN_STREAM and update
+        -: 1267:   the global variables IN_STREAM and INPUT_FILENAME.  Then try to
+        -: 1268:   read the remaining bytes from the newly opened file.  Repeat if
+        -: 1269:   necessary until EOF is reached for the last file in FILE_LIST.
+        -: 1270:   On subsequent calls, don't modify BLOCK and return true.  Set
+        -: 1271:   *N_BYTES_IN_BUFFER to the number of bytes read.  If an error occurs,
+        -: 1272:   it will be detected through ferror when the stream is about to be
+        -: 1273:   closed.  If there is an error, give a message but continue reading
+        -: 1274:   as usual and return false.  Otherwise return true.  */
+        -: 1275:
+        -: 1276:static bool
+function read_block called 1 returned 100% blocks executed 86%
+        1: 1277:read_block (size_t n, char *block, size_t *n_bytes_in_buffer)
+        -: 1278:{
+        1: 1279:  bool ok = true;
+        -: 1280:
+       1*: 1281:  affirm (0 < n && n <= bytes_per_block);
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+call    4 never executed
+        -: 1282:
+        1: 1283:  *n_bytes_in_buffer = 0;
+        -: 1284:
+        2: 1285:  while (in_stream != nullptr)	/* EOF.  */
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -: 1286:    {
+        -: 1287:      size_t n_needed;
+        -: 1288:      size_t n_read;
+        -: 1289:
+        1: 1290:      n_needed = n - *n_bytes_in_buffer;
+        1: 1291:      n_read = fread (block + *n_bytes_in_buffer, 1, n_needed, in_stream);
+call    0 returned 100%
+        -: 1292:
+        1: 1293:      *n_bytes_in_buffer += n_read;
+        -: 1294:
+        1: 1295:      if (n_read == n_needed)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1296:        break;
+        -: 1297:
+        1: 1298:      ok &= check_and_close (errno);
+call    0 returned 100%
+        -: 1299:
+        1: 1300:      ok &= open_next_file ();
+call    0 returned 100%
+        -: 1301:    }
+        -: 1302:
+        1: 1303:  return ok;
+        -: 1304:}
+        -: 1305:
+        -: 1306:/* Return the least common multiple of the sizes associated
+        -: 1307:   with the format specs.  */
+        -: 1308:
+        -: 1309:ATTRIBUTE_PURE
+        -: 1310:static int
+function get_lcm called 2 returned 100% blocks executed 100%
+        2: 1311:get_lcm (void)
+        -: 1312:{
+        2: 1313:  int l_c_m = 1;
+        -: 1314:
+        4: 1315:  for (size_t i = 0; i < n_specs; i++)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        2: 1316:    l_c_m = lcm (l_c_m, width_bytes[spec[i].size]);
+        2: 1317:  return l_c_m;
+        -: 1318:}
+        -: 1319:
+        -: 1320:/* If S is a valid traditional offset specification with an optional
+        -: 1321:   leading '+' return true and set *OFFSET to the offset it denotes.  */
+        -: 1322:
+        -: 1323:static bool
+function parse_old_offset called 0 returned 0% blocks executed 0%
+    #####: 1324:parse_old_offset (char const *s, uintmax_t *offset)
+        -: 1325:{
+        -: 1326:  int radix;
+        -: 1327:
+    #####: 1328:  if (*s == '\0')
+branch  0 never executed
+branch  1 never executed
+    #####: 1329:    return false;
+        -: 1330:
+        -: 1331:  /* Skip over any leading '+'. */
+    #####: 1332:  if (s[0] == '+')
+branch  0 never executed
+branch  1 never executed
+    #####: 1333:    ++s;
+        -: 1334:
+        -: 1335:  /* Determine the radix we'll use to interpret S.  If there is a '.',
+        -: 1336:     it's decimal, otherwise, if the string begins with '0X'or '0x',
+        -: 1337:     it's hexadecimal, else octal.  */
+    #####: 1338:  if (strchr (s, '.') != nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####: 1339:    radix = 10;
+        -: 1340:  else
+        -: 1341:    {
+    #####: 1342:      if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####: 1343:        radix = 16;
+        -: 1344:      else
+    #####: 1345:        radix = 8;
+        -: 1346:    }
+        -: 1347:
+    #####: 1348:  return xstrtoumax (s, nullptr, radix, offset, "Bb") == LONGINT_OK;
+call    0 never executed
+        -: 1349:}
+        -: 1350:
+        -: 1351:/* Read a chunk of size BYTES_PER_BLOCK from the input files, write the
+        -: 1352:   formatted block to standard output, and repeat until the specified
+        -: 1353:   maximum number of bytes has been read or until all input has been
+        -: 1354:   processed.  If the last block read is smaller than BYTES_PER_BLOCK
+        -: 1355:   and its size is not a multiple of the size associated with a format
+        -: 1356:   spec, extend the input block with zero bytes until its length is a
+        -: 1357:   multiple of all format spec sizes.  Write the final block.  Finally,
+        -: 1358:   write on a line by itself the offset of the byte after the last byte
+        -: 1359:   read.  Accumulate return values from calls to read_block and
+        -: 1360:   check_and_close, and if any was false, return false.
+        -: 1361:   Otherwise, return true.  */
+        -: 1362:
+        -: 1363:static bool
+function dump called 1 returned 100% blocks executed 36%
+        1: 1364:dump (void)
+        -: 1365:{
+        -: 1366:  char *block[2];
+        -: 1367:  uintmax_t current_offset;
+        1: 1368:  bool idx = false;
+        1: 1369:  bool ok = true;
+        -: 1370:  size_t n_bytes_read;
+        -: 1371:
+        1: 1372:  block[0] = xnmalloc (2, bytes_per_block);
+call    0 returned 100%
+        1: 1373:  block[1] = block[0] + bytes_per_block;
+        -: 1374:
+        1: 1375:  current_offset = n_bytes_to_skip;
+        -: 1376:
+        1: 1377:  if (limit_bytes_to_format)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1378:    {
+    #####: 1379:      while (ok)
+branch  0 never executed
+branch  1 never executed
+        -: 1380:        {
+        -: 1381:          size_t n_needed;
+    #####: 1382:          if (current_offset >= end_offset)
+branch  0 never executed
+branch  1 never executed
+        -: 1383:            {
+    #####: 1384:              n_bytes_read = 0;
+    #####: 1385:              break;
+        -: 1386:            }
+    #####: 1387:          n_needed = MIN (end_offset - current_offset,
+        -: 1388:                          (uintmax_t) bytes_per_block);
+    #####: 1389:          ok &= read_block (n_needed, block[idx], &n_bytes_read);
+call    0 never executed
+    #####: 1390:          if (n_bytes_read < bytes_per_block)
+branch  0 never executed
+branch  1 never executed
+    #####: 1391:            break;
+    #####: 1392:          affirm (n_bytes_read == bytes_per_block);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####: 1393:          write_block (current_offset, n_bytes_read,
+    #####: 1394:                       block[!idx], block[idx]);
+call    0 never executed
+    #####: 1395:          if (ferror (stdout))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1396:            ok = false;
+    #####: 1397:          current_offset += n_bytes_read;
+    #####: 1398:          idx = !idx;
+        -: 1399:        }
+        -: 1400:    }
+        -: 1401:  else
+        -: 1402:    {
+        1: 1403:      while (ok)
+branch  0 taken 100%
+branch  1 taken 0% (fallthrough)
+        -: 1404:        {
+        1: 1405:          ok &= read_block (bytes_per_block, block[idx], &n_bytes_read);
+call    0 returned 100%
+        1: 1406:          if (n_bytes_read < bytes_per_block)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1: 1407:            break;
+    #####: 1408:          affirm (n_bytes_read == bytes_per_block);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####: 1409:          write_block (current_offset, n_bytes_read,
+    #####: 1410:                       block[!idx], block[idx]);
+call    0 never executed
+    #####: 1411:          if (ferror (stdout))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1412:            ok = false;
+    #####: 1413:          current_offset += n_bytes_read;
+    #####: 1414:          idx = !idx;
+        -: 1415:        }
+        -: 1416:    }
+        -: 1417:
+        1: 1418:  if (n_bytes_read > 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -: 1419:    {
+        -: 1420:      int l_c_m;
+        -: 1421:      size_t bytes_to_write;
+        -: 1422:
+        1: 1423:      l_c_m = get_lcm ();
+        -: 1424:
+        -: 1425:      /* Ensure zero-byte padding up to the smallest multiple of l_c_m that
+        -: 1426:         is at least as large as n_bytes_read.  */
+        1: 1427:      bytes_to_write = l_c_m * ((n_bytes_read + l_c_m - 1) / l_c_m);
+        -: 1428:
+        1: 1429:      memset (block[idx] + n_bytes_read, 0, bytes_to_write - n_bytes_read);
+        1: 1430:      write_block (current_offset, n_bytes_read, block[!idx], block[idx]);
+call    0 returned 100%
+        1: 1431:      current_offset += n_bytes_read;
+        -: 1432:    }
+        -: 1433:
+        1: 1434:  format_address (current_offset, '\n');
+call    0 returned 100%
+        -: 1435:
+       1*: 1436:  if (limit_bytes_to_format && current_offset >= end_offset)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####: 1437:    ok &= check_and_close (0);
+call    0 never executed
+        -: 1438:
+        1: 1439:  free (block[0]);
+        -: 1440:
+        1: 1441:  return ok;
+        -: 1442:}
+        -: 1443:
+        -: 1444:/* STRINGS mode.  Find each "string constant" in the input.
+        -: 1445:   A string constant is a run of at least 'string_min' ASCII
+        -: 1446:   graphic (or formatting) characters terminated by a null.
+        -: 1447:   Based on a function written by Richard Stallman for a
+        -: 1448:   traditional version of od.  Return true if successful.  */
+        -: 1449:
+        -: 1450:static bool
+function dump_strings called 0 returned 0% blocks executed 0%
+    #####: 1451:dump_strings (void)
+        -: 1452:{
+    #####: 1453:  size_t bufsize = MAX (100, string_min);
+    #####: 1454:  char *buf = xmalloc (bufsize);
+call    0 never executed
+    #####: 1455:  uintmax_t address = n_bytes_to_skip;
+    #####: 1456:  bool ok = true;
+        -: 1457:
+        -: 1458:  while (true)
+    #####: 1459:    {
+        -: 1460:      size_t i;
+        -: 1461:      int c;
+        -: 1462:
+        -: 1463:      /* See if the next 'string_min' chars are all printing chars.  */
+    #####: 1464:    tryline:
+        -: 1465:
+    #####: 1466:      if (limit_bytes_to_format
+branch  0 never executed
+branch  1 never executed
+    #####: 1467:          && (end_offset < string_min || end_offset - string_min <= address))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1468:        break;
+        -: 1469:
+    #####: 1470:      for (i = 0; i < string_min; i++)
+branch  0 never executed
+branch  1 never executed
+        -: 1471:        {
+    #####: 1472:          ok &= read_char (&c);
+call    0 never executed
+    #####: 1473:          address++;
+    #####: 1474:          if (c < 0)
+branch  0 never executed
+branch  1 never executed
+        -: 1475:            {
+    #####: 1476:              free (buf);
+    #####: 1477:              return ok;
+        -: 1478:            }
+    #####: 1479:          if (! isprint (c))
+branch  0 never executed
+branch  1 never executed
+        -: 1480:            /* Found a non-printing.  Try again starting with next char.  */
+    #####: 1481:            goto tryline;
+    #####: 1482:          buf[i] = c;
+        -: 1483:        }
+        -: 1484:
+        -: 1485:      /* We found a run of 'string_min' printable characters.
+        -: 1486:         Now see if it is terminated with a null byte.  */
+    #####: 1487:      while (!limit_bytes_to_format || address < end_offset)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1488:        {
+    #####: 1489:          if (i == bufsize)
+branch  0 never executed
+branch  1 never executed
+        -: 1490:            {
+    #####: 1491:              buf = X2REALLOC (buf, &bufsize);
+call    0 never executed
+        -: 1492:            }
+    #####: 1493:          ok &= read_char (&c);
+call    0 never executed
+    #####: 1494:          address++;
+    #####: 1495:          if (c < 0)
+branch  0 never executed
+branch  1 never executed
+        -: 1496:            {
+    #####: 1497:              free (buf);
+    #####: 1498:              return ok;
+        -: 1499:            }
+    #####: 1500:          if (c == '\0')
+branch  0 never executed
+branch  1 never executed
+    #####: 1501:            break;		/* It is; print this string.  */
+    #####: 1502:          if (! isprint (c))
+branch  0 never executed
+branch  1 never executed
+    #####: 1503:            goto tryline;	/* It isn't; give up on this string.  */
+    #####: 1504:          buf[i++] = c;		/* String continues; store it all.  */
+        -: 1505:        }
+        -: 1506:
+        -: 1507:      /* If we get here, the string is all printable and null-terminated,
+        -: 1508:         so print it.  It is all in 'buf' and 'i' is its length.  */
+    #####: 1509:      buf[i] = 0;
+    #####: 1510:      format_address (address - i - 1, ' ');
+call    0 never executed
+        -: 1511:
+    #####: 1512:      for (i = 0; (c = buf[i]); i++)
+branch  0 never executed
+branch  1 never executed
+        -: 1513:        {
+    #####: 1514:          switch (c)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+        -: 1515:            {
+    #####: 1516:            case '\a':
+    #####: 1517:              fputs ("\\a", stdout);
+call    0 never executed
+    #####: 1518:              break;
+        -: 1519:
+    #####: 1520:            case '\b':
+    #####: 1521:              fputs ("\\b", stdout);
+call    0 never executed
+    #####: 1522:              break;
+        -: 1523:
+    #####: 1524:            case '\f':
+    #####: 1525:              fputs ("\\f", stdout);
+call    0 never executed
+    #####: 1526:              break;
+        -: 1527:
+    #####: 1528:            case '\n':
+    #####: 1529:              fputs ("\\n", stdout);
+call    0 never executed
+    #####: 1530:              break;
+        -: 1531:
+    #####: 1532:            case '\r':
+    #####: 1533:              fputs ("\\r", stdout);
+call    0 never executed
+    #####: 1534:              break;
+        -: 1535:
+    #####: 1536:            case '\t':
+    #####: 1537:              fputs ("\\t", stdout);
+call    0 never executed
+    #####: 1538:              break;
+        -: 1539:
+    #####: 1540:            case '\v':
+    #####: 1541:              fputs ("\\v", stdout);
+call    0 never executed
+    #####: 1542:              break;
+        -: 1543:
+    #####: 1544:            default:
+    #####: 1545:              putc (c, stdout);
+call    0 never executed
+        -: 1546:            }
+        -: 1547:        }
+    #####: 1548:      putchar ('\n');
+call    0 never executed
+        -: 1549:    }
+        -: 1550:
+        -: 1551:  /* We reach this point only if we search through
+        -: 1552:     (max_bytes_to_format - string_min) bytes before reaching EOF.  */
+        -: 1553:
+    #####: 1554:  free (buf);
+        -: 1555:
+    #####: 1556:  ok &= check_and_close (0);
+call    0 never executed
+    #####: 1557:  return ok;
+        -: 1558:}
+        -: 1559:
+        -: 1560:int
+function main called 2 returned 50% blocks executed 26%
+        2: 1561:main (int argc, char **argv)
+        -: 1562:{
+        -: 1563:  int n_files;
+        -: 1564:  size_t i;
+        -: 1565:  int l_c_m;
+        -: 1566:  idx_t desired_width IF_LINT ( = 0);
+        2: 1567:  bool modern = false;
+        2: 1568:  bool width_specified = false;
+        2: 1569:  bool ok = true;
+        2: 1570:  size_t width_per_block = 0;
+        -: 1571:  static char const multipliers[] = "bEGKkMmPQRTYZ0";
+        -: 1572:
+        -: 1573:  /* The old-style 'pseudo starting address' to be printed in parentheses
+        -: 1574:     after any true address.  */
+        -: 1575:  uintmax_t pseudo_start IF_LINT ( = 0);
+        -: 1576:
+        -: 1577:  initialize_main (&argc, &argv);
+        2: 1578:  set_program_name (argv[0]);
+call    0 returned 100%
+        2: 1579:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -: 1580:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -: 1581:  textdomain (PACKAGE);
+        -: 1582:
+        2: 1583:  atexit (close_stdout);
+call    0 returned 100%
+        -: 1584:
+       20: 1585:  for (i = 0; i <= MAX_INTEGRAL_TYPE_SIZE; i++)
+branch  0 taken 90%
+branch  1 taken 10% (fallthrough)
+       18: 1586:    integral_type_size[i] = NO_SIZE;
+        -: 1587:
+        2: 1588:  integral_type_size[sizeof (char)] = CHAR;
+        2: 1589:  integral_type_size[sizeof (short int)] = SHORT;
+        2: 1590:  integral_type_size[sizeof (int)] = INT;
+        2: 1591:  integral_type_size[sizeof (long int)] = LONG;
+        -: 1592:#if HAVE_UNSIGNED_LONG_LONG_INT
+        -: 1593:  /* If 'long int' and 'long long int' have the same size, it's fine
+        -: 1594:     to overwrite the entry for 'long' with this one.  */
+        2: 1595:  integral_type_size[sizeof (unsigned_long_long_int)] = LONG_LONG;
+        -: 1596:#endif
+        -: 1597:
+       36: 1598:  for (i = 0; i <= MAX_FP_TYPE_SIZE; i++)
+branch  0 taken 94%
+branch  1 taken 6% (fallthrough)
+       34: 1599:    fp_type_size[i] = NO_SIZE;
+        -: 1600:
+        2: 1601:  fp_type_size[sizeof (float)] = FLOAT_SINGLE;
+        -: 1602:  /* The array entry for 'double' is filled in after that for 'long double'
+        -: 1603:     so that if they are the same size, we avoid any overhead of
+        -: 1604:     long double computation in libc.  */
+        2: 1605:  fp_type_size[sizeof (long double)] = FLOAT_LONG_DOUBLE;
+        2: 1606:  fp_type_size[sizeof (double)] = FLOAT_DOUBLE;
+        -: 1607:
+        2: 1608:  n_specs = 0;
+        2: 1609:  n_specs_allocated = 0;
+        2: 1610:  spec = nullptr;
+        -: 1611:
+        2: 1612:  format_address = format_address_std;
+        2: 1613:  address_base = 8;
+        2: 1614:  address_pad_len = 7;
+        2: 1615:  flag_dump_strings = false;
+        -: 1616:
+        -: 1617:  while (true)
+    #####: 1618:    {
+        -: 1619:      uintmax_t tmp;
+        -: 1620:      enum strtol_error s_err;
+        2: 1621:      int oi = -1;
+        2: 1622:      int c = getopt_long (argc, argv, short_options, long_options, &oi);
+call    0 returned 100%
+        2: 1623:      if (c == -1)
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+        1: 1624:        break;
+        -: 1625:
+        1: 1626:      switch (c)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 0%
+branch 13 taken 0%
+branch 14 taken 0%
+branch 15 taken 0%
+branch 16 taken 0%
+branch 17 taken 0%
+branch 18 taken 0%
+branch 19 taken 0%
+branch 20 taken 0%
+branch 21 taken 0%
+branch 22 taken 0%
+branch 23 taken 0%
+branch 24 taken 0%
+branch 25 taken 100%
+        -: 1627:        {
+    #####: 1628:        case 'A':
+    #####: 1629:          modern = true;
+    #####: 1630:          switch (optarg[0])
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+        -: 1631:            {
+    #####: 1632:            case 'd':
+    #####: 1633:              format_address = format_address_std;
+    #####: 1634:              address_base = 10;
+    #####: 1635:              address_pad_len = 7;
+    #####: 1636:              break;
+    #####: 1637:            case 'o':
+    #####: 1638:              format_address = format_address_std;
+    #####: 1639:              address_base = 8;
+    #####: 1640:              address_pad_len = 7;
+    #####: 1641:              break;
+    #####: 1642:            case 'x':
+    #####: 1643:              format_address = format_address_std;
+    #####: 1644:              address_base = 16;
+    #####: 1645:              address_pad_len = 6;
+    #####: 1646:              break;
+    #####: 1647:            case 'n':
+    #####: 1648:              format_address = format_address_none;
+    #####: 1649:              address_pad_len = 0;
+    #####: 1650:              break;
+    #####: 1651:            default:
+    #####: 1652:              error (EXIT_FAILURE, 0,
+call    0 never executed
+        -: 1653:                     _("invalid output address radix '%c';"
+        -: 1654:                       " it must be one character from [doxn]"),
+        -: 1655:                     optarg[0]);
+        -: 1656:              break;
+        -: 1657:            }
+    #####: 1658:          break;
+        -: 1659:
+    #####: 1660:        case 'j':
+    #####: 1661:          modern = true;
+    #####: 1662:          s_err = xstrtoumax (optarg, nullptr, 0,
+call    0 never executed
+        -: 1663:                              &n_bytes_to_skip, multipliers);
+    #####: 1664:          if (s_err != LONGINT_OK)
+branch  0 never executed
+branch  1 never executed
+    #####: 1665:            xstrtol_fatal (s_err, oi, c, long_options, optarg);
+call    0 never executed
+    #####: 1666:          break;
+        -: 1667:
+    #####: 1668:        case 'N':
+    #####: 1669:          modern = true;
+    #####: 1670:          limit_bytes_to_format = true;
+        -: 1671:
+    #####: 1672:          s_err = xstrtoumax (optarg, nullptr, 0, &max_bytes_to_format,
+call    0 never executed
+        -: 1673:                              multipliers);
+    #####: 1674:          if (s_err != LONGINT_OK)
+branch  0 never executed
+branch  1 never executed
+    #####: 1675:            xstrtol_fatal (s_err, oi, c, long_options, optarg);
+call    0 never executed
+    #####: 1676:          break;
+        -: 1677:
+    #####: 1678:        case 'S':
+    #####: 1679:          modern = true;
+    #####: 1680:          if (optarg == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####: 1681:            string_min = 3;
+        -: 1682:          else
+        -: 1683:            {
+    #####: 1684:              s_err = xstrtoumax (optarg, nullptr, 0, &tmp, multipliers);
+call    0 never executed
+    #####: 1685:              if (s_err != LONGINT_OK)
+branch  0 never executed
+branch  1 never executed
+    #####: 1686:                xstrtol_fatal (s_err, oi, c, long_options, optarg);
+call    0 never executed
+        -: 1687:
+        -: 1688:              /* The minimum string length may be no larger than SIZE_MAX,
+        -: 1689:                 since we may allocate a buffer of this size.  */
+        -: 1690:              if (SIZE_MAX < tmp)
+        -: 1691:                error (EXIT_FAILURE, 0, _("%s is too large"), quote (optarg));
+        -: 1692:
+    #####: 1693:              string_min = tmp;
+        -: 1694:            }
+    #####: 1695:          flag_dump_strings = true;
+    #####: 1696:          break;
+        -: 1697:
+    #####: 1698:        case 't':
+    #####: 1699:          modern = true;
+    #####: 1700:          ok &= decode_format_string (optarg);
+call    0 never executed
+    #####: 1701:          break;
+        -: 1702:
+    #####: 1703:        case 'v':
+    #####: 1704:          modern = true;
+    #####: 1705:          abbreviate_duplicate_blocks = false;
+    #####: 1706:          break;
+        -: 1707:
+    #####: 1708:        case TRADITIONAL_OPTION:
+    #####: 1709:          traditional = true;
+    #####: 1710:          break;
+        -: 1711:
+    #####: 1712:        case ENDIAN_OPTION:
+    #####: 1713:          switch (XARGMATCH ("--endian", optarg, endian_args, endian_types))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1714:            {
+    #####: 1715:              case endian_big:
+    #####: 1716:                  input_swap = ! WORDS_BIGENDIAN;
+    #####: 1717:                  break;
+    #####: 1718:              case endian_little:
+    #####: 1719:                  input_swap = WORDS_BIGENDIAN;
+    #####: 1720:                  break;
+        -: 1721:            }
+    #####: 1722:          break;
+        -: 1723:
+        -: 1724:          /* The next several cases map the traditional format
+        -: 1725:             specification options to the corresponding modern format
+        -: 1726:             specs.  GNU od accepts any combination of old- and
+        -: 1727:             new-style options.  Format specification options accumulate.
+        -: 1728:             The obsolescent and undocumented formats are compatible
+        -: 1729:             with FreeBSD 4.10 od.  */
+        -: 1730:
+        -: 1731:#define CASE_OLD_ARG(old_char,new_string)		\
+        -: 1732:        case old_char:					\
+        -: 1733:          ok &= decode_format_string (new_string);	\
+        -: 1734:          break
+        -: 1735:
+    #####: 1736:          CASE_OLD_ARG ('a', "a");
+call    0 never executed
+    #####: 1737:          CASE_OLD_ARG ('b', "o1");
+call    0 never executed
+    #####: 1738:          CASE_OLD_ARG ('c', "c");
+call    0 never executed
+    #####: 1739:          CASE_OLD_ARG ('D', "u4"); /* obsolescent and undocumented */
+call    0 never executed
+    #####: 1740:          CASE_OLD_ARG ('d', "u2");
+call    0 never executed
+    #####: 1741:        case 'F': /* obsolescent and undocumented alias */
+    #####: 1742:          CASE_OLD_ARG ('e', "fD"); /* obsolescent and undocumented */
+call    0 never executed
+    #####: 1743:          CASE_OLD_ARG ('f', "fF");
+call    0 never executed
+    #####: 1744:        case 'X': /* obsolescent and undocumented alias */
+    #####: 1745:          CASE_OLD_ARG ('H', "x4"); /* obsolescent and undocumented */
+call    0 never executed
+    #####: 1746:          CASE_OLD_ARG ('i', "dI");
+call    0 never executed
+    #####: 1747:        case 'I': case 'L': /* obsolescent and undocumented aliases */
+    #####: 1748:          CASE_OLD_ARG ('l', "dL");
+call    0 never executed
+    #####: 1749:          CASE_OLD_ARG ('O', "o4"); /* obsolescent and undocumented */
+call    0 never executed
+    #####: 1750:        case 'B': /* obsolescent and undocumented alias */
+    #####: 1751:          CASE_OLD_ARG ('o', "o2");
+call    0 never executed
+    #####: 1752:          CASE_OLD_ARG ('s', "d2");
+call    0 never executed
+    #####: 1753:        case 'h': /* obsolescent and undocumented alias */
+    #####: 1754:          CASE_OLD_ARG ('x', "x2");
+call    0 never executed
+        -: 1755:
+        -: 1756:#undef CASE_OLD_ARG
+        -: 1757:
+    #####: 1758:        case 'w':
+    #####: 1759:          modern = true;
+    #####: 1760:          width_specified = true;
+    #####: 1761:          if (optarg == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -: 1762:            {
+    #####: 1763:              desired_width = 32;
+        -: 1764:            }
+        -: 1765:          else
+        -: 1766:            {
+        -: 1767:              intmax_t w_tmp;
+    #####: 1768:              s_err = xstrtoimax (optarg, nullptr, 10, &w_tmp, "");
+call    0 never executed
+    #####: 1769:              if (s_err != LONGINT_OK || w_tmp <= 0)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1770:                xstrtol_fatal (s_err, oi, c, long_options, optarg);
+call    0 never executed
+    #####: 1771:              if (ckd_add (&desired_width, w_tmp, 0))
+branch  0 never executed
+branch  1 never executed
+    #####: 1772:                error (EXIT_FAILURE, 0, _("%s is too large"), quote (optarg));
+call    0 never executed
+call    1 never executed
+        -: 1773:            }
+    #####: 1774:          break;
+        -: 1775:
+    #####: 1776:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -: 1777:
+    #####: 1778:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -: 1779:
+        1: 1780:        default:
+        1: 1781:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -: 1782:          break;
+        -: 1783:        }
+        -: 1784:    }
+        -: 1785:
+        1: 1786:  if (!ok)
+branch  0 taken 0%
+branch  1 taken 100%
+    #####: 1787:    return EXIT_FAILURE;
+        -: 1788:
+       1*: 1789:  if (flag_dump_strings && n_specs > 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####: 1790:    error (EXIT_FAILURE, 0,
+call    0 never executed
+        -: 1791:           _("no type may be specified when dumping strings"));
+        -: 1792:
+        1: 1793:  n_files = argc - optind;
+        -: 1794:
+        -: 1795:  /* If the --traditional option is used, there may be from
+        -: 1796:     0 to 3 remaining command line arguments;  handle each case
+        -: 1797:     separately.
+        -: 1798:        od [file] [[+]offset[.][b] [[+]label[.][b]]]
+        -: 1799:     The offset and label have the same syntax.
+        -: 1800:
+        -: 1801:     If --traditional is not given, and if no modern options are
+        -: 1802:     given, and if the offset begins with + or (if there are two
+        -: 1803:     operands) a digit, accept only this form, as per POSIX:
+        -: 1804:        od [file] [[+]offset[.][b]]
+        -: 1805:  */
+        -: 1806:
+       1*: 1807:  if (!modern || traditional)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -: 1808:    {
+        -: 1809:      uintmax_t o1;
+        -: 1810:      uintmax_t o2;
+        -: 1811:
+        1: 1812:      switch (n_files)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 100%
+        -: 1813:        {
+    #####: 1814:        case 1:
+    #####: 1815:          if ((traditional || argv[optind][0] == '+')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1816:              && parse_old_offset (argv[optind], &o1))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1817:            {
+    #####: 1818:              n_bytes_to_skip = o1;
+    #####: 1819:              --n_files;
+    #####: 1820:              ++argv;
+        -: 1821:            }
+    #####: 1822:          break;
+        -: 1823:
+    #####: 1824:        case 2:
+    #####: 1825:          if ((traditional || argv[optind + 1][0] == '+'
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1826:               || ISDIGIT (argv[optind + 1][0]))
+branch  0 never executed
+branch  1 never executed
+    #####: 1827:              && parse_old_offset (argv[optind + 1], &o2))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1828:            {
+    #####: 1829:              if (traditional && parse_old_offset (argv[optind], &o1))
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -: 1830:                {
+    #####: 1831:                  n_bytes_to_skip = o1;
+    #####: 1832:                  flag_pseudo_start = true;
+    #####: 1833:                  pseudo_start = o2;
+    #####: 1834:                  argv += 2;
+    #####: 1835:                  n_files -= 2;
+        -: 1836:                }
+        -: 1837:              else
+        -: 1838:                {
+    #####: 1839:                  n_bytes_to_skip = o2;
+    #####: 1840:                  --n_files;
+    #####: 1841:                  argv[optind + 1] = argv[optind];
+    #####: 1842:                  ++argv;
+        -: 1843:                }
+        -: 1844:            }
+    #####: 1845:          break;
+        -: 1846:
+    #####: 1847:        case 3:
+    #####: 1848:          if (traditional
+branch  0 never executed
+branch  1 never executed
+    #####: 1849:              && parse_old_offset (argv[optind + 1], &o1)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1850:              && parse_old_offset (argv[optind + 2], &o2))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1851:            {
+    #####: 1852:              n_bytes_to_skip = o1;
+    #####: 1853:              flag_pseudo_start = true;
+    #####: 1854:              pseudo_start = o2;
+    #####: 1855:              argv[optind + 2] = argv[optind];
+    #####: 1856:              argv += 2;
+    #####: 1857:              n_files -= 2;
+        -: 1858:            }
+    #####: 1859:          break;
+        -: 1860:        }
+        -: 1861:
+       1*: 1862:      if (traditional && 1 < n_files)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -: 1863:        {
+    #####: 1864:          error (0, 0, _("extra operand %s"), quote (argv[optind + 1]));
+call    0 never executed
+        -: 1865:          error (0, 0, "%s",
+        -: 1866:                 _("compatibility mode supports at most one file"));
+    #####: 1867:          usage (EXIT_FAILURE);
+call    0 never executed
+        -: 1868:        }
+        -: 1869:    }
+        -: 1870:
+        1: 1871:  if (flag_pseudo_start)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1872:    {
+    #####: 1873:      if (format_address == format_address_none)
+branch  0 never executed
+branch  1 never executed
+        -: 1874:        {
+    #####: 1875:          address_base = 8;
+    #####: 1876:          address_pad_len = 7;
+    #####: 1877:          format_address = format_address_paren;
+        -: 1878:        }
+        -: 1879:      else
+    #####: 1880:        format_address = format_address_label;
+        -: 1881:    }
+        -: 1882:
+        1: 1883:  if (limit_bytes_to_format)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1884:    {
+    #####: 1885:      end_offset = n_bytes_to_skip + max_bytes_to_format;
+    #####: 1886:      if (end_offset < n_bytes_to_skip)
+branch  0 never executed
+branch  1 never executed
+    #####: 1887:        error (EXIT_FAILURE, 0, _("skip-bytes + read-bytes is too large"));
+call    0 never executed
+        -: 1888:    }
+        -: 1889:
+        1: 1890:  if (n_specs == 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1: 1891:    decode_format_string ("oS");
+call    0 returned 100%
+        -: 1892:
+        1: 1893:  if (n_files > 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1894:    {
+        -: 1895:      /* Set the global pointer FILE_LIST so that it
+        -: 1896:         references the first file-argument on the command-line.  */
+        -: 1897:
+    #####: 1898:      file_list = (char const *const *) &argv[optind];
+        -: 1899:    }
+        -: 1900:  else
+        -: 1901:    {
+        -: 1902:      /* No files were listed on the command line.
+        -: 1903:         Set the global pointer FILE_LIST so that it
+        -: 1904:         references the null-terminated list of one name: "-".  */
+        -: 1905:
+        1: 1906:      file_list = default_file_list;
+        -: 1907:    }
+        -: 1908:
+        -: 1909:  /* open the first input file */
+        1: 1910:  ok = open_next_file ();
+call    0 returned 100%
+        1: 1911:  if (in_stream == nullptr)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1912:    goto cleanup;
+        -: 1913:
+        -: 1914:  /* skip over any unwanted header bytes */
+        1: 1915:  ok &= skip (n_bytes_to_skip);
+call    0 returned 100%
+        1: 1916:  if (in_stream == nullptr)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1917:    goto cleanup;
+        -: 1918:
+       1*: 1919:  pseudo_offset = (flag_pseudo_start ? pseudo_start - n_bytes_to_skip : 0);
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1920:
+        -: 1921:  /* Compute output block length.  */
+        1: 1922:  l_c_m = get_lcm ();
+        -: 1923:
+        1: 1924:  if (width_specified)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1925:    {
+    #####: 1926:      if (desired_width != 0 && desired_width % l_c_m == 0)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1927:        bytes_per_block = desired_width;
+        -: 1928:      else
+        -: 1929:        {
+    #####: 1930:          error (0, 0, _("warning: invalid width %td; using %d instead"),
+        -: 1931:                 desired_width, l_c_m);
+    #####: 1932:          bytes_per_block = l_c_m;
+        -: 1933:        }
+        -: 1934:    }
+        -: 1935:  else
+        -: 1936:    {
+        1: 1937:      if (l_c_m < DEFAULT_BYTES_PER_BLOCK)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1: 1938:        bytes_per_block = l_c_m * (DEFAULT_BYTES_PER_BLOCK / l_c_m);
+        -: 1939:      else
+    #####: 1940:        bytes_per_block = l_c_m;
+        -: 1941:    }
+        -: 1942:
+        -: 1943:  /* Compute padding necessary to align output block.  */
+        2: 1944:  for (i = 0; i < n_specs; i++)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -: 1945:    {
+        1: 1946:      int fields_per_block = bytes_per_block / width_bytes[spec[i].size];
+        1: 1947:      int block_width = (spec[i].field_width + 1) * fields_per_block;
+        1: 1948:      if (width_per_block < block_width)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1: 1949:        width_per_block = block_width;
+        -: 1950:    }
+        2: 1951:  for (i = 0; i < n_specs; i++)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -: 1952:    {
+        1: 1953:      int fields_per_block = bytes_per_block / width_bytes[spec[i].size];
+        1: 1954:      int block_width = spec[i].field_width * fields_per_block;
+        1: 1955:      spec[i].pad_width = width_per_block - block_width;
+        -: 1956:    }
+        -: 1957:
+        -: 1958:#ifdef DEBUG
+        -: 1959:  printf ("lcm=%d, width_per_block=%"PRIuMAX"\n", l_c_m,
+        -: 1960:          (uintmax_t) width_per_block);
+        -: 1961:  for (i = 0; i < n_specs; i++)
+        -: 1962:    {
+        -: 1963:      int fields_per_block = bytes_per_block / width_bytes[spec[i].size];
+        -: 1964:      affirm (bytes_per_block % width_bytes[spec[i].size] == 0);
+        -: 1965:      affirm (1 <= spec[i].pad_width / fields_per_block);
+        -: 1966:      printf ("%d: fmt=\"%s\" in_width=%d out_width=%d pad=%d\n",
+        -: 1967:              i, spec[i].fmt_string, width_bytes[spec[i].size],
+        -: 1968:              spec[i].field_width, spec[i].pad_width);
+        -: 1969:    }
+        -: 1970:#endif
+        -: 1971:
+       1*: 1972:  ok &= (flag_dump_strings ? dump_strings () : dump ());
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+call    3 returned 100%
+        -: 1973:
+        1: 1974:cleanup:
+        -: 1975:
+        1: 1976:  if (have_read_stdin && fclose (stdin) == EOF)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+call    2 returned 100%
+branch  3 taken 0% (fallthrough)
+branch  4 taken 100%
+    #####: 1977:    error (EXIT_FAILURE, errno, _("standard input"));
+call    0 never executed
+        -: 1978:
+        1: 1979:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -: 1980:}

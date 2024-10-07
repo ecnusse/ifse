@@ -1,0 +1,3092 @@
+        -:    0:Source:src/stty.c
+        -:    0:Graph:stty.gcno
+        -:    0:Data:stty.gcda
+        -:    0:Runs:6
+        -:    1:/* stty -- change and print terminal line settings
+        -:    2:   Copyright (C) 1990-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Usage: stty [-ag] [--all] [--save] [-F device] [--file=device] [setting...]
+        -:   18:
+        -:   19:   Options:
+        -:   20:   -a, --all    Write all current settings to stdout in human-readable form.
+        -:   21:   -g, --save   Write all current settings to stdout in stty-readable form.
+        -:   22:   -F, --file   Open and use the specified device instead of stdin
+        -:   23:
+        -:   24:   If no args are given, write to stdout the baud rate and settings that
+        -:   25:   have been changed from their defaults.  Mode reading and changes
+        -:   26:   are done on the specified device, or stdin if none was specified.
+        -:   27:
+        -:   28:   David MacKenzie <djm@gnu.ai.mit.edu> */
+        -:   29:
+        -:   30:#include <config.h>
+        -:   31:
+        -:   32:#ifdef TERMIOS_NEEDS_XOPEN_SOURCE
+        -:   33:# define _XOPEN_SOURCE
+        -:   34:#endif
+        -:   35:
+        -:   36:#include <stdio.h>
+        -:   37:#include <sys/types.h>
+        -:   38:
+        -:   39:#include <termios.h>
+        -:   40:#if HAVE_STROPTS_H
+        -:   41:# include <stropts.h>
+        -:   42:#endif
+        -:   43:#include <sys/ioctl.h>
+        -:   44:
+        -:   45:#ifdef WINSIZE_IN_PTEM
+        -:   46:# include <sys/stream.h>
+        -:   47:# include <sys/ptem.h>
+        -:   48:#endif
+        -:   49:#ifdef GWINSZ_IN_SYS_PTY
+        -:   50:# include <sys/tty.h>
+        -:   51:# include <sys/pty.h>
+        -:   52:#endif
+        -:   53:#include <getopt.h>
+        -:   54:#include <stdarg.h>
+        -:   55:
+        -:   56:#include "system.h"
+        -:   57:#include "assure.h"
+        -:   58:#include "fd-reopen.h"
+        -:   59:#include "quote.h"
+        -:   60:#include "xdectoint.h"
+        -:   61:#include "xstrtol.h"
+        -:   62:
+        -:   63:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   64:#define PROGRAM_NAME "stty"
+        -:   65:
+        -:   66:#define AUTHORS proper_name ("David MacKenzie")
+        -:   67:
+        -:   68:#ifndef _POSIX_VDISABLE
+        -:   69:# define _POSIX_VDISABLE 0
+        -:   70:#endif
+        -:   71:
+        -:   72:#define Control(c) ((c) & 0x1f)
+        -:   73:/* Canonical values for control characters. */
+        -:   74:#ifndef CINTR
+        -:   75:# define CINTR Control ('c')
+        -:   76:#endif
+        -:   77:#ifndef CQUIT
+        -:   78:# define CQUIT 28
+        -:   79:#endif
+        -:   80:#ifndef CERASE
+        -:   81:# define CERASE 127
+        -:   82:#endif
+        -:   83:#ifndef CKILL
+        -:   84:# define CKILL Control ('u')
+        -:   85:#endif
+        -:   86:#ifndef CEOF
+        -:   87:# define CEOF Control ('d')
+        -:   88:#endif
+        -:   89:#ifndef CEOL
+        -:   90:# define CEOL _POSIX_VDISABLE
+        -:   91:#endif
+        -:   92:#ifndef CSTART
+        -:   93:# define CSTART Control ('q')
+        -:   94:#endif
+        -:   95:#ifndef CSTOP
+        -:   96:# define CSTOP Control ('s')
+        -:   97:#endif
+        -:   98:#ifndef CSUSP
+        -:   99:# define CSUSP Control ('z')
+        -:  100:#endif
+        -:  101:#if defined VEOL2 && !defined CEOL2
+        -:  102:# define CEOL2 _POSIX_VDISABLE
+        -:  103:#endif
+        -:  104:/* Some platforms have VSWTC, others VSWTCH.  In both cases, this control
+        -:  105:   character is initialized by CSWTCH, if present.  */
+        -:  106:#if defined VSWTC && !defined VSWTCH
+        -:  107:# define VSWTCH VSWTC
+        -:  108:#endif
+        -:  109:/* ISC renamed swtch to susp for termios, but we'll accept either name.  */
+        -:  110:#if defined VSUSP && !defined VSWTCH
+        -:  111:# define VSWTCH VSUSP
+        -:  112:# if defined CSUSP && !defined CSWTCH
+        -:  113:#  define CSWTCH CSUSP
+        -:  114:# endif
+        -:  115:#endif
+        -:  116:#if defined VSWTCH && !defined CSWTCH
+        -:  117:# define CSWTCH _POSIX_VDISABLE
+        -:  118:#endif
+        -:  119:
+        -:  120:/* SunOS >= 5.3 loses (^Z doesn't work) if 'swtch' is the same as 'susp'.
+        -:  121:   So the default is to disable 'swtch.'  */
+        -:  122:#if defined __sun
+        -:  123:# undef CSWTCH
+        -:  124:# define CSWTCH _POSIX_VDISABLE
+        -:  125:#endif
+        -:  126:
+        -:  127:#if defined VWERSE && !defined VWERASE	/* AIX-3.2.5 */
+        -:  128:# define VWERASE VWERSE
+        -:  129:#endif
+        -:  130:#if defined VDSUSP && !defined CDSUSP
+        -:  131:# define CDSUSP Control ('y')
+        -:  132:#endif
+        -:  133:#if !defined VREPRINT && defined VRPRNT /* Irix 4.0.5 */
+        -:  134:# define VREPRINT VRPRNT
+        -:  135:#endif
+        -:  136:#if defined VREPRINT && !defined CRPRNT
+        -:  137:# define CRPRNT Control ('r')
+        -:  138:#endif
+        -:  139:#if defined CREPRINT && !defined CRPRNT
+        -:  140:# define CRPRNT Control ('r')
+        -:  141:#endif
+        -:  142:#if defined VWERASE && !defined CWERASE
+        -:  143:# define CWERASE Control ('w')
+        -:  144:#endif
+        -:  145:#if defined VLNEXT && !defined CLNEXT
+        -:  146:# define CLNEXT Control ('v')
+        -:  147:#endif
+        -:  148:#if defined VDISCARD && !defined VFLUSHO
+        -:  149:# define VFLUSHO VDISCARD
+        -:  150:#endif
+        -:  151:#if defined VFLUSH && !defined VFLUSHO	/* Ultrix 4.2 */
+        -:  152:# define VFLUSHO VFLUSH
+        -:  153:#endif
+        -:  154:#if defined CTLECH && !defined ECHOCTL	/* Ultrix 4.3 */
+        -:  155:# define ECHOCTL CTLECH
+        -:  156:#endif
+        -:  157:#if defined TCTLECH && !defined ECHOCTL	/* Ultrix 4.2 */
+        -:  158:# define ECHOCTL TCTLECH
+        -:  159:#endif
+        -:  160:#if defined CRTKIL && !defined ECHOKE	/* Ultrix 4.2 and 4.3 */
+        -:  161:# define ECHOKE CRTKIL
+        -:  162:#endif
+        -:  163:#if defined VFLUSHO && !defined CFLUSHO
+        -:  164:# define CFLUSHO Control ('o')
+        -:  165:#endif
+        -:  166:#if defined VSTATUS && !defined CSTATUS
+        -:  167:# define CSTATUS Control ('t')
+        -:  168:#endif
+        -:  169:
+        -:  170:/* Which speeds to set.  */
+        -:  171:enum speed_setting
+        -:  172:  {
+        -:  173:    input_speed, output_speed, both_speeds
+        -:  174:  };
+        -:  175:
+        -:  176:/* What to output and how.  */
+        -:  177:enum output_type
+        -:  178:  {
+        -:  179:    changed, all, recoverable	/* Default, -a, -g.  */
+        -:  180:  };
+        -:  181:
+        -:  182:/* Which member(s) of 'struct termios' a mode uses.  */
+        -:  183:enum mode_type
+        -:  184:  {
+        -:  185:    control, input, output, local, combination
+        -:  186:  };
+        -:  187:
+        -:  188:/* Flags for 'struct mode_info'. */
+        -:  189:#define SANE_SET 1		/* Set in 'sane' mode. */
+        -:  190:#define SANE_UNSET 2		/* Unset in 'sane' mode. */
+        -:  191:#define REV 4			/* Can be turned off by prepending '-'. */
+        -:  192:#define OMIT 8			/* Don't display value. */
+        -:  193:#define NO_SETATTR 16		/* tcsetattr not used to set mode bits.  */
+        -:  194:
+        -:  195:/* Each mode.  */
+        -:  196:struct mode_info
+        -:  197:  {
+        -:  198:    char const *name;		/* Name given on command line.  */
+        -:  199:    enum mode_type type;	/* Which structure element to change. */
+        -:  200:    char flags;			/* Setting and display options.  */
+        -:  201:    unsigned long bits;		/* Bits to set for this mode.  */
+        -:  202:    unsigned long mask;		/* Other bits to turn off for this mode.  */
+        -:  203:  };
+        -:  204:
+        -:  205:static struct mode_info const mode_info[] =
+        -:  206:{
+        -:  207:  {"parenb", control, REV, PARENB, 0},
+        -:  208:  {"parodd", control, REV, PARODD, 0},
+        -:  209:#ifdef CMSPAR
+        -:  210:  {"cmspar", control, REV, CMSPAR, 0},
+        -:  211:#endif
+        -:  212:  {"cs5", control, 0, CS5, CSIZE},
+        -:  213:  {"cs6", control, 0, CS6, CSIZE},
+        -:  214:  {"cs7", control, 0, CS7, CSIZE},
+        -:  215:  {"cs8", control, 0, CS8, CSIZE},
+        -:  216:  {"hupcl", control, REV, HUPCL, 0},
+        -:  217:  {"hup", control, REV | OMIT, HUPCL, 0},
+        -:  218:  {"cstopb", control, REV, CSTOPB, 0},
+        -:  219:  {"cread", control, SANE_SET | REV, CREAD, 0},
+        -:  220:  {"clocal", control, REV, CLOCAL, 0},
+        -:  221:#ifdef CRTSCTS
+        -:  222:  {"crtscts", control, REV, CRTSCTS, 0},
+        -:  223:#endif
+        -:  224:#ifdef CDTRDSR
+        -:  225:  {"cdtrdsr", control, REV, CDTRDSR, 0},
+        -:  226:#endif
+        -:  227:
+        -:  228:  {"ignbrk", input, SANE_UNSET | REV, IGNBRK, 0},
+        -:  229:  {"brkint", input, SANE_SET | REV, BRKINT, 0},
+        -:  230:  {"ignpar", input, REV, IGNPAR, 0},
+        -:  231:  {"parmrk", input, REV, PARMRK, 0},
+        -:  232:  {"inpck", input, REV, INPCK, 0},
+        -:  233:  {"istrip", input, REV, ISTRIP, 0},
+        -:  234:  {"inlcr", input, SANE_UNSET | REV, INLCR, 0},
+        -:  235:  {"igncr", input, SANE_UNSET | REV, IGNCR, 0},
+        -:  236:  {"icrnl", input, SANE_SET | REV, ICRNL, 0},
+        -:  237:  {"ixon", input, REV, IXON, 0},
+        -:  238:  {"ixoff", input, SANE_UNSET | REV, IXOFF, 0},
+        -:  239:  {"tandem", input, REV | OMIT, IXOFF, 0},
+        -:  240:#ifdef IUCLC
+        -:  241:  {"iuclc", input, SANE_UNSET | REV, IUCLC, 0},
+        -:  242:#endif
+        -:  243:#ifdef IXANY
+        -:  244:  {"ixany", input, SANE_UNSET | REV, IXANY, 0},
+        -:  245:#endif
+        -:  246:#ifdef IMAXBEL
+        -:  247:  {"imaxbel", input, SANE_SET | REV, IMAXBEL, 0},
+        -:  248:#endif
+        -:  249:#ifdef IUTF8
+        -:  250:  {"iutf8", input, SANE_UNSET | REV, IUTF8, 0},
+        -:  251:#endif
+        -:  252:
+        -:  253:  {"opost", output, SANE_SET | REV, OPOST, 0},
+        -:  254:#ifdef OLCUC
+        -:  255:  {"olcuc", output, SANE_UNSET | REV, OLCUC, 0},
+        -:  256:#endif
+        -:  257:#ifdef OCRNL
+        -:  258:  {"ocrnl", output, SANE_UNSET | REV, OCRNL, 0},
+        -:  259:#endif
+        -:  260:#ifdef ONLCR
+        -:  261:  {"onlcr", output, SANE_SET | REV, ONLCR, 0},
+        -:  262:#endif
+        -:  263:#ifdef ONOCR
+        -:  264:  {"onocr", output, SANE_UNSET | REV, ONOCR, 0},
+        -:  265:#endif
+        -:  266:#ifdef ONLRET
+        -:  267:  {"onlret", output, SANE_UNSET | REV, ONLRET, 0},
+        -:  268:#endif
+        -:  269:#ifdef OFILL
+        -:  270:  {"ofill", output, SANE_UNSET | REV, OFILL, 0},
+        -:  271:#endif
+        -:  272:#ifdef OFDEL
+        -:  273:  {"ofdel", output, SANE_UNSET | REV, OFDEL, 0},
+        -:  274:#endif
+        -:  275:#ifdef NLDLY
+        -:  276:  {"nl1", output, SANE_UNSET, NL1, NLDLY},
+        -:  277:  {"nl0", output, SANE_SET, NL0, NLDLY},
+        -:  278:#endif
+        -:  279:#ifdef CRDLY
+        -:  280:  {"cr3", output, SANE_UNSET, CR3, CRDLY},
+        -:  281:  {"cr2", output, SANE_UNSET, CR2, CRDLY},
+        -:  282:  {"cr1", output, SANE_UNSET, CR1, CRDLY},
+        -:  283:  {"cr0", output, SANE_SET, CR0, CRDLY},
+        -:  284:#endif
+        -:  285:#ifdef TABDLY
+        -:  286:# ifdef TAB3
+        -:  287:  {"tab3", output, SANE_UNSET, TAB3, TABDLY},
+        -:  288:# endif
+        -:  289:# ifdef TAB2
+        -:  290:  {"tab2", output, SANE_UNSET, TAB2, TABDLY},
+        -:  291:# endif
+        -:  292:# ifdef TAB1
+        -:  293:  {"tab1", output, SANE_UNSET, TAB1, TABDLY},
+        -:  294:# endif
+        -:  295:# ifdef TAB0
+        -:  296:  {"tab0", output, SANE_SET, TAB0, TABDLY},
+        -:  297:# endif
+        -:  298:#else
+        -:  299:# ifdef OXTABS
+        -:  300:  {"tab3", output, SANE_UNSET, OXTABS, 0},
+        -:  301:# endif
+        -:  302:#endif
+        -:  303:#ifdef BSDLY
+        -:  304:  {"bs1", output, SANE_UNSET, BS1, BSDLY},
+        -:  305:  {"bs0", output, SANE_SET, BS0, BSDLY},
+        -:  306:#endif
+        -:  307:#ifdef VTDLY
+        -:  308:  {"vt1", output, SANE_UNSET, VT1, VTDLY},
+        -:  309:  {"vt0", output, SANE_SET, VT0, VTDLY},
+        -:  310:#endif
+        -:  311:#ifdef FFDLY
+        -:  312:  {"ff1", output, SANE_UNSET, FF1, FFDLY},
+        -:  313:  {"ff0", output, SANE_SET, FF0, FFDLY},
+        -:  314:#endif
+        -:  315:
+        -:  316:  {"isig", local, SANE_SET | REV, ISIG, 0},
+        -:  317:  {"icanon", local, SANE_SET | REV, ICANON, 0},
+        -:  318:#ifdef IEXTEN
+        -:  319:  {"iexten", local, SANE_SET | REV, IEXTEN, 0},
+        -:  320:#endif
+        -:  321:  {"echo", local, SANE_SET | REV, ECHO, 0},
+        -:  322:  {"echoe", local, SANE_SET | REV, ECHOE, 0},
+        -:  323:  {"crterase", local, REV | OMIT, ECHOE, 0},
+        -:  324:  {"echok", local, SANE_SET | REV, ECHOK, 0},
+        -:  325:  {"echonl", local, SANE_UNSET | REV, ECHONL, 0},
+        -:  326:  {"noflsh", local, SANE_UNSET | REV, NOFLSH, 0},
+        -:  327:#ifdef XCASE
+        -:  328:  {"xcase", local, SANE_UNSET | REV, XCASE, 0},
+        -:  329:#endif
+        -:  330:#ifdef TOSTOP
+        -:  331:  {"tostop", local, SANE_UNSET | REV, TOSTOP, 0},
+        -:  332:#endif
+        -:  333:#ifdef ECHOPRT
+        -:  334:  {"echoprt", local, SANE_UNSET | REV, ECHOPRT, 0},
+        -:  335:  {"prterase", local, REV | OMIT, ECHOPRT, 0},
+        -:  336:#endif
+        -:  337:#ifdef ECHOCTL
+        -:  338:  {"echoctl", local, SANE_SET | REV, ECHOCTL, 0},
+        -:  339:  {"ctlecho", local, REV | OMIT, ECHOCTL, 0},
+        -:  340:#endif
+        -:  341:#ifdef ECHOKE
+        -:  342:  {"echoke", local, SANE_SET | REV, ECHOKE, 0},
+        -:  343:  {"crtkill", local, REV | OMIT, ECHOKE, 0},
+        -:  344:#endif
+        -:  345:#ifdef FLUSHO
+        -:  346:  {"flusho", local, SANE_UNSET | REV, FLUSHO, 0},
+        -:  347:#endif
+        -:  348:#if defined TIOCEXT
+        -:  349:  {"extproc", local, SANE_UNSET | REV | NO_SETATTR, EXTPROC, 0},
+        -:  350:#elif defined EXTPROC
+        -:  351:  {"extproc", local, SANE_UNSET | REV, EXTPROC, 0},
+        -:  352:#endif
+        -:  353:
+        -:  354:  {"evenp", combination, REV | OMIT, 0, 0},
+        -:  355:  {"parity", combination, REV | OMIT, 0, 0},
+        -:  356:  {"oddp", combination, REV | OMIT, 0, 0},
+        -:  357:  {"nl", combination, REV | OMIT, 0, 0},
+        -:  358:  {"ek", combination, OMIT, 0, 0},
+        -:  359:  {"sane", combination, OMIT, 0, 0},
+        -:  360:  {"cooked", combination, REV | OMIT, 0, 0},
+        -:  361:  {"raw", combination, REV | OMIT, 0, 0},
+        -:  362:  {"pass8", combination, REV | OMIT, 0, 0},
+        -:  363:  {"litout", combination, REV | OMIT, 0, 0},
+        -:  364:  {"cbreak", combination, REV | OMIT, 0, 0},
+        -:  365:#ifdef IXANY
+        -:  366:  {"decctlq", combination, REV | OMIT, 0, 0},
+        -:  367:#endif
+        -:  368:#if defined TABDLY || defined OXTABS
+        -:  369:  {"tabs", combination, REV | OMIT, 0, 0},
+        -:  370:#endif
+        -:  371:#if defined XCASE && defined IUCLC && defined OLCUC
+        -:  372:  {"lcase", combination, REV | OMIT, 0, 0},
+        -:  373:  {"LCASE", combination, REV | OMIT, 0, 0},
+        -:  374:#endif
+        -:  375:  {"crt", combination, OMIT, 0, 0},
+        -:  376:  {"dec", combination, OMIT, 0, 0},
+        -:  377:
+        -:  378:  {nullptr, control, 0, 0, 0}
+        -:  379:};
+        -:  380:
+        -:  381:/* Control character settings.  */
+        -:  382:struct control_info
+        -:  383:  {
+        -:  384:    char const *name;		/* Name given on command line.  */
+        -:  385:    cc_t saneval;		/* Value to set for 'stty sane'.  */
+        -:  386:    size_t offset;		/* Offset in c_cc.  */
+        -:  387:  };
+        -:  388:
+        -:  389:/* Control characters. */
+        -:  390:
+        -:  391:static struct control_info const control_info[] =
+        -:  392:{
+        -:  393:  {"intr", CINTR, VINTR},
+        -:  394:  {"quit", CQUIT, VQUIT},
+        -:  395:  {"erase", CERASE, VERASE},
+        -:  396:  {"kill", CKILL, VKILL},
+        -:  397:  {"eof", CEOF, VEOF},
+        -:  398:  {"eol", CEOL, VEOL},
+        -:  399:#ifdef VEOL2
+        -:  400:  {"eol2", CEOL2, VEOL2},
+        -:  401:#endif
+        -:  402:#ifdef VSWTCH
+        -:  403:  {"swtch", CSWTCH, VSWTCH},
+        -:  404:#endif
+        -:  405:  {"start", CSTART, VSTART},
+        -:  406:  {"stop", CSTOP, VSTOP},
+        -:  407:  {"susp", CSUSP, VSUSP},
+        -:  408:#ifdef VDSUSP
+        -:  409:  {"dsusp", CDSUSP, VDSUSP},
+        -:  410:#endif
+        -:  411:#ifdef VREPRINT
+        -:  412:  {"rprnt", CRPRNT, VREPRINT},
+        -:  413:#else
+        -:  414:# ifdef CREPRINT /* HPUX 10.20 needs this */
+        -:  415:  {"rprnt", CRPRNT, CREPRINT},
+        -:  416:# endif
+        -:  417:#endif
+        -:  418:#ifdef VWERASE
+        -:  419:  {"werase", CWERASE, VWERASE},
+        -:  420:#endif
+        -:  421:#ifdef VLNEXT
+        -:  422:  {"lnext", CLNEXT, VLNEXT},
+        -:  423:#endif
+        -:  424:#ifdef VFLUSHO
+        -:  425:  {"flush", CFLUSHO, VFLUSHO},   /* deprecated compat option.  */
+        -:  426:  {"discard", CFLUSHO, VFLUSHO},
+        -:  427:#endif
+        -:  428:#ifdef VSTATUS
+        -:  429:  {"status", CSTATUS, VSTATUS},
+        -:  430:#endif
+        -:  431:
+        -:  432:  /* These must be last because of the display routines. */
+        -:  433:  {"min", 1, VMIN},
+        -:  434:  {"time", 0, VTIME},
+        -:  435:  {nullptr, 0, 0}
+        -:  436:};
+        -:  437:
+        -:  438:static char const *visible (cc_t ch);
+        -:  439:static unsigned long int baud_to_value (speed_t speed);
+        -:  440:static bool recover_mode (char const *arg, struct termios *mode);
+        -:  441:static int screen_columns (void);
+        -:  442:static bool set_mode (struct mode_info const *info, bool reversed,
+        -:  443:                      struct termios *mode);
+        -:  444:static bool eq_mode (struct termios *mode1, struct termios *mode2);
+        -:  445:static unsigned long int integer_arg (char const *s, unsigned long int max);
+        -:  446:static speed_t string_to_baud (char const *arg);
+        -:  447:static tcflag_t *mode_type_flag (enum mode_type type, struct termios *mode);
+        -:  448:static void display_all (struct termios *mode, char const *device_name);
+        -:  449:static void display_changed (struct termios *mode);
+        -:  450:static void display_recoverable (struct termios *mode);
+        -:  451:static void display_settings (enum output_type output_type,
+        -:  452:                              struct termios *mode,
+        -:  453:                              char const *device_name);
+        -:  454:static void check_speed (struct termios *mode);
+        -:  455:static void display_speed (struct termios *mode, bool fancy);
+        -:  456:static void display_window_size (bool fancy, char const *device_name);
+        -:  457:static void sane_mode (struct termios *mode);
+        -:  458:static void set_control_char (struct control_info const *info,
+        -:  459:                              char const *arg,
+        -:  460:                              struct termios *mode);
+        -:  461:static void set_speed (enum speed_setting type, char const *arg,
+        -:  462:                       struct termios *mode);
+        -:  463:static void set_window_size (int rows, int cols, char const *device_name);
+        -:  464:
+        -:  465:/* The width of the screen, for output wrapping. */
+        -:  466:static int max_col;
+        -:  467:
+        -:  468:/* Current position, to know when to wrap. */
+        -:  469:static int current_col;
+        -:  470:
+        -:  471:/* Default "drain" mode for tcsetattr.  */
+        -:  472:static int tcsetattr_options = TCSADRAIN;
+        -:  473:
+        -:  474:/* Extra info to aid stty development.  */
+        -:  475:static bool dev_debug;
+        -:  476:
+        -:  477:/* Record last speed set for correlation.  */
+        -:  478:static speed_t last_ibaud = (speed_t) -1;
+        -:  479:static speed_t last_obaud = (speed_t) -1;
+        -:  480:
+        -:  481:/* For long options that have no equivalent short option, use a
+        -:  482:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:  483:enum
+        -:  484:{
+        -:  485:  DEV_DEBUG_OPTION = CHAR_MAX + 1,
+        -:  486:};
+        -:  487:
+        -:  488:static struct option const longopts[] =
+        -:  489:{
+        -:  490:  {"all", no_argument, nullptr, 'a'},
+        -:  491:  {"save", no_argument, nullptr, 'g'},
+        -:  492:  {"file", required_argument, nullptr, 'F'},
+        -:  493:  {"-debug", no_argument, nullptr, DEV_DEBUG_OPTION},
+        -:  494:  {GETOPT_HELP_OPTION_DECL},
+        -:  495:  {GETOPT_VERSION_OPTION_DECL},
+        -:  496:  {nullptr, 0, nullptr, 0}
+        -:  497:};
+        -:  498:
+        -:  499:/* Print format string MESSAGE and optional args.
+        -:  500:   Wrap to next line first if it won't fit.
+        -:  501:   Print a space first unless MESSAGE will start a new line. */
+        -:  502:
+        -:  503:ATTRIBUTE_FORMAT ((printf, 1, 2))
+        -:  504:static void
+function wrapf called 38 returned 100% blocks executed 73%
+       38:  505:wrapf (char const *message,...)
+        -:  506:{
+        -:  507:  va_list args;
+        -:  508:  char *buf;
+        -:  509:  int buflen;
+        -:  510:
+       38:  511:  va_start (args, message);
+       38:  512:  buflen = vasprintf (&buf, message, args);
+call    0 returned 100%
+       38:  513:  va_end (args);
+        -:  514:
+       38:  515:  if (buflen < 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  516:    xalloc_die ();
+call    0 never executed
+        -:  517:
+       38:  518:  if (0 < current_col)
+branch  0 taken 74% (fallthrough)
+branch  1 taken 26%
+        -:  519:    {
+       28:  520:      if (max_col - current_col <= buflen)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  521:        {
+    #####:  522:          putchar ('\n');
+call    0 never executed
+    #####:  523:          current_col = 0;
+        -:  524:        }
+        -:  525:      else
+        -:  526:        {
+       28:  527:          putchar (' ');
+call    0 returned 100%
+       28:  528:          current_col++;
+        -:  529:        }
+        -:  530:    }
+        -:  531:
+       38:  532:  fputs (buf, stdout);
+call    0 returned 100%
+       38:  533:  free (buf);
+       38:  534:  current_col += buflen;
+       38:  535:}
+        -:  536:
+        -:  537:void
+function usage called 3 returned 0% blocks executed 3%
+        3:  538:usage (int status)
+        -:  539:{
+        3:  540:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        3:  541:    emit_try_help ();
+call    0 returned 100%
+        -:  542:  else
+        -:  543:    {
+    #####:  544:      printf (_("\
+call    0 never executed
+        -:  545:Usage: %s [-F DEVICE | --file=DEVICE] [SETTING]...\n\
+        -:  546:  or:  %s [-F DEVICE | --file=DEVICE] [-a|--all]\n\
+        -:  547:  or:  %s [-F DEVICE | --file=DEVICE] [-g|--save]\n\
+        -:  548:"),
+        -:  549:              program_name, program_name, program_name);
+    #####:  550:      fputs (_("\
+call    0 never executed
+        -:  551:Print or change terminal characteristics.\n\
+        -:  552:"), stdout);
+        -:  553:
+    #####:  554:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  555:
+    #####:  556:      fputs (_("\
+call    0 never executed
+        -:  557:  -a, --all          print all current settings in human-readable form\n\
+        -:  558:  -g, --save         print all current settings in a stty-readable form\n\
+        -:  559:  -F, --file=DEVICE  open and use the specified DEVICE instead of stdin\n\
+        -:  560:"), stdout);
+    #####:  561:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  562:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  563:      fputs (_("\
+call    0 never executed
+        -:  564:\n\
+        -:  565:Optional - before SETTING indicates negation.  An * marks non-POSIX\n\
+        -:  566:settings.  The underlying system defines which settings are available.\n\
+        -:  567:"), stdout);
+    #####:  568:      fputs (_("\
+call    0 never executed
+        -:  569:\n\
+        -:  570:Special characters:\n"), stdout);
+        -:  571:#ifdef VFLUSHO
+    #####:  572:      fputs (_("\
+call    0 never executed
+        -:  573: * discard CHAR  CHAR will toggle discarding of output\n\
+        -:  574:"), stdout);
+        -:  575:#endif
+        -:  576:#ifdef VDSUSP
+        -:  577:      fputs (_("\
+        -:  578: * dsusp CHAR    CHAR will send a terminal stop signal once input flushed\n\
+        -:  579:"), stdout);
+        -:  580:#endif
+    #####:  581:      fputs (_("\
+call    0 never executed
+        -:  582:   eof CHAR      CHAR will send an end of file (terminate the input)\n\
+        -:  583:   eol CHAR      CHAR will end the line\n\
+        -:  584:"), stdout);
+        -:  585:#ifdef VEOL2
+    #####:  586:      fputs (_("\
+call    0 never executed
+        -:  587: * eol2 CHAR     alternate CHAR for ending the line\n\
+        -:  588:"), stdout);
+        -:  589:#endif
+    #####:  590:      fputs (_("\
+call    0 never executed
+        -:  591:   erase CHAR    CHAR will erase the last character typed\n\
+        -:  592:   intr CHAR     CHAR will send an interrupt signal\n\
+        -:  593:   kill CHAR     CHAR will erase the current line\n\
+        -:  594:"), stdout);
+        -:  595:#ifdef VLNEXT
+    #####:  596:      fputs (_("\
+call    0 never executed
+        -:  597: * lnext CHAR    CHAR will enter the next character quoted\n\
+        -:  598:"), stdout);
+        -:  599:#endif
+        -:  600:#ifdef VSTATUS
+        -:  601:      fputs (_("\
+        -:  602: * status CHAR   CHAR will send an info signal\n\
+        -:  603:"), stdout);
+        -:  604:#endif
+    #####:  605:      fputs (_("\
+call    0 never executed
+        -:  606:   quit CHAR     CHAR will send a quit signal\n\
+        -:  607:"), stdout);
+        -:  608:#if defined CREPRINT || defined VREPRINT
+    #####:  609:      fputs (_("\
+call    0 never executed
+        -:  610: * rprnt CHAR    CHAR will redraw the current line\n\
+        -:  611:"), stdout);
+        -:  612:#endif
+    #####:  613:      fputs (_("\
+call    0 never executed
+        -:  614:   start CHAR    CHAR will restart the output after stopping it\n\
+        -:  615:   stop CHAR     CHAR will stop the output\n\
+        -:  616:   susp CHAR     CHAR will send a terminal stop signal\n\
+        -:  617:"), stdout);
+        -:  618:#ifdef VSWTCH
+    #####:  619:      fputs (_("\
+call    0 never executed
+        -:  620: * swtch CHAR    CHAR will switch to a different shell layer\n\
+        -:  621:"), stdout);
+        -:  622:#endif
+        -:  623:#ifdef VWERASE
+    #####:  624:      fputs (_("\
+call    0 never executed
+        -:  625: * werase CHAR   CHAR will erase the last word typed\n\
+        -:  626:"), stdout);
+        -:  627:#endif
+    #####:  628:      fputs (_("\
+call    0 never executed
+        -:  629:\n\
+        -:  630:Special settings:\n\
+        -:  631:   N             set the input and output speeds to N bauds\n\
+        -:  632:"), stdout);
+        -:  633:#ifdef TIOCGWINSZ
+    #####:  634:      fputs (_("\
+call    0 never executed
+        -:  635: * cols N        tell the kernel that the terminal has N columns\n\
+        -:  636: * columns N     same as cols N\n\
+        -:  637:"), stdout);
+        -:  638:#endif
+    #####:  639:      printf (_("\
+call    0 never executed
+        -:  640: * [-]drain      wait for transmission before applying settings (%s by default)\
+    #####:  641:\n"), tcsetattr_options == TCSADRAIN ? _("on") : _("off"));
+branch  0 never executed
+branch  1 never executed
+    #####:  642:      fputs (_("\
+call    0 never executed
+        -:  643:   ispeed N      set the input speed to N\n\
+        -:  644:"), stdout);
+        -:  645:#ifdef HAVE_C_LINE
+    #####:  646:      fputs (_("\
+call    0 never executed
+        -:  647: * line N        use line discipline N\n\
+        -:  648:"), stdout);
+        -:  649:#endif
+    #####:  650:      fputs (_("\
+call    0 never executed
+        -:  651:   min N         with -icanon, set N characters minimum for a completed read\n\
+        -:  652:   ospeed N      set the output speed to N\n\
+        -:  653:"), stdout);
+        -:  654:#ifdef TIOCGWINSZ
+    #####:  655:      fputs (_("\
+call    0 never executed
+        -:  656: * rows N        tell the kernel that the terminal has N rows\n\
+        -:  657: * size          print the number of rows and columns according to the kernel\n\
+        -:  658:"), stdout);
+        -:  659:#endif
+    #####:  660:      fputs (_("\
+call    0 never executed
+        -:  661:   speed         print the terminal speed\n\
+        -:  662:   time N        with -icanon, set read timeout of N tenths of a second\n\
+        -:  663:"), stdout);
+    #####:  664:      fputs (_("\
+call    0 never executed
+        -:  665:\n\
+        -:  666:Control settings:\n\
+        -:  667:   [-]clocal     disable modem control signals\n\
+        -:  668:   [-]cread      allow input to be received\n\
+        -:  669:"), stdout);
+        -:  670:#ifdef CRTSCTS
+    #####:  671:      fputs (_("\
+call    0 never executed
+        -:  672: * [-]crtscts    enable RTS/CTS handshaking\n\
+        -:  673:"), stdout);
+        -:  674:#endif
+        -:  675:#ifdef CDTRDSR
+        -:  676:      fputs (_("\
+        -:  677: * [-]cdtrdsr    enable DTR/DSR handshaking\n\
+        -:  678:"), stdout);
+        -:  679:#endif
+    #####:  680:      fputs (_("\
+call    0 never executed
+        -:  681:   csN           set character size to N bits, N in [5..8]\n\
+        -:  682:"), stdout);
+    #####:  683:      fputs (_("\
+call    0 never executed
+        -:  684:   [-]cstopb     use two stop bits per character (one with '-')\n\
+        -:  685:   [-]hup        send a hangup signal when the last process closes the tty\n\
+        -:  686:   [-]hupcl      same as [-]hup\n\
+        -:  687:   [-]parenb     generate parity bit in output and expect parity bit in input\n\
+        -:  688:   [-]parodd     set odd parity (or even parity with '-')\n\
+        -:  689:"), stdout);
+        -:  690:#ifdef CMSPAR
+    #####:  691:      fputs (_("\
+call    0 never executed
+        -:  692: * [-]cmspar     use \"stick\" (mark/space) parity\n\
+        -:  693:"), stdout);
+        -:  694:#endif
+    #####:  695:      fputs (_("\
+call    0 never executed
+        -:  696:\n\
+        -:  697:Input settings:\n\
+        -:  698:   [-]brkint     breaks cause an interrupt signal\n\
+        -:  699:   [-]icrnl      translate carriage return to newline\n\
+        -:  700:   [-]ignbrk     ignore break characters\n\
+        -:  701:   [-]igncr      ignore carriage return\n\
+        -:  702:   [-]ignpar     ignore characters with parity errors\n\
+        -:  703:"), stdout);
+        -:  704:#ifdef IMAXBEL
+    #####:  705:      fputs (_("\
+call    0 never executed
+        -:  706: * [-]imaxbel    beep and do not flush a full input buffer on a character\n\
+        -:  707:"), stdout);
+        -:  708:#endif
+    #####:  709:      fputs (_("\
+call    0 never executed
+        -:  710:   [-]inlcr      translate newline to carriage return\n\
+        -:  711:   [-]inpck      enable input parity checking\n\
+        -:  712:   [-]istrip     clear high (8th) bit of input characters\n\
+        -:  713:"), stdout);
+        -:  714:#ifdef IUTF8
+    #####:  715:      fputs (_("\
+call    0 never executed
+        -:  716: * [-]iutf8      assume input characters are UTF-8 encoded\n\
+        -:  717:"), stdout);
+        -:  718:#endif
+        -:  719:#ifdef IUCLC
+    #####:  720:      fputs (_("\
+call    0 never executed
+        -:  721: * [-]iuclc      translate uppercase characters to lowercase\n\
+        -:  722:"), stdout);
+        -:  723:#endif
+        -:  724:#ifdef IXANY
+    #####:  725:      fputs (_("\
+call    0 never executed
+        -:  726: * [-]ixany      let any character restart output, not only start character\n\
+        -:  727:"), stdout);
+        -:  728:#endif
+    #####:  729:      fputs (_("\
+call    0 never executed
+        -:  730:   [-]ixoff      enable sending of start/stop characters\n\
+        -:  731:   [-]ixon       enable XON/XOFF flow control\n\
+        -:  732:   [-]parmrk     mark parity errors (with a 255-0-character sequence)\n\
+        -:  733:   [-]tandem     same as [-]ixoff\n\
+        -:  734:"), stdout);
+    #####:  735:      fputs (_("\
+call    0 never executed
+        -:  736:\n\
+        -:  737:Output settings:\n\
+        -:  738:"), stdout);
+        -:  739:#ifdef BSDLY
+    #####:  740:      fputs (_("\
+call    0 never executed
+        -:  741: * bsN           backspace delay style, N in [0..1]\n\
+        -:  742:"), stdout);
+        -:  743:#endif
+        -:  744:#ifdef CRDLY
+    #####:  745:      fputs (_("\
+call    0 never executed
+        -:  746: * crN           carriage return delay style, N in [0..3]\n\
+        -:  747:"), stdout);
+        -:  748:#endif
+        -:  749:#ifdef FFDLY
+    #####:  750:      fputs (_("\
+call    0 never executed
+        -:  751: * ffN           form feed delay style, N in [0..1]\n\
+        -:  752:"), stdout);
+        -:  753:#endif
+        -:  754:#ifdef NLDLY
+    #####:  755:      fputs (_("\
+call    0 never executed
+        -:  756: * nlN           newline delay style, N in [0..1]\n\
+        -:  757:"), stdout);
+        -:  758:#endif
+        -:  759:#ifdef OCRNL
+    #####:  760:      fputs (_("\
+call    0 never executed
+        -:  761: * [-]ocrnl      translate carriage return to newline\n\
+        -:  762:"), stdout);
+        -:  763:#endif
+        -:  764:#ifdef OFDEL
+    #####:  765:      fputs (_("\
+call    0 never executed
+        -:  766: * [-]ofdel      use delete characters for fill instead of NUL characters\n\
+        -:  767:"), stdout);
+        -:  768:#endif
+        -:  769:#ifdef OFILL
+    #####:  770:      fputs (_("\
+call    0 never executed
+        -:  771: * [-]ofill      use fill (padding) characters instead of timing for delays\n\
+        -:  772:"), stdout);
+        -:  773:#endif
+        -:  774:#ifdef OLCUC
+    #####:  775:      fputs (_("\
+call    0 never executed
+        -:  776: * [-]olcuc      translate lowercase characters to uppercase\n\
+        -:  777:"), stdout);
+        -:  778:#endif
+        -:  779:#ifdef ONLCR
+    #####:  780:      fputs (_("\
+call    0 never executed
+        -:  781: * [-]onlcr      translate newline to carriage return-newline\n\
+        -:  782:"), stdout);
+        -:  783:#endif
+        -:  784:#ifdef ONLRET
+    #####:  785:      fputs (_("\
+call    0 never executed
+        -:  786: * [-]onlret     newline performs a carriage return\n\
+        -:  787:"), stdout);
+        -:  788:#endif
+        -:  789:#ifdef ONOCR
+    #####:  790:      fputs (_("\
+call    0 never executed
+        -:  791: * [-]onocr      do not print carriage returns in the first column\n\
+        -:  792:"), stdout);
+        -:  793:#endif
+    #####:  794:      fputs (_("\
+call    0 never executed
+        -:  795:   [-]opost      postprocess output\n\
+        -:  796:"), stdout);
+        -:  797:#if defined TABDLY || defined OXTABS
+    #####:  798:      fputs (_("\
+call    0 never executed
+        -:  799: * tabN          horizontal tab delay style, N in [0..3]\n\
+        -:  800: * tabs          same as tab0\n\
+        -:  801: * -tabs         same as tab3\n\
+        -:  802:"), stdout);
+        -:  803:#endif
+        -:  804:#ifdef VTDLY
+    #####:  805:      fputs (_("\
+call    0 never executed
+        -:  806: * vtN           vertical tab delay style, N in [0..1]\n\
+        -:  807:"), stdout);
+        -:  808:#endif
+    #####:  809:      fputs (_("\
+call    0 never executed
+        -:  810:\n\
+        -:  811:Local settings:\n\
+        -:  812:   [-]crterase   echo erase characters as backspace-space-backspace\n\
+        -:  813:"), stdout);
+        -:  814:#ifdef ECHOKE
+    #####:  815:      fputs (_("\
+call    0 never executed
+        -:  816: * crtkill       kill all line by obeying the echoprt and echoe settings\n\
+        -:  817: * -crtkill      kill all line by obeying the echoctl and echok settings\n\
+        -:  818:"), stdout);
+        -:  819:#endif
+        -:  820:#ifdef ECHOCTL
+    #####:  821:      fputs (_("\
+call    0 never executed
+        -:  822: * [-]ctlecho    echo control characters in hat notation ('^c')\n\
+        -:  823:"), stdout);
+        -:  824:#endif
+    #####:  825:      fputs (_("\
+call    0 never executed
+        -:  826:   [-]echo       echo input characters\n\
+        -:  827:"), stdout);
+        -:  828:#ifdef ECHOCTL
+    #####:  829:      fputs (_("\
+call    0 never executed
+        -:  830: * [-]echoctl    same as [-]ctlecho\n\
+        -:  831:"), stdout);
+        -:  832:#endif
+    #####:  833:      fputs (_("\
+call    0 never executed
+        -:  834:   [-]echoe      same as [-]crterase\n\
+        -:  835:   [-]echok      echo a newline after a kill character\n\
+        -:  836:"), stdout);
+        -:  837:#ifdef ECHOKE
+    #####:  838:      fputs (_("\
+call    0 never executed
+        -:  839: * [-]echoke     same as [-]crtkill\n\
+        -:  840:"), stdout);
+        -:  841:#endif
+    #####:  842:      fputs (_("\
+call    0 never executed
+        -:  843:   [-]echonl     echo newline even if not echoing other characters\n\
+        -:  844:"), stdout);
+        -:  845:#ifdef ECHOPRT
+    #####:  846:      fputs (_("\
+call    0 never executed
+        -:  847: * [-]echoprt    echo erased characters backward, between '\\' and '/'\n\
+        -:  848:"), stdout);
+        -:  849:#endif
+        -:  850:#if defined EXTPROC || defined TIOCEXT
+    #####:  851:      fputs (_("\
+call    0 never executed
+        -:  852: * [-]extproc    enable \"LINEMODE\"; useful with high latency links\n\
+        -:  853:"), stdout);
+        -:  854:#endif
+        -:  855:#if defined FLUSHO
+    #####:  856:      fputs (_("\
+call    0 never executed
+        -:  857: * [-]flusho     discard output\n\
+        -:  858:"), stdout);
+        -:  859:#endif
+    #####:  860:      printf (_("\
+call    0 never executed
+        -:  861:   [-]icanon     enable special characters: %s\n\
+        -:  862:   [-]iexten     enable non-POSIX special characters\n\
+        -:  863:"), "erase, kill"
+        -:  864:#ifdef VWERASE
+        -:  865:    ", werase"
+        -:  866:#endif
+        -:  867:#if defined CREPRINT || defined VREPRINT
+        -:  868:    ", rprnt"
+        -:  869:#endif
+        -:  870:);
+    #####:  871:      fputs (_("\
+call    0 never executed
+        -:  872:   [-]isig       enable interrupt, quit, and suspend special characters\n\
+        -:  873:   [-]noflsh     disable flushing after interrupt and quit special characters\n\
+        -:  874:"), stdout);
+        -:  875:#ifdef ECHOPRT
+    #####:  876:      fputs (_("\
+call    0 never executed
+        -:  877: * [-]prterase   same as [-]echoprt\n\
+        -:  878:"), stdout);
+        -:  879:#endif
+        -:  880:#ifdef TOSTOP
+    #####:  881:      fputs (_("\
+call    0 never executed
+        -:  882: * [-]tostop     stop background jobs that try to write to the terminal\n\
+        -:  883:"), stdout);
+        -:  884:#endif
+        -:  885:#ifdef XCASE
+    #####:  886:      fputs (_("\
+call    0 never executed
+        -:  887: * [-]xcase      with icanon, escape with '\\' for uppercase characters\n\
+        -:  888:"), stdout);
+        -:  889:#endif
+    #####:  890:      fputs (_("\
+call    0 never executed
+        -:  891:\n\
+        -:  892:Combination settings:\n\
+        -:  893:"), stdout);
+        -:  894:#if defined XCASE && defined IUCLC && defined OLCUC
+    #####:  895:      fputs (_("\
+call    0 never executed
+        -:  896: * [-]LCASE      same as [-]lcase\n\
+        -:  897:"), stdout);
+        -:  898:#endif
+    #####:  899:      fputs (_("\
+call    0 never executed
+        -:  900:   cbreak        same as -icanon\n\
+        -:  901:   -cbreak       same as icanon\n\
+        -:  902:"), stdout);
+    #####:  903:      fputs (_("\
+call    0 never executed
+        -:  904:   cooked        same as brkint ignpar istrip icrnl ixon opost isig\n\
+        -:  905:                 icanon, eof and eol characters to their default values\n\
+        -:  906:   -cooked       same as raw\n\
+        -:  907:"), stdout);
+    #####:  908:      printf (_("\
+call    0 never executed
+        -:  909:   crt           same as %s\n\
+        -:  910:"), "echoe"
+        -:  911:#ifdef ECHOCTL
+        -:  912:    " echoctl"
+        -:  913:#endif
+        -:  914:#ifdef ECHOKE
+        -:  915:    " echoke"
+        -:  916:#endif
+        -:  917:);
+    #####:  918:      printf (_("\
+call    0 never executed
+        -:  919:   dec           same as %s intr ^c erase 0177\n\
+        -:  920:                 kill ^u\n\
+        -:  921:"), "echoe"
+        -:  922:#ifdef ECHOCTL
+        -:  923:    " echoctl"
+        -:  924:#endif
+        -:  925:#ifdef ECHOKE
+        -:  926:    " echoke"
+        -:  927:#endif
+        -:  928:#ifdef IXANY
+        -:  929:    " -ixany"
+        -:  930:#endif
+        -:  931:);
+        -:  932:#ifdef IXANY
+    #####:  933:      fputs (_("\
+call    0 never executed
+        -:  934: * [-]decctlq    same as [-]ixany\n\
+        -:  935:"), stdout);
+        -:  936:#endif
+    #####:  937:      fputs (_("\
+call    0 never executed
+        -:  938:   ek            erase and kill characters to their default values\n\
+        -:  939:   evenp         same as parenb -parodd cs7\n\
+        -:  940:   -evenp        same as -parenb cs8\n\
+        -:  941:"), stdout);
+        -:  942:#if defined XCASE && defined IUCLC && defined OLCUC
+    #####:  943:      fputs (_("\
+call    0 never executed
+        -:  944: * [-]lcase      same as xcase iuclc olcuc\n\
+        -:  945:"), stdout);
+        -:  946:#endif
+    #####:  947:      fputs (_("\
+call    0 never executed
+        -:  948:   litout        same as -parenb -istrip -opost cs8\n\
+        -:  949:   -litout       same as parenb istrip opost cs7\n\
+        -:  950:"), stdout);
+    #####:  951:      printf (_("\
+call    0 never executed
+        -:  952:   nl            same as %s\n\
+        -:  953:   -nl           same as %s\n\
+        -:  954:"), "-icrnl"
+        -:  955:#ifdef ONLCR
+        -:  956:   " -onlcr"
+        -:  957:#endif
+        -:  958:  , "icrnl -inlcr -igncr"
+        -:  959:#ifdef ONLCR
+        -:  960:   " onlcr"
+        -:  961:#endif
+        -:  962:#ifdef OCRNL
+        -:  963:   " -ocrnl"
+        -:  964:#endif
+        -:  965:#ifdef ONLRET
+        -:  966:   " -onlret"
+        -:  967:#endif
+        -:  968:);
+    #####:  969:      fputs (_("\
+call    0 never executed
+        -:  970:   oddp          same as parenb parodd cs7\n\
+        -:  971:   -oddp         same as -parenb cs8\n\
+        -:  972:   [-]parity     same as [-]evenp\n\
+        -:  973:   pass8         same as -parenb -istrip cs8\n\
+        -:  974:   -pass8        same as parenb istrip cs7\n\
+        -:  975:"), stdout);
+    #####:  976:      printf (_("\
+call    0 never executed
+        -:  977:   raw           same as -ignbrk -brkint -ignpar -parmrk -inpck -istrip\n\
+        -:  978:                 -inlcr -igncr -icrnl -ixon -ixoff -icanon -opost\n\
+        -:  979:                 -isig%s min 1 time 0\n\
+        -:  980:   -raw          same as cooked\n\
+        -:  981:"),
+        -:  982:#ifdef IUCLC
+        -:  983:   " -iuclc"
+        -:  984:#endif
+        -:  985:#ifdef IXANY
+        -:  986:   " -ixany"
+        -:  987:#endif
+        -:  988:#ifdef IMAXBEL
+        -:  989:   " -imaxbel"
+        -:  990:#endif
+        -:  991:#ifdef XCASE
+        -:  992:   " -xcase"
+        -:  993:#endif
+        -:  994:);
+    #####:  995:      printf (_("\
+call    0 never executed
+        -:  996:   sane          same as cread -ignbrk brkint -inlcr -igncr icrnl\n\
+        -:  997:                 icanon iexten echo echoe echok -echonl -noflsh\n\
+        -:  998:                 %s\n\
+        -:  999:                 %s\n\
+        -: 1000:                 %s,\n\
+        -: 1001:                 all special characters to their default values\n\
+        -: 1002:"),
+        -: 1003:   "-ixoff"
+        -: 1004:#ifdef IUTF8
+        -: 1005:   " -iutf8"
+        -: 1006:#endif
+        -: 1007:#ifdef IUCLC
+        -: 1008:   " -iuclc"
+        -: 1009:#endif
+        -: 1010:#ifdef IXANY
+        -: 1011:   " -ixany"
+        -: 1012:#endif
+        -: 1013:#ifdef IMAXBEL
+        -: 1014:   " imaxbel"
+        -: 1015:#endif
+        -: 1016:#ifdef XCASE
+        -: 1017:   " -xcase"
+        -: 1018:#endif
+        -: 1019:#ifdef OLCUC
+        -: 1020:   " -olcuc"
+        -: 1021:#endif
+        -: 1022:#ifdef OCRNL
+        -: 1023:   " -ocrnl"
+        -: 1024:#endif
+        -: 1025:
+        -: 1026: , "opost"
+        -: 1027:#ifdef OFILL
+        -: 1028:   " -ofill"
+        -: 1029:#endif
+        -: 1030:#ifdef ONLCR
+        -: 1031:   " onlcr"
+        -: 1032:#endif
+        -: 1033:#ifdef ONOCR
+        -: 1034:   " -onocr"
+        -: 1035:#endif
+        -: 1036:#ifdef ONLRET
+        -: 1037:   " -onlret"
+        -: 1038:#endif
+        -: 1039:#ifdef NLDLY
+        -: 1040:   " nl0"
+        -: 1041:#endif
+        -: 1042:#ifdef CRDLY
+        -: 1043:   " cr0"
+        -: 1044:#endif
+        -: 1045:#ifdef TAB0
+        -: 1046:   " tab0"
+        -: 1047:#endif
+        -: 1048:#ifdef BSDLY
+        -: 1049:   " bs0"
+        -: 1050:#endif
+        -: 1051:#ifdef VTDLY
+        -: 1052:   " vt0"
+        -: 1053:#endif
+        -: 1054:#ifdef FFDLY
+        -: 1055:   " ff0"
+        -: 1056:#endif
+        -: 1057:
+        -: 1058: , "isig"
+        -: 1059:#ifdef TOSTOP
+        -: 1060:   " -tostop"
+        -: 1061:#endif
+        -: 1062:#ifdef OFDEL
+        -: 1063:   " -ofdel"
+        -: 1064:#endif
+        -: 1065:#ifdef ECHOPRT
+        -: 1066:   " -echoprt"
+        -: 1067:#endif
+        -: 1068:#ifdef ECHOCTL
+        -: 1069:   " echoctl"
+        -: 1070:#endif
+        -: 1071:#ifdef ECHOKE
+        -: 1072:   " echoke"
+        -: 1073:#endif
+        -: 1074:#ifdef EXTPROC
+        -: 1075:   " -extproc"
+        -: 1076:#endif
+        -: 1077:#ifdef FLUSHO
+        -: 1078:   " -flusho"
+        -: 1079:#endif
+        -: 1080:);
+    #####: 1081:      fputs (_("\
+call    0 never executed
+        -: 1082:\n\
+        -: 1083:Handle the tty line connected to standard input.  Without arguments,\n\
+        -: 1084:prints baud rate, line discipline, and deviations from stty sane.  In\n\
+        -: 1085:settings, CHAR is taken literally, or coded as in ^c, 0x37, 0177 or\n\
+        -: 1086:127; special values ^- or undef used to disable special characters.\n\
+        -: 1087:"), stdout);
+    #####: 1088:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -: 1089:    }
+        3: 1090:  exit (status);
+        -: 1091:}
+        -: 1092:
+        -: 1093:
+        -: 1094:/* Apply specified settings to MODE and REQUIRE_SET_ATTR as required.
+        -: 1095:   If CHECKING is true, this function doesn't interact
+        -: 1096:   with a device, and only validates specified settings.  */
+        -: 1097:
+        -: 1098:static void
+function apply_settings called 3 returned 0% blocks executed 24%
+        3: 1099:apply_settings (bool checking, char const *device_name,
+        -: 1100:                char * const *settings, int n_settings,
+        -: 1101:                struct termios *mode, bool *require_set_attr)
+        -: 1102:{
+        -: 1103:#define check_argument(arg)						\
+        -: 1104:  do									\
+        -: 1105:    {									\
+        -: 1106:      if (k == n_settings - 1 || ! settings[k + 1])			\
+        -: 1107:        {								\
+        -: 1108:          error (0, 0, _("missing argument to %s"), quote (arg));	\
+        -: 1109:          usage (EXIT_FAILURE);						\
+        -: 1110:        }								\
+        -: 1111:    }									\
+        -: 1112:  while (0)
+        -: 1113:
+       3*: 1114:  for (int k = 1; k < n_settings; k++)
+branch  0 taken 100%
+branch  1 taken 0% (fallthrough)
+        -: 1115:    {
+        3: 1116:      char const *arg = settings[k];
+        3: 1117:      bool match_found = false;
+        3: 1118:      bool not_set_attr = false;
+        3: 1119:      bool reversed = false;
+        -: 1120:      int i;
+        -: 1121:
+       3*: 1122:      if (! arg)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1123:        continue;
+        -: 1124:
+        3: 1125:      if (arg[0] == '-')
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1126:        {
+    #####: 1127:          ++arg;
+    #####: 1128:          reversed = true;
+        -: 1129:        }
+       3*: 1130:      if (STREQ (arg, "drain"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1131:        {
+    #####: 1132:          tcsetattr_options = reversed ? TCSANOW : TCSADRAIN;
+    #####: 1133:          continue;
+        -: 1134:        }
+      270: 1135:      for (i = 0; mode_info[i].name != nullptr; ++i)
+branch  0 taken 99%
+branch  1 taken 1% (fallthrough)
+        -: 1136:        {
+      267: 1137:          if (STREQ (arg, mode_info[i].name))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1138:            {
+    #####: 1139:              if ((mode_info[i].flags & NO_SETATTR) == 0)
+branch  0 never executed
+branch  1 never executed
+        -: 1140:                {
+    #####: 1141:                  match_found = set_mode (&mode_info[i], reversed, mode);
+call    0 never executed
+    #####: 1142:                  *require_set_attr = true;
+        -: 1143:                }
+        -: 1144:              else
+    #####: 1145:                match_found = not_set_attr = true;
+    #####: 1146:              break;
+        -: 1147:            }
+        -: 1148:        }
+        3: 1149:      if (!match_found && reversed)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+        -: 1150:        {
+    #####: 1151:          error (0, 0, _("invalid argument %s"), quote (arg - 1));
+call    0 never executed
+    #####: 1152:          usage (EXIT_FAILURE);
+call    0 never executed
+        -: 1153:        }
+        3: 1154:      if (!match_found)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -: 1155:        {
+       57: 1156:          for (i = 0; control_info[i].name != nullptr; ++i)
+branch  0 taken 95%
+branch  1 taken 5% (fallthrough)
+        -: 1157:            {
+       54: 1158:              if (STREQ (arg, control_info[i].name))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1159:                {
+    #####: 1160:                  check_argument (arg);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+call    5 never executed
+    #####: 1161:                  match_found = true;
+    #####: 1162:                  ++k;
+    #####: 1163:                  set_control_char (&control_info[i], settings[k], mode);
+call    0 never executed
+    #####: 1164:                  *require_set_attr = true;
+    #####: 1165:                  break;
+        -: 1166:                }
+        -: 1167:            }
+        -: 1168:        }
+       3*: 1169:      if (!match_found || not_set_attr)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -: 1170:        {
+        3: 1171:          if (STREQ (arg, "ispeed"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1172:            {
+    #####: 1173:              check_argument (arg);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+call    5 never executed
+    #####: 1174:              ++k;
+    #####: 1175:              if (string_to_baud (settings[k]) == (speed_t) -1)
+branch  0 never executed
+branch  1 never executed
+        -: 1176:                {
+    #####: 1177:                  error (0, 0, _("invalid ispeed %s"), quote (settings[k]));
+call    0 never executed
+    #####: 1178:                  usage (EXIT_FAILURE);
+call    0 never executed
+        -: 1179:                }
+    #####: 1180:              set_speed (input_speed, settings[k], mode);
+call    0 never executed
+    #####: 1181:              if (checking)
+branch  0 never executed
+branch  1 never executed
+    #####: 1182:                continue;
+    #####: 1183:              *require_set_attr = true;
+        -: 1184:            }
+        3: 1185:          else if (STREQ (arg, "ospeed"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1186:            {
+    #####: 1187:              check_argument (arg);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+call    5 never executed
+    #####: 1188:              ++k;
+    #####: 1189:              if (string_to_baud (settings[k]) == (speed_t) -1)
+branch  0 never executed
+branch  1 never executed
+        -: 1190:                {
+    #####: 1191:                  error (0, 0, _("invalid ospeed %s"), quote (settings[k]));
+call    0 never executed
+    #####: 1192:                  usage (EXIT_FAILURE);
+call    0 never executed
+        -: 1193:                }
+    #####: 1194:              set_speed (output_speed, settings[k], mode);
+call    0 never executed
+    #####: 1195:              if (checking)
+branch  0 never executed
+branch  1 never executed
+    #####: 1196:                continue;
+    #####: 1197:              *require_set_attr = true;
+        -: 1198:            }
+        -: 1199:#ifdef TIOCEXT
+        -: 1200:          /* This is the BSD interface to "extproc".
+        -: 1201:            Even though it's an lflag, an ioctl is used to set it.  */
+        -: 1202:          else if (STREQ (arg, "extproc"))
+        -: 1203:            {
+        -: 1204:              int val = ! reversed;
+        -: 1205:
+        -: 1206:              if (checking)
+        -: 1207:                continue;
+        -: 1208:
+        -: 1209:              if (ioctl (STDIN_FILENO, TIOCEXT, &val) != 0)
+        -: 1210:                error (EXIT_FAILURE, errno, _("%s: error setting %s"),
+        -: 1211:                       quotef_n (0, device_name), quote_n (1, arg));
+        -: 1212:            }
+        -: 1213:#endif
+        -: 1214:#ifdef TIOCGWINSZ
+        3: 1215:          else if (STREQ (arg, "rows"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1216:            {
+    #####: 1217:              check_argument (arg);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+call    5 never executed
+    #####: 1218:              ++k;
+    #####: 1219:              if (checking)
+branch  0 never executed
+branch  1 never executed
+    #####: 1220:                continue;
+    #####: 1221:              set_window_size (integer_arg (settings[k], INT_MAX), -1,
+call    0 never executed
+call    1 never executed
+        -: 1222:                               device_name);
+        -: 1223:            }
+        3: 1224:          else if (STREQ (arg, "cols")
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        3: 1225:                   || STREQ (arg, "columns"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1226:            {
+    #####: 1227:              check_argument (arg);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+call    5 never executed
+    #####: 1228:              ++k;
+    #####: 1229:              if (checking)
+branch  0 never executed
+branch  1 never executed
+    #####: 1230:                continue;
+    #####: 1231:              set_window_size (-1, integer_arg (settings[k], INT_MAX),
+call    0 never executed
+call    1 never executed
+        -: 1232:                               device_name);
+        -: 1233:            }
+        3: 1234:          else if (STREQ (arg, "size"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1235:            {
+    #####: 1236:              if (checking)
+branch  0 never executed
+branch  1 never executed
+    #####: 1237:                continue;
+    #####: 1238:              max_col = screen_columns ();
+call    0 never executed
+    #####: 1239:              current_col = 0;
+    #####: 1240:              display_window_size (false, device_name);
+call    0 never executed
+        -: 1241:            }
+        -: 1242:#endif
+        -: 1243:#ifdef HAVE_C_LINE
+        3: 1244:          else if (STREQ (arg, "line"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1245:            {
+        -: 1246:              unsigned long int value;
+    #####: 1247:              check_argument (arg);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+call    5 never executed
+    #####: 1248:              ++k;
+    #####: 1249:              mode->c_line = value = integer_arg (settings[k], ULONG_MAX);
+call    0 never executed
+    #####: 1250:              if (mode->c_line != value)
+branch  0 never executed
+branch  1 never executed
+    #####: 1251:                error (0, 0, _("invalid line discipline %s"),
+call    0 never executed
+        -: 1252:                       quote (settings[k]));
+    #####: 1253:              *require_set_attr = true;
+        -: 1254:            }
+        -: 1255:#endif
+        3: 1256:          else if (STREQ (arg, "speed"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1257:            {
+    #####: 1258:              if (checking)
+branch  0 never executed
+branch  1 never executed
+    #####: 1259:                continue;
+    #####: 1260:              max_col = screen_columns ();
+call    0 never executed
+    #####: 1261:              display_speed (mode, false);
+call    0 never executed
+        -: 1262:            }
+        3: 1263:          else if (string_to_baud (arg) != (speed_t) -1)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1264:            {
+    #####: 1265:              set_speed (both_speeds, arg, mode);
+call    0 never executed
+    #####: 1266:              if (checking)
+branch  0 never executed
+branch  1 never executed
+    #####: 1267:                continue;
+    #####: 1268:              *require_set_attr = true;
+        -: 1269:            }
+        -: 1270:          else
+        -: 1271:            {
+        3: 1272:              if (! recover_mode (arg, mode))
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+        -: 1273:                {
+        3: 1274:                  error (0, 0, _("invalid argument %s"), quote (arg));
+call    0 returned 100%
+        3: 1275:                  usage (EXIT_FAILURE);
+call    0 returned 0%
+        -: 1276:                }
+    #####: 1277:              *require_set_attr = true;
+        -: 1278:            }
+        -: 1279:        }
+        -: 1280:    }
+        -: 1281:
+    #####: 1282:  if (checking)
+branch  0 never executed
+branch  1 never executed
+    #####: 1283:    check_speed (mode);
+call    0 never executed
+    #####: 1284:}
+        -: 1285:
+        -: 1286:int
+function main called 6 returned 33% blocks executed 32%
+        6: 1287:main (int argc, char **argv)
+        -: 1288:{
+        -: 1289:  /* Initialize to all zeroes so there is no risk memcmp will report a
+        -: 1290:     spurious difference in an uninitialized portion of the structure.  */
+        -: 1291:  static struct termios mode;
+        -: 1292:
+        -: 1293:  enum output_type output_type;
+        -: 1294:  int optc;
+        6: 1295:  int argi = 0;
+        6: 1296:  int opti = 1;
+        -: 1297:  bool require_set_attr;
+        -: 1298:  bool verbose_output;
+        -: 1299:  bool recoverable_output;
+        6: 1300:  bool noargs = true;
+        6: 1301:  char *file_name = nullptr;
+        -: 1302:  char const *device_name;
+        -: 1303:
+        -: 1304:  initialize_main (&argc, &argv);
+        6: 1305:  set_program_name (argv[0]);
+call    0 returned 100%
+        6: 1306:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -: 1307:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -: 1308:  textdomain (PACKAGE);
+        -: 1309:
+        6: 1310:  atexit (close_stdout);
+call    0 returned 100%
+        -: 1311:
+        6: 1312:  output_type = changed;
+        6: 1313:  verbose_output = false;
+        6: 1314:  recoverable_output = false;
+        -: 1315:
+        -: 1316:  /* Don't print error messages for unrecognized options.  */
+        6: 1317:  opterr = 0;
+        -: 1318:
+        -: 1319:  /* If any new options are ever added to stty, the short options MUST
+        -: 1320:     NOT allow any ambiguity with the stty settings.  For example, the
+        -: 1321:     stty setting "-gagFork" would not be feasible, since it will be
+        -: 1322:     parsed as "-g -a -g -F ork".  If you change anything about how
+        -: 1323:     stty parses options, be sure it still works with combinations of
+        -: 1324:     short and long options, --, POSIXLY_CORRECT, etc.  */
+        -: 1325:
+       12: 1326:  while ((optc = getopt_long (argc - argi, argv + argi, "-agF:",
+call    0 returned 100%
+        -: 1327:                              longopts, nullptr))
+       12: 1328:         != -1)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -: 1329:    {
+        6: 1330:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 100%
+        -: 1331:        {
+    #####: 1332:        case 'a':
+    #####: 1333:          verbose_output = true;
+    #####: 1334:          output_type = all;
+    #####: 1335:          break;
+        -: 1336:
+    #####: 1337:        case 'g':
+    #####: 1338:          recoverable_output = true;
+    #####: 1339:          output_type = recoverable;
+    #####: 1340:          break;
+        -: 1341:
+    #####: 1342:        case 'F':
+    #####: 1343:          if (file_name)
+branch  0 never executed
+branch  1 never executed
+    #####: 1344:            error (EXIT_FAILURE, 0, _("only one device may be specified"));
+call    0 never executed
+    #####: 1345:          file_name = optarg;
+    #####: 1346:          break;
+        -: 1347:
+    #####: 1348:        case DEV_DEBUG_OPTION:
+    #####: 1349:          dev_debug = true;
+    #####: 1350:          break;
+        -: 1351:
+    #####: 1352:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -: 1353:
+    #####: 1354:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -: 1355:
+        6: 1356:        default:
+        -: 1357:          /* Consider "drain" as an option rather than a setting,
+        -: 1358:             to support: alias stty='stty -drain'  etc.  */
+        6: 1359:          if (! STREQ (argv[argi + opti], "-drain")
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        6: 1360:              && ! STREQ (argv[argi + opti], "drain"))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        6: 1361:            noargs = false;
+        -: 1362:
+        -: 1363:          /* Skip the argument containing this unrecognized option;
+        -: 1364:             the 2nd pass will analyze it.  */
+        6: 1365:          argi += opti;
+        -: 1366:
+        -: 1367:          /* Restart getopt_long from the first unskipped argument.  */
+        6: 1368:          opti = 1;
+        6: 1369:          optind = 0;
+        -: 1370:
+        6: 1371:          break;
+        -: 1372:        }
+        -: 1373:
+        -: 1374:      /* Clear fully-parsed arguments, so they don't confuse the 2nd pass.  */
+        6: 1375:      while (opti < optind)
+branch  0 taken 0%
+branch  1 taken 100% (fallthrough)
+    #####: 1376:        argv[argi + opti++] = nullptr;
+        -: 1377:    }
+        -: 1378:
+        -: 1379:  /* Specifying both -a and -g gets an error.  */
+       6*: 1380:  if (verbose_output && recoverable_output)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####: 1381:    error (EXIT_FAILURE, 0,
+call    0 never executed
+        -: 1382:           _("the options for verbose and stty-readable output styles are\n"
+        -: 1383:             "mutually exclusive"));
+        -: 1384:
+        -: 1385:  /* Specifying any other arguments with -a or -g gets an error.  */
+        6: 1386:  if (!noargs && (verbose_output || recoverable_output))
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 0% (fallthrough)
+branch  5 taken 100%
+    #####: 1387:    error (EXIT_FAILURE, 0,
+call    0 never executed
+        -: 1388:           _("when specifying an output style, modes may not be set"));
+        -: 1389:
+       6*: 1390:  device_name = file_name ? file_name : _("standard input");
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1391:
+        6: 1392:  if (!noargs && !verbose_output && !recoverable_output)
+branch  0 taken 50% (fallthrough)
+branch  1 taken 50%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+        -: 1393:    {
+        -: 1394:      static struct termios check_mode;
+        3: 1395:      apply_settings (/* checking= */ true, device_name, argv, argc,
+call    0 returned 0%
+        -: 1396:                      &check_mode, &require_set_attr);
+        -: 1397:    }
+        -: 1398:
+        3: 1399:  if (file_name)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 1400:    {
+        -: 1401:      int fdflags;
+    #####: 1402:      if (fd_reopen (STDIN_FILENO, device_name, O_RDONLY | O_NONBLOCK, 0) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1403:        error (EXIT_FAILURE, errno, "%s", quotef (device_name));
+call    0 never executed
+call    1 never executed
+    #####: 1404:      if ((fdflags = fcntl (STDIN_FILENO, F_GETFL)) == -1
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1405:          || fcntl (STDIN_FILENO, F_SETFL, fdflags & ~O_NONBLOCK) < 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1406:        error (EXIT_FAILURE, errno, _("%s: couldn't reset non-blocking mode"),
+call    0 never executed
+call    1 never executed
+        -: 1407:               quotef (device_name));
+        -: 1408:    }
+        -: 1409:
+        3: 1410:  if (tcgetattr (STDIN_FILENO, &mode))
+call    0 returned 100%
+branch  1 taken 33% (fallthrough)
+branch  2 taken 67%
+       1*: 1411:    error (EXIT_FAILURE, errno, "%s", quotef (device_name));
+call    0 returned 100%
+call    1 never executed
+        -: 1412:
+        2: 1413:  if (verbose_output || recoverable_output || noargs)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+        -: 1414:    {
+        2: 1415:      max_col = screen_columns ();
+call    0 returned 100%
+        2: 1416:      current_col = 0;
+        2: 1417:      display_settings (output_type, &mode, device_name);
+call    0 returned 100%
+        2: 1418:      return EXIT_SUCCESS;
+        -: 1419:    }
+        -: 1420:
+    #####: 1421:  require_set_attr = false;
+    #####: 1422:  apply_settings (/* checking= */ false, device_name, argv, argc,
+call    0 never executed
+        -: 1423:                  &mode, &require_set_attr);
+        -: 1424:
+    #####: 1425:  if (require_set_attr)
+branch  0 never executed
+branch  1 never executed
+        -: 1426:    {
+        -: 1427:      /* Initialize to all zeroes so there is no risk memcmp will report a
+        -: 1428:         spurious difference in an uninitialized portion of the structure.  */
+        -: 1429:      static struct termios new_mode;
+        -: 1430:
+    #####: 1431:      if (tcsetattr (STDIN_FILENO, tcsetattr_options, &mode))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1432:        error (EXIT_FAILURE, errno, "%s", quotef (device_name));
+call    0 never executed
+call    1 never executed
+        -: 1433:
+        -: 1434:      /* POSIX (according to Zlotnick's book) tcsetattr returns zero if
+        -: 1435:         it performs *any* of the requested operations.  This means it
+        -: 1436:         can report 'success' when it has actually failed to perform
+        -: 1437:         some proper subset of the requested operations.  To detect
+        -: 1438:         this partial failure, get the current terminal attributes and
+        -: 1439:         compare them to the requested ones.  */
+        -: 1440:
+    #####: 1441:      if (tcgetattr (STDIN_FILENO, &new_mode))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1442:        error (EXIT_FAILURE, errno, "%s", quotef (device_name));
+call    0 never executed
+call    1 never executed
+        -: 1443:
+    #####: 1444:      if (! eq_mode (&mode, &new_mode))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1445:        {
+    #####: 1446:          if (dev_debug)
+branch  0 never executed
+branch  1 never executed
+        -: 1447:            {
+        -: 1448:              error (0, 0, _("indx: mode: actual mode"));
+    #####: 1449:              for (unsigned int i = 0; i < sizeof (new_mode); i++)
+branch  0 never executed
+branch  1 never executed
+        -: 1450:                {
+    #####: 1451:                  unsigned int newc = *(((unsigned char *) &new_mode) + i);
+    #####: 1452:                  unsigned int oldc = *(((unsigned char *) &mode) + i);
+    #####: 1453:                  error (0, 0, "0x%02x, 0x%02x: 0x%02x%s", i, oldc, newc,
+branch  0 never executed
+branch  1 never executed
+        -: 1454:                          newc == oldc ? "" : " *");
+        -: 1455:                }
+        -: 1456:            }
+        -: 1457:
+    #####: 1458:          error (EXIT_FAILURE, 0,
+call    0 never executed
+call    1 never executed
+        -: 1459:                 _("%s: unable to perform all requested operations"),
+        -: 1460:                 quotef (device_name));
+        -: 1461:        }
+        -: 1462:    }
+        -: 1463:
+    #####: 1464:  return EXIT_SUCCESS;
+        -: 1465:}
+        -: 1466:
+        -: 1467:/* Return true if modes are equivalent.  */
+        -: 1468:
+        -: 1469:static bool
+function eq_mode called 0 returned 0% blocks executed 0%
+    #####: 1470:eq_mode (struct termios *mode1, struct termios *mode2)
+        -: 1471:{
+    #####: 1472:  return mode1->c_iflag == mode2->c_iflag
+    #####: 1473:      && mode1->c_oflag == mode2->c_oflag
+branch  0 never executed
+branch  1 never executed
+    #####: 1474:      && mode1->c_cflag == mode2->c_cflag
+branch  0 never executed
+branch  1 never executed
+    #####: 1475:      && mode1->c_lflag == mode2->c_lflag
+branch  0 never executed
+branch  1 never executed
+        -: 1476:#ifdef HAVE_C_LINE
+    #####: 1477:      && mode1->c_line == mode2->c_line
+branch  0 never executed
+branch  1 never executed
+        -: 1478:#endif
+    #####: 1479:      && memcmp (mode1->c_cc, mode2->c_cc, sizeof (mode1->c_cc)) == 0
+branch  0 never executed
+branch  1 never executed
+    #####: 1480:      && cfgetispeed (mode1) == cfgetispeed (mode2)
+call    0 never executed
+call    1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1481:      && cfgetospeed (mode1) == cfgetospeed (mode2);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+branch  4 never executed
+branch  5 never executed
+        -: 1482:}
+        -: 1483:
+        -: 1484:/* Return false if not applied because not reversible; otherwise
+        -: 1485:   return true.  */
+        -: 1486:
+        -: 1487:static bool
+function set_mode called 0 returned 0% blocks executed 0%
+    #####: 1488:set_mode (struct mode_info const *info, bool reversed, struct termios *mode)
+        -: 1489:{
+        -: 1490:  tcflag_t *bitsp;
+        -: 1491:
+    #####: 1492:  if (reversed && (info->flags & REV) == 0)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1493:    return false;
+        -: 1494:
+    #####: 1495:  bitsp = mode_type_flag (info->type, mode);
+        -: 1496:
+    #####: 1497:  if (bitsp == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -: 1498:    {
+        -: 1499:      /* Combination mode. */
+    #####: 1500:      if (STREQ (info->name, "evenp") || STREQ (info->name, "parity"))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1501:        {
+    #####: 1502:          if (reversed)
+branch  0 never executed
+branch  1 never executed
+    #####: 1503:            mode->c_cflag = (mode->c_cflag & ~PARENB & ~CSIZE) | CS8;
+        -: 1504:          else
+    #####: 1505:            mode->c_cflag = (mode->c_cflag & ~PARODD & ~CSIZE) | PARENB | CS7;
+        -: 1506:        }
+    #####: 1507:      else if (STREQ (info->name, "oddp"))
+branch  0 never executed
+branch  1 never executed
+        -: 1508:        {
+    #####: 1509:          if (reversed)
+branch  0 never executed
+branch  1 never executed
+    #####: 1510:            mode->c_cflag = (mode->c_cflag & ~PARENB & ~CSIZE) | CS8;
+        -: 1511:          else
+    #####: 1512:            mode->c_cflag = (mode->c_cflag & ~CSIZE) | CS7 | PARODD | PARENB;
+        -: 1513:        }
+    #####: 1514:      else if (STREQ (info->name, "nl"))
+branch  0 never executed
+branch  1 never executed
+        -: 1515:        {
+    #####: 1516:          if (reversed)
+branch  0 never executed
+branch  1 never executed
+        -: 1517:            {
+    #####: 1518:              mode->c_iflag = (mode->c_iflag | ICRNL) & ~INLCR & ~IGNCR;
+    #####: 1519:              mode->c_oflag = (mode->c_oflag
+        -: 1520:#ifdef ONLCR
+        -: 1521:                               | ONLCR
+        -: 1522:#endif
+        -: 1523:                )
+        -: 1524:#ifdef OCRNL
+        -: 1525:                & ~OCRNL
+        -: 1526:#endif
+        -: 1527:#ifdef ONLRET
+    #####: 1528:                & ~ONLRET
+        -: 1529:#endif
+        -: 1530:                ;
+        -: 1531:            }
+        -: 1532:          else
+        -: 1533:            {
+    #####: 1534:              mode->c_iflag = mode->c_iflag & ~ICRNL;
+        -: 1535:#ifdef ONLCR
+    #####: 1536:              mode->c_oflag = mode->c_oflag & ~ONLCR;
+        -: 1537:#endif
+        -: 1538:            }
+        -: 1539:        }
+    #####: 1540:      else if (STREQ (info->name, "ek"))
+branch  0 never executed
+branch  1 never executed
+        -: 1541:        {
+    #####: 1542:          mode->c_cc[VERASE] = CERASE;
+    #####: 1543:          mode->c_cc[VKILL] = CKILL;
+        -: 1544:        }
+    #####: 1545:      else if (STREQ (info->name, "sane"))
+branch  0 never executed
+branch  1 never executed
+    #####: 1546:        sane_mode (mode);
+call    0 never executed
+    #####: 1547:      else if (STREQ (info->name, "cbreak"))
+branch  0 never executed
+branch  1 never executed
+        -: 1548:        {
+    #####: 1549:          if (reversed)
+branch  0 never executed
+branch  1 never executed
+    #####: 1550:            mode->c_lflag |= ICANON;
+        -: 1551:          else
+    #####: 1552:            mode->c_lflag &= ~ICANON;
+        -: 1553:        }
+    #####: 1554:      else if (STREQ (info->name, "pass8"))
+branch  0 never executed
+branch  1 never executed
+        -: 1555:        {
+    #####: 1556:          if (reversed)
+branch  0 never executed
+branch  1 never executed
+        -: 1557:            {
+    #####: 1558:              mode->c_cflag = (mode->c_cflag & ~CSIZE) | CS7 | PARENB;
+    #####: 1559:              mode->c_iflag |= ISTRIP;
+        -: 1560:            }
+        -: 1561:          else
+        -: 1562:            {
+    #####: 1563:              mode->c_cflag = (mode->c_cflag & ~PARENB & ~CSIZE) | CS8;
+    #####: 1564:              mode->c_iflag &= ~ISTRIP;
+        -: 1565:            }
+        -: 1566:        }
+    #####: 1567:      else if (STREQ (info->name, "litout"))
+branch  0 never executed
+branch  1 never executed
+        -: 1568:        {
+    #####: 1569:          if (reversed)
+branch  0 never executed
+branch  1 never executed
+        -: 1570:            {
+    #####: 1571:              mode->c_cflag = (mode->c_cflag & ~CSIZE) | CS7 | PARENB;
+    #####: 1572:              mode->c_iflag |= ISTRIP;
+    #####: 1573:              mode->c_oflag |= OPOST;
+        -: 1574:            }
+        -: 1575:          else
+        -: 1576:            {
+    #####: 1577:              mode->c_cflag = (mode->c_cflag & ~PARENB & ~CSIZE) | CS8;
+    #####: 1578:              mode->c_iflag &= ~ISTRIP;
+    #####: 1579:              mode->c_oflag &= ~OPOST;
+        -: 1580:            }
+        -: 1581:        }
+    #####: 1582:      else if (STREQ (info->name, "raw") || STREQ (info->name, "cooked"))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1583:        {
+    #####: 1584:          if ((info->name[0] == 'r' && reversed)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1585:              || (info->name[0] == 'c' && !reversed))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1586:            {
+        -: 1587:              /* Cooked mode. */
+    #####: 1588:              mode->c_iflag |= BRKINT | IGNPAR | ISTRIP | ICRNL | IXON;
+    #####: 1589:              mode->c_oflag |= OPOST;
+    #####: 1590:              mode->c_lflag |= ISIG | ICANON;
+        -: 1591:#if VMIN == VEOF
+        -: 1592:              mode->c_cc[VEOF] = CEOF;
+        -: 1593:#endif
+        -: 1594:#if VTIME == VEOL
+        -: 1595:              mode->c_cc[VEOL] = CEOL;
+        -: 1596:#endif
+        -: 1597:            }
+        -: 1598:          else
+        -: 1599:            {
+        -: 1600:              /* Raw mode. */
+    #####: 1601:              mode->c_iflag = 0;
+    #####: 1602:              mode->c_oflag &= ~OPOST;
+    #####: 1603:              mode->c_lflag &= ~(ISIG | ICANON
+        -: 1604:#ifdef XCASE
+        -: 1605:                                 | XCASE
+        -: 1606:#endif
+        -: 1607:                );
+    #####: 1608:              mode->c_cc[VMIN] = 1;
+    #####: 1609:              mode->c_cc[VTIME] = 0;
+        -: 1610:            }
+        -: 1611:        }
+        -: 1612:#ifdef IXANY
+    #####: 1613:      else if (STREQ (info->name, "decctlq"))
+branch  0 never executed
+branch  1 never executed
+        -: 1614:        {
+    #####: 1615:          if (reversed)
+branch  0 never executed
+branch  1 never executed
+    #####: 1616:            mode->c_iflag |= IXANY;
+        -: 1617:          else
+    #####: 1618:            mode->c_iflag &= ~IXANY;
+        -: 1619:        }
+        -: 1620:#endif
+        -: 1621:#ifdef TABDLY
+    #####: 1622:      else if (STREQ (info->name, "tabs"))
+branch  0 never executed
+branch  1 never executed
+        -: 1623:        {
+    #####: 1624:          if (reversed)
+branch  0 never executed
+branch  1 never executed
+    #####: 1625:            mode->c_oflag = (mode->c_oflag & ~TABDLY) | TAB3;
+        -: 1626:          else
+    #####: 1627:            mode->c_oflag = (mode->c_oflag & ~TABDLY) | TAB0;
+        -: 1628:        }
+        -: 1629:#else
+        -: 1630:# ifdef OXTABS
+        -: 1631:      else if (STREQ (info->name, "tabs"))
+        -: 1632:        {
+        -: 1633:          if (reversed)
+        -: 1634:            mode->c_oflag = mode->c_oflag | OXTABS;
+        -: 1635:          else
+        -: 1636:            mode->c_oflag = mode->c_oflag & ~OXTABS;
+        -: 1637:        }
+        -: 1638:# endif
+        -: 1639:#endif
+        -: 1640:#if defined XCASE && defined IUCLC && defined OLCUC
+    #####: 1641:      else if (STREQ (info->name, "lcase")
+branch  0 never executed
+branch  1 never executed
+    #####: 1642:               || STREQ (info->name, "LCASE"))
+branch  0 never executed
+branch  1 never executed
+        -: 1643:        {
+    #####: 1644:          if (reversed)
+branch  0 never executed
+branch  1 never executed
+        -: 1645:            {
+    #####: 1646:              mode->c_lflag &= ~XCASE;
+    #####: 1647:              mode->c_iflag &= ~IUCLC;
+    #####: 1648:              mode->c_oflag &= ~OLCUC;
+        -: 1649:            }
+        -: 1650:          else
+        -: 1651:            {
+    #####: 1652:              mode->c_lflag |= XCASE;
+    #####: 1653:              mode->c_iflag |= IUCLC;
+    #####: 1654:              mode->c_oflag |= OLCUC;
+        -: 1655:            }
+        -: 1656:        }
+        -: 1657:#endif
+    #####: 1658:      else if (STREQ (info->name, "crt"))
+branch  0 never executed
+branch  1 never executed
+    #####: 1659:        mode->c_lflag |= ECHOE
+        -: 1660:#ifdef ECHOCTL
+        -: 1661:          | ECHOCTL
+        -: 1662:#endif
+        -: 1663:#ifdef ECHOKE
+        -: 1664:          | ECHOKE
+        -: 1665:#endif
+        -: 1666:          ;
+    #####: 1667:      else if (STREQ (info->name, "dec"))
+branch  0 never executed
+branch  1 never executed
+        -: 1668:        {
+    #####: 1669:          mode->c_cc[VINTR] = 3;	/* ^C */
+    #####: 1670:          mode->c_cc[VERASE] = 127;	/* DEL */
+    #####: 1671:          mode->c_cc[VKILL] = 21;	/* ^U */
+    #####: 1672:          mode->c_lflag |= ECHOE
+        -: 1673:#ifdef ECHOCTL
+        -: 1674:            | ECHOCTL
+        -: 1675:#endif
+        -: 1676:#ifdef ECHOKE
+        -: 1677:            | ECHOKE
+        -: 1678:#endif
+        -: 1679:            ;
+        -: 1680:#ifdef IXANY
+    #####: 1681:          mode->c_iflag &= ~IXANY;
+        -: 1682:#endif
+        -: 1683:        }
+        -: 1684:    }
+    #####: 1685:  else if (reversed)
+branch  0 never executed
+branch  1 never executed
+    #####: 1686:    *bitsp = *bitsp & ~info->mask & ~info->bits;
+        -: 1687:  else
+    #####: 1688:    *bitsp = (*bitsp & ~info->mask) | info->bits;
+        -: 1689:
+    #####: 1690:  return true;
+        -: 1691:}
+        -: 1692:
+        -: 1693:static void
+function set_control_char called 0 returned 0% blocks executed 0%
+    #####: 1694:set_control_char (struct control_info const *info, char const *arg,
+        -: 1695:                  struct termios *mode)
+        -: 1696:{
+        -: 1697:  unsigned long int value;
+        -: 1698:
+    #####: 1699:  if (STREQ (info->name, "min") || STREQ (info->name, "time"))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1700:    value = integer_arg (arg, TYPE_MAXIMUM (cc_t));
+call    0 never executed
+    #####: 1701:  else if (arg[0] == '\0' || arg[1] == '\0')
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1702:    value = to_uchar (arg[0]);
+call    0 never executed
+    #####: 1703:  else if (STREQ (arg, "^-") || STREQ (arg, "undef"))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####: 1704:    value = _POSIX_VDISABLE;
+    #####: 1705:  else if (arg[0] == '^' && arg[1] != '\0')	/* Ignore any trailing junk. */
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1706:    {
+    #####: 1707:      if (arg[1] == '?')
+branch  0 never executed
+branch  1 never executed
+    #####: 1708:        value = 127;
+        -: 1709:      else
+    #####: 1710:        value = to_uchar (arg[1]) & ~0140; /* Non-letters get weird results. */
+call    0 never executed
+        -: 1711:    }
+        -: 1712:  else
+    #####: 1713:    value = integer_arg (arg, TYPE_MAXIMUM (cc_t));
+call    0 never executed
+    #####: 1714:  mode->c_cc[info->offset] = value;
+    #####: 1715:}
+        -: 1716:
+        -: 1717:static void
+function set_speed called 0 returned 0% blocks executed 0%
+    #####: 1718:set_speed (enum speed_setting type, char const *arg, struct termios *mode)
+        -: 1719:{
+        -: 1720:  /* Note cfset[io]speed(), do not check with the device,
+        -: 1721:     and only check whether the system logic supports the specified speed.
+        -: 1722:     Therefore we don't report the device name in any errors.  */
+        -: 1723:
+    #####: 1724:  speed_t baud = string_to_baud (arg);
+    #####: 1725:  affirm (baud != (speed_t) -1);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -: 1726:
+    #####: 1727:  if (type == input_speed || type == both_speeds)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1728:    {
+    #####: 1729:      last_ibaud = baud;
+    #####: 1730:      if (cfsetispeed (mode, baud))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1731:        error (EXIT_FAILURE, 0, _("unsupported ispeed %s"), quoteaf (arg));
+call    0 never executed
+call    1 never executed
+        -: 1732:    }
+    #####: 1733:  if (type == output_speed || type == both_speeds)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 1734:    {
+    #####: 1735:      last_obaud = baud;
+    #####: 1736:      if (cfsetospeed (mode, baud))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1737:        error (EXIT_FAILURE, 0, _("unsupported ospeed %s"), quoteaf (arg));
+call    0 never executed
+call    1 never executed
+        -: 1738:    }
+    #####: 1739:}
+        -: 1740:
+        -: 1741:#ifdef TIOCGWINSZ
+        -: 1742:
+        -: 1743:static int
+function get_win_size called 2 returned 100% blocks executed 100%
+        2: 1744:get_win_size (int fd, struct winsize *win)
+        -: 1745:{
+        2: 1746:  int err = ioctl (fd, TIOCGWINSZ, (char *) win);
+call    0 returned 100%
+        2: 1747:  return err;
+        -: 1748:}
+        -: 1749:
+        -: 1750:static void
+function set_window_size called 0 returned 0% blocks executed 0%
+    #####: 1751:set_window_size (int rows, int cols, char const *device_name)
+        -: 1752:{
+        -: 1753:  struct winsize win;
+        -: 1754:
+    #####: 1755:  if (get_win_size (STDIN_FILENO, &win))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1756:    {
+    #####: 1757:      if (errno != EINVAL)
+branch  0 never executed
+branch  1 never executed
+    #####: 1758:        error (EXIT_FAILURE, errno, "%s", quotef (device_name));
+call    0 never executed
+call    1 never executed
+    #####: 1759:      memset (&win, 0, sizeof (win));
+        -: 1760:    }
+        -: 1761:
+    #####: 1762:  if (rows >= 0)
+branch  0 never executed
+branch  1 never executed
+    #####: 1763:    win.ws_row = rows;
+    #####: 1764:  if (cols >= 0)
+branch  0 never executed
+branch  1 never executed
+    #####: 1765:    win.ws_col = cols;
+        -: 1766:
+        -: 1767:# ifdef TIOCSSIZE
+        -: 1768:  /* Alexander Dupuy <dupuy@cs.columbia.edu> wrote:
+        -: 1769:     The following code deals with a bug in the SunOS 4.x (and 3.x?) kernel.
+        -: 1770:     This comment from sys/ttold.h describes Sun's twisted logic - a better
+        -: 1771:     test would have been (ts_lines > 64k || ts_cols > 64k || ts_cols == 0).
+        -: 1772:     At any rate, the problem is gone in Solaris 2.x.
+        -: 1773:
+        -: 1774:     Unfortunately, the old TIOCSSIZE code does collide with TIOCSWINSZ,
+        -: 1775:     but they can be disambiguated by checking whether a "struct ttysize"
+        -: 1776:     structure's "ts_lines" field is greater than 64K or not.  If so,
+        -: 1777:     it's almost certainly a "struct winsize" instead.
+        -: 1778:
+        -: 1779:     At any rate, the bug manifests itself when ws_row == 0; the symptom is
+        -: 1780:     that ws_row is set to ws_col, and ws_col is set to (ws_xpixel<<16)
+        -: 1781:     + ws_ypixel.  Since GNU stty sets rows and columns separately, this bug
+        -: 1782:     caused "stty rows 0 cols 0" to set rows to cols and cols to 0, while
+        -: 1783:     "stty cols 0 rows 0" would do the right thing.  On a little-endian
+        -: 1784:     machine like the sun386i, the problem is the same, but for ws_col == 0.
+        -: 1785:
+        -: 1786:     The workaround is to do the ioctl once with row and col = 1 to set the
+        -: 1787:     pixel info, and then do it again using a TIOCSSIZE to set rows/cols.  */
+        -: 1788:
+        -: 1789:  if (win.ws_row == 0 || win.ws_col == 0)
+        -: 1790:    {
+        -: 1791:      struct ttysize ttysz;
+        -: 1792:
+        -: 1793:      ttysz.ts_lines = win.ws_row;
+        -: 1794:      ttysz.ts_cols = win.ws_col;
+        -: 1795:
+        -: 1796:      win.ws_row = 1;
+        -: 1797:      win.ws_col = 1;
+        -: 1798:
+        -: 1799:      if (ioctl (STDIN_FILENO, TIOCSWINSZ, (char *) &win))
+        -: 1800:        error (EXIT_FAILURE, errno, "%s", quotef (device_name));
+        -: 1801:
+        -: 1802:      if (ioctl (STDIN_FILENO, TIOCSSIZE, (char *) &ttysz))
+        -: 1803:        error (EXIT_FAILURE, errno, "%s", quotef (device_name));
+        -: 1804:      return;
+        -: 1805:    }
+        -: 1806:# endif
+        -: 1807:
+    #####: 1808:  if (ioctl (STDIN_FILENO, TIOCSWINSZ, (char *) &win))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1809:    error (EXIT_FAILURE, errno, "%s", quotef (device_name));
+call    0 never executed
+call    1 never executed
+    #####: 1810:}
+        -: 1811:
+        -: 1812:static void
+function display_window_size called 0 returned 0% blocks executed 0%
+    #####: 1813:display_window_size (bool fancy, char const *device_name)
+        -: 1814:{
+        -: 1815:  struct winsize win;
+        -: 1816:
+    #####: 1817:  if (get_win_size (STDIN_FILENO, &win))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -: 1818:    {
+    #####: 1819:      if (errno != EINVAL)
+branch  0 never executed
+branch  1 never executed
+    #####: 1820:        error (EXIT_FAILURE, errno, "%s", quotef (device_name));
+call    0 never executed
+call    1 never executed
+    #####: 1821:      if (!fancy)
+branch  0 never executed
+branch  1 never executed
+    #####: 1822:        error (EXIT_FAILURE, 0,
+call    0 never executed
+call    1 never executed
+        -: 1823:               _("%s: no size information for this device"),
+        -: 1824:               quotef (device_name));
+        -: 1825:    }
+        -: 1826:  else
+        -: 1827:    {
+    #####: 1828:      wrapf (fancy ? "rows %d; columns %d;" : "%d %d\n",
+call    0 never executed
+    #####: 1829:             win.ws_row, win.ws_col);
+branch  0 never executed
+branch  1 never executed
+    #####: 1830:      if (!fancy)
+branch  0 never executed
+branch  1 never executed
+    #####: 1831:        current_col = 0;
+        -: 1832:    }
+    #####: 1833:}
+        -: 1834:#endif
+        -: 1835:
+        -: 1836:static int
+function screen_columns called 2 returned 100% blocks executed 71%
+        2: 1837:screen_columns (void)
+        -: 1838:{
+        -: 1839:#ifdef TIOCGWINSZ
+        -: 1840:  struct winsize win;
+        -: 1841:
+        -: 1842:  /* With Solaris 2.[123], this ioctl fails and errno is set to
+        -: 1843:     EINVAL for telnet (but not rlogin) sessions.
+        -: 1844:     On ISC 3.0, it fails for the console and the serial port
+        -: 1845:     (but it works for ptys).
+        -: 1846:     It can also fail on any system when stdout isn't a tty.
+        -: 1847:     In case of any failure, just use the default.  */
+        2: 1848:  if (get_win_size (STDOUT_FILENO, &win) == 0 && 0 < win.ws_col)
+call    0 returned 100%
+branch  1 taken 50% (fallthrough)
+branch  2 taken 50%
+branch  3 taken 100% (fallthrough)
+branch  4 taken 0%
+        1: 1849:    return win.ws_col;
+        -: 1850:#endif
+        -: 1851:  {
+        -: 1852:    /* Use $COLUMNS if it's in [1..INT_MAX].  */
+        1: 1853:    char *col_string = getenv ("COLUMNS");
+call    0 returned 100%
+        -: 1854:    long int n_columns;
+       1*: 1855:    if (!(col_string != nullptr
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1856:          && xstrtol (col_string, nullptr, 0, &n_columns, "") == LONGINT_OK
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 1857:          && 0 < n_columns
+branch  0 never executed
+branch  1 never executed
+    #####: 1858:          && n_columns <= INT_MAX))
+branch  0 never executed
+branch  1 never executed
+        1: 1859:      n_columns = 80;
+        1: 1860:    return n_columns;
+        -: 1861:  }
+        -: 1862:}
+        -: 1863:
+        -: 1864:ATTRIBUTE_PURE
+        -: 1865:static tcflag_t *
+function mode_type_flag called 132 returned 100% blocks executed 75%
+      132: 1866:mode_type_flag (enum mode_type type, struct termios *mode)
+        -: 1867:{
+      132: 1868:  switch (type)
+branch  0 taken 18%
+branch  1 taken 23%
+branch  2 taken 36%
+branch  3 taken 23%
+branch  4 taken 0%
+branch  5 taken 0%
+        -: 1869:    {
+       24: 1870:    case control:
+       24: 1871:      return &mode->c_cflag;
+        -: 1872:
+       30: 1873:    case input:
+       30: 1874:      return &mode->c_iflag;
+        -: 1875:
+       48: 1876:    case output:
+       48: 1877:      return &mode->c_oflag;
+        -: 1878:
+       30: 1879:    case local:
+       30: 1880:      return &mode->c_lflag;
+        -: 1881:
+    #####: 1882:    case combination:
+    #####: 1883:      return nullptr;
+        -: 1884:
+    #####: 1885:    default:
+    #####: 1886:      unreachable ();
+call    0 never executed
+        -: 1887:    }
+        -: 1888:}
+        -: 1889:
+        -: 1890:static void
+function display_settings called 2 returned 100% blocks executed 50%
+        2: 1891:display_settings (enum output_type output_type, struct termios *mode,
+        -: 1892:                  char const *device_name)
+        -: 1893:{
+        2: 1894:  switch (output_type)
+branch  0 taken 100%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+        -: 1895:    {
+        2: 1896:    case changed:
+        2: 1897:      display_changed (mode);
+call    0 returned 100%
+        2: 1898:      break;
+        -: 1899:
+    #####: 1900:    case all:
+    #####: 1901:      display_all (mode, device_name);
+call    0 never executed
+    #####: 1902:      break;
+        -: 1903:
+    #####: 1904:    case recoverable:
+    #####: 1905:      display_recoverable (mode);
+call    0 never executed
+    #####: 1906:      break;
+        -: 1907:    }
+        2: 1908:}
+        -: 1909:
+        -: 1910:static void
+function display_changed called 2 returned 100% blocks executed 92%
+        2: 1911:display_changed (struct termios *mode)
+        -: 1912:{
+        -: 1913:  int i;
+        -: 1914:  bool empty_line;
+        -: 1915:  tcflag_t *bitsp;
+        -: 1916:  unsigned long mask;
+        2: 1917:  enum mode_type prev_type = control;
+        -: 1918:
+        2: 1919:  display_speed (mode, true);
+call    0 returned 100%
+        -: 1920:#ifdef HAVE_C_LINE
+        2: 1921:  wrapf ("line = %d;", mode->c_line);
+call    0 returned 100%
+        -: 1922:#endif
+        2: 1923:  putchar ('\n');
+call    0 returned 100%
+        2: 1924:  current_col = 0;
+        -: 1925:
+        2: 1926:  empty_line = true;
+       34: 1927:  for (i = 0; !STREQ (control_info[i].name, "min"); ++i)
+branch  0 taken 94%
+branch  1 taken 6% (fallthrough)
+        -: 1928:    {
+       32: 1929:      if (mode->c_cc[control_info[i].offset] == control_info[i].saneval)
+branch  0 taken 81% (fallthrough)
+branch  1 taken 19%
+       26: 1930:        continue;
+        -: 1931:
+        -: 1932:#ifdef VFLUSHO
+        -: 1933:      /* 'flush' is the deprecated equivalent of 'discard'.  */
+       6*: 1934:      if (STREQ (control_info[i].name, "flush"))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 1935:        continue;
+        -: 1936:#endif
+        -: 1937:      /* If swtch is the same as susp, don't print both.  */
+        -: 1938:#if VSWTCH == VSUSP
+        -: 1939:      if (STREQ (control_info[i].name, "swtch"))
+        -: 1940:        continue;
+        -: 1941:#endif
+        -: 1942:      /* If eof uses the same slot as min, only print whichever applies.  */
+        -: 1943:#if VEOF == VMIN
+        -: 1944:      if ((mode->c_lflag & ICANON) == 0
+        -: 1945:          && (STREQ (control_info[i].name, "eof")
+        -: 1946:              || STREQ (control_info[i].name, "eol")))
+        -: 1947:        continue;
+        -: 1948:#endif
+        -: 1949:
+        6: 1950:      empty_line = false;
+        6: 1951:      wrapf ("%s = %s;", control_info[i].name,
+call    0 returned 100%
+        6: 1952:             visible (mode->c_cc[control_info[i].offset]));
+call    0 returned 100%
+        -: 1953:    }
+        2: 1954:  if ((mode->c_lflag & ICANON) == 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -: 1955:    {
+        2: 1956:      wrapf ("min = %lu; time = %lu;\n",
+        2: 1957:             (unsigned long int) mode->c_cc[VMIN],
+        2: 1958:             (unsigned long int) mode->c_cc[VTIME]);
+call    0 returned 100%
+        -: 1959:    }
+    #####: 1960:  else if (!empty_line)
+branch  0 never executed
+branch  1 never executed
+    #####: 1961:    putchar ('\n');
+call    0 never executed
+        2: 1962:  current_col = 0;
+        -: 1963:
+        2: 1964:  empty_line = true;
+      180: 1965:  for (i = 0; mode_info[i].name != nullptr; ++i)
+branch  0 taken 99%
+branch  1 taken 1% (fallthrough)
+        -: 1966:    {
+      178: 1967:      if (mode_info[i].flags & OMIT)
+branch  0 taken 26% (fallthrough)
+branch  1 taken 74%
+       46: 1968:        continue;
+      132: 1969:      if (mode_info[i].type != prev_type)
+branch  0 taken 5% (fallthrough)
+branch  1 taken 95%
+        -: 1970:        {
+        6: 1971:          if (!empty_line)
+branch  0 taken 67% (fallthrough)
+branch  1 taken 33%
+        -: 1972:            {
+        4: 1973:              putchar ('\n');
+call    0 returned 100%
+        4: 1974:              current_col = 0;
+        4: 1975:              empty_line = true;
+        -: 1976:            }
+        6: 1977:          prev_type = mode_info[i].type;
+        -: 1978:        }
+        -: 1979:
+      132: 1980:      bitsp = mode_type_flag (mode_info[i].type, mode);
+      132: 1981:      mask = mode_info[i].mask ? mode_info[i].mask : mode_info[i].bits;
+branch  0 taken 30% (fallthrough)
+branch  1 taken 70%
+      132: 1982:      if ((*bitsp & mask) == mode_info[i].bits)
+branch  0 taken 17% (fallthrough)
+branch  1 taken 83%
+        -: 1983:        {
+       22: 1984:          if (mode_info[i].flags & SANE_UNSET)
+branch  0 taken 9% (fallthrough)
+branch  1 taken 91%
+        -: 1985:            {
+        2: 1986:              wrapf ("%s", mode_info[i].name);
+call    0 returned 100%
+        2: 1987:              empty_line = false;
+        -: 1988:            }
+        -: 1989:        }
+      110: 1990:      else if ((mode_info[i].flags & (SANE_SET | REV)) == (SANE_SET | REV))
+branch  0 taken 22% (fallthrough)
+branch  1 taken 78%
+        -: 1991:        {
+       24: 1992:          wrapf ("-%s", mode_info[i].name);
+call    0 returned 100%
+       24: 1993:          empty_line = false;
+        -: 1994:        }
+        -: 1995:    }
+        2: 1996:  if (!empty_line)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        2: 1997:    putchar ('\n');
+call    0 returned 100%
+        2: 1998:  current_col = 0;
+        2: 1999:}
+        -: 2000:
+        -: 2001:static void
+function display_all called 0 returned 0% blocks executed 0%
+    #####: 2002:display_all (struct termios *mode, char const *device_name)
+        -: 2003:{
+        -: 2004:  int i;
+        -: 2005:  tcflag_t *bitsp;
+        -: 2006:  unsigned long mask;
+    #####: 2007:  enum mode_type prev_type = control;
+        -: 2008:
+    #####: 2009:  display_speed (mode, true);
+call    0 never executed
+        -: 2010:#ifdef TIOCGWINSZ
+    #####: 2011:  display_window_size (true, device_name);
+call    0 never executed
+        -: 2012:#endif
+        -: 2013:#ifdef HAVE_C_LINE
+    #####: 2014:  wrapf ("line = %d;", mode->c_line);
+call    0 never executed
+        -: 2015:#endif
+    #####: 2016:  putchar ('\n');
+call    0 never executed
+    #####: 2017:  current_col = 0;
+        -: 2018:
+    #####: 2019:  for (i = 0; ! STREQ (control_info[i].name, "min"); ++i)
+branch  0 never executed
+branch  1 never executed
+        -: 2020:    {
+        -: 2021:#ifdef VFLUSHO
+        -: 2022:      /* 'flush' is the deprecated equivalent of 'discard'.  */
+    #####: 2023:      if (STREQ (control_info[i].name, "flush"))
+branch  0 never executed
+branch  1 never executed
+    #####: 2024:        continue;
+        -: 2025:#endif
+        -: 2026:      /* If swtch is the same as susp, don't print both.  */
+        -: 2027:#if VSWTCH == VSUSP
+        -: 2028:      if (STREQ (control_info[i].name, "swtch"))
+        -: 2029:        continue;
+        -: 2030:#endif
+        -: 2031:      /* If eof uses the same slot as min, only print whichever applies.  */
+        -: 2032:#if VEOF == VMIN
+        -: 2033:      if ((mode->c_lflag & ICANON) == 0
+        -: 2034:          && (STREQ (control_info[i].name, "eof")
+        -: 2035:              || STREQ (control_info[i].name, "eol")))
+        -: 2036:        continue;
+        -: 2037:#endif
+    #####: 2038:      wrapf ("%s = %s;", control_info[i].name,
+call    0 never executed
+    #####: 2039:             visible (mode->c_cc[control_info[i].offset]));
+call    0 never executed
+        -: 2040:    }
+        -: 2041:#if VEOF == VMIN
+        -: 2042:  if ((mode->c_lflag & ICANON) == 0)
+        -: 2043:#endif
+    #####: 2044:    wrapf ("min = %lu; time = %lu;",
+    #####: 2045:           (unsigned long int) mode->c_cc[VMIN],
+    #####: 2046:           (unsigned long int) mode->c_cc[VTIME]);
+call    0 never executed
+    #####: 2047:  if (current_col != 0)
+branch  0 never executed
+branch  1 never executed
+    #####: 2048:    putchar ('\n');
+call    0 never executed
+    #####: 2049:  current_col = 0;
+        -: 2050:
+    #####: 2051:  for (i = 0; mode_info[i].name != nullptr; ++i)
+branch  0 never executed
+branch  1 never executed
+        -: 2052:    {
+    #####: 2053:      if (mode_info[i].flags & OMIT)
+branch  0 never executed
+branch  1 never executed
+    #####: 2054:        continue;
+    #####: 2055:      if (mode_info[i].type != prev_type)
+branch  0 never executed
+branch  1 never executed
+        -: 2056:        {
+    #####: 2057:          putchar ('\n');
+call    0 never executed
+    #####: 2058:          current_col = 0;
+    #####: 2059:          prev_type = mode_info[i].type;
+        -: 2060:        }
+        -: 2061:
+    #####: 2062:      bitsp = mode_type_flag (mode_info[i].type, mode);
+    #####: 2063:      mask = mode_info[i].mask ? mode_info[i].mask : mode_info[i].bits;
+branch  0 never executed
+branch  1 never executed
+    #####: 2064:      if ((*bitsp & mask) == mode_info[i].bits)
+branch  0 never executed
+branch  1 never executed
+    #####: 2065:        wrapf ("%s", mode_info[i].name);
+call    0 never executed
+    #####: 2066:      else if (mode_info[i].flags & REV)
+branch  0 never executed
+branch  1 never executed
+    #####: 2067:        wrapf ("-%s", mode_info[i].name);
+call    0 never executed
+        -: 2068:    }
+    #####: 2069:  putchar ('\n');
+call    0 never executed
+    #####: 2070:  current_col = 0;
+    #####: 2071:}
+        -: 2072:
+        -: 2073:/* Verify requested asymmetric speeds are supported.
+        -: 2074:   Note we don't flag the case where only ispeed or
+        -: 2075:   ospeed is set, when that would set both.  */
+        -: 2076:
+        -: 2077:static void
+function check_speed called 0 returned 0% blocks executed 0%
+    #####: 2078:check_speed (struct termios *mode)
+        -: 2079:{
+    #####: 2080:  if (last_ibaud != -1 && last_obaud != -1)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -: 2081:    {
+    #####: 2082:      if (cfgetispeed (mode) != last_ibaud
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 2083:          || cfgetospeed (mode) != last_obaud)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 2084:        error (EXIT_FAILURE, 0,
+call    0 never executed
+        -: 2085:               _("asymmetric input (%lu), output (%lu) speeds not supported"),
+        -: 2086:               baud_to_value (last_ibaud), baud_to_value (last_obaud));
+        -: 2087:    }
+    #####: 2088:}
+        -: 2089:
+        -: 2090:static void
+function display_speed called 2 returned 100% blocks executed 58%
+        2: 2091:display_speed (struct termios *mode, bool fancy)
+        -: 2092:{
+        2: 2093:  if (cfgetispeed (mode) == 0 || cfgetispeed (mode) == cfgetospeed (mode))
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+call    3 returned 100%
+call    4 returned 100%
+branch  5 taken 100% (fallthrough)
+branch  6 taken 0%
+       2*: 2094:    wrapf (fancy ? "speed %lu baud;" : "%lu\n",
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+call    3 returned 100%
+        -: 2095:           baud_to_value (cfgetospeed (mode)));
+        -: 2096:  else
+    #####: 2097:    wrapf (fancy ? "ispeed %lu baud; ospeed %lu baud;" : "%lu %lu\n",
+call    0 never executed
+call    1 never executed
+branch  2 never executed
+branch  3 never executed
+call    4 never executed
+        -: 2098:           baud_to_value (cfgetispeed (mode)),
+        -: 2099:           baud_to_value (cfgetospeed (mode)));
+        2: 2100:  if (!fancy)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 2101:    current_col = 0;
+        2: 2102:}
+        -: 2103:
+        -: 2104:static void
+function display_recoverable called 0 returned 0% blocks executed 0%
+    #####: 2105:display_recoverable (struct termios *mode)
+        -: 2106:{
+    #####: 2107:  printf ("%lx:%lx:%lx:%lx",
+    #####: 2108:          (unsigned long int) mode->c_iflag,
+    #####: 2109:          (unsigned long int) mode->c_oflag,
+    #####: 2110:          (unsigned long int) mode->c_cflag,
+    #####: 2111:          (unsigned long int) mode->c_lflag);
+call    0 never executed
+    #####: 2112:  for (size_t i = 0; i < NCCS; ++i)
+branch  0 never executed
+branch  1 never executed
+    #####: 2113:    printf (":%lx", (unsigned long int) mode->c_cc[i]);
+call    0 never executed
+    #####: 2114:  putchar ('\n');
+call    0 never executed
+    #####: 2115:}
+        -: 2116:
+        -: 2117:/* NOTE: identical to below, modulo use of tcflag_t */
+        -: 2118:static int
+function strtoul_tcflag_t called 3 returned 100% blocks executed 62%
+        3: 2119:strtoul_tcflag_t (char const *s, int base, char **p, tcflag_t *result,
+        -: 2120:                  char delim)
+        -: 2121:{
+        -: 2122:  unsigned long ul;
+        3: 2123:  errno = 0;
+        3: 2124:  ul = strtoul (s, p, base);
+call    0 returned 100%
+       3*: 2125:  if (errno || **p != delim || *p == s || (tcflag_t) ul != ul)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+        3: 2126:    return -1;
+    #####: 2127:  *result = ul;
+    #####: 2128:  return 0;
+        -: 2129:}
+        -: 2130:
+        -: 2131:/* NOTE: identical to above, modulo use of cc_t */
+        -: 2132:static int
+function strtoul_cc_t called 0 returned 0% blocks executed 0%
+    #####: 2133:strtoul_cc_t (char const *s, int base, char **p, cc_t *result, char delim)
+        -: 2134:{
+        -: 2135:  unsigned long ul;
+    #####: 2136:  errno = 0;
+    #####: 2137:  ul = strtoul (s, p, base);
+call    0 never executed
+    #####: 2138:  if (errno || **p != delim || *p == s || (cc_t) ul != ul)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+branch  7 never executed
+    #####: 2139:    return -1;
+    #####: 2140:  *result = ul;
+    #####: 2141:  return 0;
+        -: 2142:}
+        -: 2143:
+        -: 2144:/* Parse the output of display_recoverable.
+        -: 2145:   Return false if any part of it is invalid.  */
+        -: 2146:static bool
+function recover_mode called 3 returned 100% blocks executed 39%
+        3: 2147:recover_mode (char const *arg, struct termios *mode)
+        -: 2148:{
+        -: 2149:  tcflag_t flag[4];
+        3: 2150:  char const *s = arg;
+        -: 2151:  size_t i;
+       3*: 2152:  for (i = 0; i < 4; i++)
+branch  0 taken 100%
+branch  1 taken 0% (fallthrough)
+        -: 2153:    {
+        -: 2154:      char *p;
+        3: 2155:      if (strtoul_tcflag_t (s, 16, &p, flag + i, ':') != 0)
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+        3: 2156:        return false;
+    #####: 2157:      s = p + 1;
+        -: 2158:    }
+    #####: 2159:  mode->c_iflag = flag[0];
+    #####: 2160:  mode->c_oflag = flag[1];
+    #####: 2161:  mode->c_cflag = flag[2];
+    #####: 2162:  mode->c_lflag = flag[3];
+        -: 2163:
+    #####: 2164:  for (i = 0; i < NCCS; ++i)
+branch  0 never executed
+branch  1 never executed
+        -: 2165:    {
+        -: 2166:      char *p;
+    #####: 2167:      char delim = i < NCCS - 1 ? ':' : '\0';
+branch  0 never executed
+branch  1 never executed
+    #####: 2168:      if (strtoul_cc_t (s, 16, &p, mode->c_cc + i, delim) != 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####: 2169:        return false;
+    #####: 2170:      s = p + 1;
+        -: 2171:    }
+        -: 2172:
+    #####: 2173:  return true;
+        -: 2174:}
+        -: 2175:
+        -: 2176:struct speed_map
+        -: 2177:{
+        -: 2178:  char const *string;		/* ASCII representation. */
+        -: 2179:  speed_t speed;		/* Internal form. */
+        -: 2180:  unsigned long int value;	/* Numeric value. */
+        -: 2181:};
+        -: 2182:
+        -: 2183:static struct speed_map const speeds[] =
+        -: 2184:{
+        -: 2185:  {"0", B0, 0},
+        -: 2186:  {"50", B50, 50},
+        -: 2187:  {"75", B75, 75},
+        -: 2188:  {"110", B110, 110},
+        -: 2189:  {"134", B134, 134},
+        -: 2190:  {"134.5", B134, 134},
+        -: 2191:  {"150", B150, 150},
+        -: 2192:  {"200", B200, 200},
+        -: 2193:  {"300", B300, 300},
+        -: 2194:  {"600", B600, 600},
+        -: 2195:  {"1200", B1200, 1200},
+        -: 2196:  {"1800", B1800, 1800},
+        -: 2197:  {"2400", B2400, 2400},
+        -: 2198:  {"4800", B4800, 4800},
+        -: 2199:  {"9600", B9600, 9600},
+        -: 2200:  {"19200", B19200, 19200},
+        -: 2201:  {"38400", B38400, 38400},
+        -: 2202:  {"exta", B19200, 19200},
+        -: 2203:  {"extb", B38400, 38400},
+        -: 2204:#ifdef B57600
+        -: 2205:  {"57600", B57600, 57600},
+        -: 2206:#endif
+        -: 2207:#ifdef B115200
+        -: 2208:  {"115200", B115200, 115200},
+        -: 2209:#endif
+        -: 2210:#ifdef B230400
+        -: 2211:  {"230400", B230400, 230400},
+        -: 2212:#endif
+        -: 2213:#ifdef B460800
+        -: 2214:  {"460800", B460800, 460800},
+        -: 2215:#endif
+        -: 2216:#ifdef B500000
+        -: 2217:  {"500000", B500000, 500000},
+        -: 2218:#endif
+        -: 2219:#ifdef B576000
+        -: 2220:  {"576000", B576000, 576000},
+        -: 2221:#endif
+        -: 2222:#ifdef B921600
+        -: 2223:  {"921600", B921600, 921600},
+        -: 2224:#endif
+        -: 2225:#ifdef B1000000
+        -: 2226:  {"1000000", B1000000, 1000000},
+        -: 2227:#endif
+        -: 2228:#ifdef B1152000
+        -: 2229:  {"1152000", B1152000, 1152000},
+        -: 2230:#endif
+        -: 2231:#ifdef B1500000
+        -: 2232:  {"1500000", B1500000, 1500000},
+        -: 2233:#endif
+        -: 2234:#ifdef B2000000
+        -: 2235:  {"2000000", B2000000, 2000000},
+        -: 2236:#endif
+        -: 2237:#ifdef B2500000
+        -: 2238:  {"2500000", B2500000, 2500000},
+        -: 2239:#endif
+        -: 2240:#ifdef B3000000
+        -: 2241:  {"3000000", B3000000, 3000000},
+        -: 2242:#endif
+        -: 2243:#ifdef B3500000
+        -: 2244:  {"3500000", B3500000, 3500000},
+        -: 2245:#endif
+        -: 2246:#ifdef B4000000
+        -: 2247:  {"4000000", B4000000, 4000000},
+        -: 2248:#endif
+        -: 2249:  {nullptr, 0, 0}
+        -: 2250:};
+        -: 2251:
+        -: 2252:ATTRIBUTE_PURE
+        -: 2253:static speed_t
+function string_to_baud called 3 returned 100% blocks executed 86%
+        3: 2254:string_to_baud (char const *arg)
+        -: 2255:{
+      105: 2256:  for (int i = 0; speeds[i].string != nullptr; ++i)
+branch  0 taken 97%
+branch  1 taken 3% (fallthrough)
+      102: 2257:    if (STREQ (arg, speeds[i].string))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 2258:      return speeds[i].speed;
+        3: 2259:  return (speed_t) -1;
+        -: 2260:}
+        -: 2261:
+        -: 2262:ATTRIBUTE_PURE
+        -: 2263:static unsigned long int
+function baud_to_value called 2 returned 100% blocks executed 86%
+        2: 2264:baud_to_value (speed_t speed)
+        -: 2265:{
+       34: 2266:  for (int i = 0; speeds[i].string != nullptr; ++i)
+branch  0 taken 100%
+branch  1 taken 0% (fallthrough)
+       34: 2267:    if (speed == speeds[i].speed)
+branch  0 taken 6% (fallthrough)
+branch  1 taken 94%
+        2: 2268:      return speeds[i].value;
+    #####: 2269:  return 0;
+        -: 2270:}
+        -: 2271:
+        -: 2272:static void
+function sane_mode called 0 returned 0% blocks executed 0%
+    #####: 2273:sane_mode (struct termios *mode)
+        -: 2274:{
+        -: 2275:  int i;
+        -: 2276:  tcflag_t *bitsp;
+        -: 2277:
+    #####: 2278:  for (i = 0; control_info[i].name; ++i)
+branch  0 never executed
+branch  1 never executed
+        -: 2279:    {
+        -: 2280:#if VMIN == VEOF
+        -: 2281:      if (STREQ (control_info[i].name, "min"))
+        -: 2282:        break;
+        -: 2283:#endif
+    #####: 2284:      mode->c_cc[control_info[i].offset] = control_info[i].saneval;
+        -: 2285:    }
+        -: 2286:
+    #####: 2287:  for (i = 0; mode_info[i].name != nullptr; ++i)
+branch  0 never executed
+branch  1 never executed
+        -: 2288:    {
+    #####: 2289:      if (mode_info[i].flags & NO_SETATTR)
+branch  0 never executed
+branch  1 never executed
+    #####: 2290:        continue;
+        -: 2291:
+    #####: 2292:      if (mode_info[i].flags & SANE_SET)
+branch  0 never executed
+branch  1 never executed
+        -: 2293:        {
+    #####: 2294:          bitsp = mode_type_flag (mode_info[i].type, mode);
+    #####: 2295:          assume (bitsp); /* combination modes will not have SANE_SET.  */
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####: 2296:          *bitsp = (*bitsp & ~mode_info[i].mask) | mode_info[i].bits;
+        -: 2297:        }
+    #####: 2298:      else if (mode_info[i].flags & SANE_UNSET)
+branch  0 never executed
+branch  1 never executed
+        -: 2299:        {
+    #####: 2300:          bitsp = mode_type_flag (mode_info[i].type, mode);
+    #####: 2301:          assume (bitsp); /* combination modes will not have SANE_UNSET.  */
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####: 2302:          *bitsp = *bitsp & ~mode_info[i].mask & ~mode_info[i].bits;
+        -: 2303:        }
+        -: 2304:    }
+    #####: 2305:}
+        -: 2306:
+        -: 2307:/* Return a string that is the printable representation of character CH.  */
+        -: 2308:/* Adapted from 'cat' by Torbjörn Granlund.  */
+        -: 2309:
+        -: 2310:static char const *
+function visible called 6 returned 100% blocks executed 60%
+        6: 2311:visible (cc_t ch)
+        -: 2312:{
+        -: 2313:  static char buf[10];
+        6: 2314:  char *bpout = buf;
+        -: 2315:
+        6: 2316:  if (ch == _POSIX_VDISABLE)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 2317:    return "<undef>";
+        -: 2318:
+        6: 2319:  if (ch >= 32)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -: 2320:    {
+        6: 2321:      if (ch < 127)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 2322:        *bpout++ = ch;
+        6: 2323:      else if (ch == 127)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -: 2324:        {
+    #####: 2325:          *bpout++ = '^';
+    #####: 2326:          *bpout++ = '?';
+        -: 2327:        }
+        -: 2328:      else
+        -: 2329:        {
+        6: 2330:          *bpout++ = 'M';
+        6: 2331:          *bpout++ = '-';
+        6: 2332:          if (ch >= 128 + 32)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -: 2333:            {
+        6: 2334:              if (ch < 128 + 127)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####: 2335:                *bpout++ = ch - 128;
+        -: 2336:              else
+        -: 2337:                {
+        6: 2338:                  *bpout++ = '^';
+        6: 2339:                  *bpout++ = '?';
+        -: 2340:                }
+        -: 2341:            }
+        -: 2342:          else
+        -: 2343:            {
+    #####: 2344:              *bpout++ = '^';
+    #####: 2345:              *bpout++ = ch - 128 + 64;
+        -: 2346:            }
+        -: 2347:        }
+        -: 2348:    }
+        -: 2349:  else
+        -: 2350:    {
+    #####: 2351:      *bpout++ = '^';
+    #####: 2352:      *bpout++ = ch + 64;
+        -: 2353:    }
+        6: 2354:  *bpout = '\0';
+        6: 2355:  return (char const *) buf;
+        -: 2356:}
+        -: 2357:
+        -: 2358:/* Parse string S as an integer, using decimal radix by default,
+        -: 2359:   but allowing octal and hex numbers as in C.  Reject values
+        -: 2360:   larger than MAXVAL.  */
+        -: 2361:
+        -: 2362:static unsigned long int
+function integer_arg called 0 returned 0% blocks executed 0%
+    #####: 2363:integer_arg (char const *s, unsigned long int maxval)
+        -: 2364:{
+    #####: 2365:  return xnumtoumax (s, 0, 0, maxval, "bB", _("invalid integer argument"), 0);
+call    0 never executed
+        -: 2366:}

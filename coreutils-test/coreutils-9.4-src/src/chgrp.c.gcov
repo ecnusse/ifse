@@ -1,0 +1,416 @@
+        -:    0:Source:src/chgrp.c
+        -:    0:Graph:chgrp.gcno
+        -:    0:Data:chgrp.gcda
+        -:    0:Runs:37
+        -:    1:/* chgrp -- change group ownership of files
+        -:    2:   Copyright (C) 1989-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by David MacKenzie <djm@gnu.ai.mit.edu>. */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <stdio.h>
+        -:   21:#include <sys/types.h>
+        -:   22:#include <grp.h>
+        -:   23:#include <getopt.h>
+        -:   24:
+        -:   25:#include "system.h"
+        -:   26:#include "chown-core.h"
+        -:   27:#include "fts_.h"
+        -:   28:#include "quote.h"
+        -:   29:#include "root-dev-ino.h"
+        -:   30:#include "xstrtol.h"
+        -:   31:
+        -:   32:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   33:#define PROGRAM_NAME "chgrp"
+        -:   34:
+        -:   35:#define AUTHORS \
+        -:   36:  proper_name ("David MacKenzie"), \
+        -:   37:  proper_name ("Jim Meyering")
+        -:   38:
+        -:   39:#if ! HAVE_ENDGRENT
+        -:   40:# define endgrent() ((void) 0)
+        -:   41:#endif
+        -:   42:
+        -:   43:/* The argument to the --reference option.  Use the group ID of this file.
+        -:   44:   This file must exist.  */
+        -:   45:static char *reference_file;
+        -:   46:
+        -:   47:/* For long options that have no equivalent short option, use a
+        -:   48:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:   49:enum
+        -:   50:{
+        -:   51:  DEREFERENCE_OPTION = CHAR_MAX + 1,
+        -:   52:  NO_PRESERVE_ROOT,
+        -:   53:  PRESERVE_ROOT,
+        -:   54:  REFERENCE_FILE_OPTION
+        -:   55:};
+        -:   56:
+        -:   57:static struct option const long_options[] =
+        -:   58:{
+        -:   59:  {"recursive", no_argument, nullptr, 'R'},
+        -:   60:  {"changes", no_argument, nullptr, 'c'},
+        -:   61:  {"dereference", no_argument, nullptr, DEREFERENCE_OPTION},
+        -:   62:  {"no-dereference", no_argument, nullptr, 'h'},
+        -:   63:  {"no-preserve-root", no_argument, nullptr, NO_PRESERVE_ROOT},
+        -:   64:  {"preserve-root", no_argument, nullptr, PRESERVE_ROOT},
+        -:   65:  {"quiet", no_argument, nullptr, 'f'},
+        -:   66:  {"silent", no_argument, nullptr, 'f'},
+        -:   67:  {"reference", required_argument, nullptr, REFERENCE_FILE_OPTION},
+        -:   68:  {"verbose", no_argument, nullptr, 'v'},
+        -:   69:  {GETOPT_HELP_OPTION_DECL},
+        -:   70:  {GETOPT_VERSION_OPTION_DECL},
+        -:   71:  {nullptr, 0, nullptr, 0}
+        -:   72:};
+        -:   73:
+        -:   74:/* Return the group ID of NAME, or -1 if no name was specified.  */
+        -:   75:
+        -:   76:static gid_t
+function parse_group called 16 returned 31% blocks executed 81%
+       16:   77:parse_group (char const *name)
+        -:   78:{
+       16:   79:  gid_t gid = -1;
+        -:   80:
+       16:   81:  if (*name)
+branch  0 taken 81% (fallthrough)
+branch  1 taken 19%
+        -:   82:    {
+       13:   83:      struct group *grp = getgrnam (name);
+call    0 returned 100%
+       13:   84:      if (grp)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:   85:        gid = grp->gr_gid;
+        -:   86:      else
+        -:   87:        {
+        -:   88:          uintmax_t tmp;
+       13:   89:          if (! (xstrtoumax (name, nullptr, 10, &tmp, "") == LONGINT_OK
+call    0 returned 100%
+branch  1 taken 15% (fallthrough)
+branch  2 taken 85%
+        2:   90:                 && tmp <= GID_T_MAX))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+      11*:   91:            error (EXIT_FAILURE, 0, _("invalid group: %s"),
+call    0 returned 100%
+call    1 never executed
+        -:   92:                   quote (name));
+        2:   93:          gid = tmp;
+        -:   94:        }
+        2:   95:      endgrent ();		/* Save a file descriptor. */
+call    0 returned 100%
+        -:   96:    }
+        -:   97:
+        5:   98:  return gid;
+        -:   99:}
+        -:  100:
+        -:  101:void
+function usage called 21 returned 0% blocks executed 19%
+       21:  102:usage (int status)
+        -:  103:{
+       21:  104:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       21:  105:    emit_try_help ();
+call    0 returned 100%
+        -:  106:  else
+        -:  107:    {
+    #####:  108:      printf (_("\
+call    0 never executed
+        -:  109:Usage: %s [OPTION]... GROUP FILE...\n\
+        -:  110:  or:  %s [OPTION]... --reference=RFILE FILE...\n\
+        -:  111:"),
+        -:  112:              program_name, program_name);
+    #####:  113:      fputs (_("\
+call    0 never executed
+        -:  114:Change the group of each FILE to GROUP.\n\
+        -:  115:With --reference, change the group of each FILE to that of RFILE.\n\
+        -:  116:\n\
+        -:  117:"), stdout);
+    #####:  118:      fputs (_("\
+call    0 never executed
+        -:  119:  -c, --changes          like verbose but report only when a change is made\n\
+        -:  120:  -f, --silent, --quiet  suppress most error messages\n\
+        -:  121:  -v, --verbose          output a diagnostic for every file processed\n\
+        -:  122:"), stdout);
+    #####:  123:      fputs (_("\
+call    0 never executed
+        -:  124:      --dereference      affect the referent of each symbolic link (this is\n\
+        -:  125:                         the default), rather than the symbolic link itself\n\
+        -:  126:  -h, --no-dereference   affect symbolic links instead of any referenced file\n\
+        -:  127:"), stdout);
+    #####:  128:      fputs (_("\
+call    0 never executed
+        -:  129:                         (useful only on systems that can change the\n\
+        -:  130:                         ownership of a symlink)\n\
+        -:  131:"), stdout);
+    #####:  132:      fputs (_("\
+call    0 never executed
+        -:  133:      --no-preserve-root  do not treat '/' specially (the default)\n\
+        -:  134:      --preserve-root    fail to operate recursively on '/'\n\
+        -:  135:"), stdout);
+    #####:  136:      fputs (_("\
+call    0 never executed
+        -:  137:      --reference=RFILE  use RFILE's group rather than specifying a GROUP.\n\
+        -:  138:                         RFILE is always dereferenced if a symbolic link.\n\
+        -:  139:"), stdout);
+    #####:  140:      fputs (_("\
+call    0 never executed
+        -:  141:  -R, --recursive        operate on files and directories recursively\n\
+        -:  142:"), stdout);
+    #####:  143:      fputs (_("\
+call    0 never executed
+        -:  144:\n\
+        -:  145:The following options modify how a hierarchy is traversed when the -R\n\
+        -:  146:option is also specified.  If more than one is specified, only the final\n\
+        -:  147:one takes effect.\n\
+        -:  148:\n\
+        -:  149:  -H                     if a command line argument is a symbolic link\n\
+        -:  150:                         to a directory, traverse it\n\
+        -:  151:  -L                     traverse every symbolic link to a directory\n\
+        -:  152:                         encountered\n\
+        -:  153:  -P                     do not traverse any symbolic links (default)\n\
+        -:  154:\n\
+        -:  155:"), stdout);
+    #####:  156:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  157:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  158:      printf (_("\
+call    0 never executed
+        -:  159:\n\
+        -:  160:Examples:\n\
+        -:  161:  %s staff /u      Change the group of /u to \"staff\".\n\
+        -:  162:  %s -hR staff /u  Change the group of /u and subfiles to \"staff\".\n\
+        -:  163:"),
+        -:  164:              program_name, program_name);
+    #####:  165:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  166:    }
+       21:  167:  exit (status);
+        -:  168:}
+        -:  169:
+        -:  170:int
+function main called 37 returned 14% blocks executed 45%
+       37:  171:main (int argc, char **argv)
+        -:  172:{
+       37:  173:  bool preserve_root = false;
+        -:  174:  gid_t gid;
+        -:  175:
+        -:  176:  /* Bit flags that control how fts works.  */
+       37:  177:  int bit_flags = FTS_PHYSICAL;
+        -:  178:
+        -:  179:  /* 1 if --dereference, 0 if --no-dereference, -1 if neither has been
+        -:  180:     specified.  */
+       37:  181:  int dereference = -1;
+        -:  182:
+        -:  183:  struct Chown_option chopt;
+        -:  184:  bool ok;
+        -:  185:  int optc;
+        -:  186:
+        -:  187:  initialize_main (&argc, &argv);
+       37:  188:  set_program_name (argv[0]);
+call    0 returned 100%
+       37:  189:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  190:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  191:  textdomain (PACKAGE);
+        -:  192:
+       37:  193:  atexit (close_stdout);
+call    0 returned 100%
+        -:  194:
+       37:  195:  chopt_init (&chopt);
+call    0 returned 100%
+        -:  196:
+       37:  197:  while ((optc = getopt_long (argc, argv, "HLPRcfhv", long_options, nullptr))
+call    0 returned 100%
+       37:  198:         != -1)
+branch  0 taken 3%
+branch  1 taken 97% (fallthrough)
+        -:  199:    {
+        1:  200:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 0%
+branch 13 taken 0%
+branch 14 taken 100%
+        -:  201:        {
+    #####:  202:        case 'H': /* Traverse command-line symlinks-to-directories.  */
+    #####:  203:          bit_flags = FTS_COMFOLLOW | FTS_PHYSICAL;
+    #####:  204:          break;
+        -:  205:
+    #####:  206:        case 'L': /* Traverse all symlinks-to-directories.  */
+    #####:  207:          bit_flags = FTS_LOGICAL;
+    #####:  208:          break;
+        -:  209:
+    #####:  210:        case 'P': /* Traverse no symlinks-to-directories.  */
+    #####:  211:          bit_flags = FTS_PHYSICAL;
+    #####:  212:          break;
+        -:  213:
+    #####:  214:        case 'h': /* --no-dereference: affect symlinks */
+    #####:  215:          dereference = 0;
+    #####:  216:          break;
+        -:  217:
+    #####:  218:        case DEREFERENCE_OPTION: /* --dereference: affect the referent
+        -:  219:                                    of each symlink */
+    #####:  220:          dereference = 1;
+    #####:  221:          break;
+        -:  222:
+    #####:  223:        case NO_PRESERVE_ROOT:
+    #####:  224:          preserve_root = false;
+    #####:  225:          break;
+        -:  226:
+    #####:  227:        case PRESERVE_ROOT:
+    #####:  228:          preserve_root = true;
+    #####:  229:          break;
+        -:  230:
+    #####:  231:        case REFERENCE_FILE_OPTION:
+    #####:  232:          reference_file = optarg;
+    #####:  233:          break;
+        -:  234:
+    #####:  235:        case 'R':
+    #####:  236:          chopt.recurse = true;
+    #####:  237:          break;
+        -:  238:
+    #####:  239:        case 'c':
+    #####:  240:          chopt.verbosity = V_changes_only;
+    #####:  241:          break;
+        -:  242:
+    #####:  243:        case 'f':
+    #####:  244:          chopt.force_silent = true;
+    #####:  245:          break;
+        -:  246:
+    #####:  247:        case 'v':
+    #####:  248:          chopt.verbosity = V_high;
+    #####:  249:          break;
+        -:  250:
+    #####:  251:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  252:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+        1:  253:        default:
+        1:  254:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  255:        }
+        -:  256:    }
+        -:  257:
+       36:  258:  if (chopt.recurse)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  259:    {
+    #####:  260:      if (bit_flags == FTS_PHYSICAL)
+branch  0 never executed
+branch  1 never executed
+        -:  261:        {
+    #####:  262:          if (dereference == 1)
+branch  0 never executed
+branch  1 never executed
+    #####:  263:            error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  264:                   _("-R --dereference requires either -H or -L"));
+    #####:  265:          dereference = 0;
+        -:  266:        }
+        -:  267:    }
+        -:  268:  else
+        -:  269:    {
+       36:  270:      bit_flags = FTS_PHYSICAL;
+        -:  271:    }
+       36:  272:  chopt.affect_symlink_referent = (dereference != 0);
+        -:  273:
+      36*:  274:  if (argc - optind < (reference_file ? 1 : 2))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 taken 56% (fallthrough)
+branch  3 taken 44%
+        -:  275:    {
+       20:  276:      if (argc <= optind)
+branch  0 taken 5% (fallthrough)
+branch  1 taken 95%
+        -:  277:        error (0, 0, _("missing operand"));
+        -:  278:      else
+       19:  279:        error (0, 0, _("missing operand after %s"), quote (argv[argc - 1]));
+call    0 returned 100%
+       20:  280:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  281:    }
+        -:  282:
+       16:  283:  if (reference_file)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  284:    {
+        -:  285:      struct stat ref_stats;
+    #####:  286:      if (stat (reference_file, &ref_stats))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  287:        error (EXIT_FAILURE, errno, _("failed to get attributes of %s"),
+call    0 never executed
+call    1 never executed
+        -:  288:               quoteaf (reference_file));
+        -:  289:
+    #####:  290:      gid = ref_stats.st_gid;
+    #####:  291:      chopt.group_name = gid_to_name (ref_stats.st_gid);
+call    0 never executed
+        -:  292:    }
+        -:  293:  else
+        -:  294:    {
+       16:  295:      char *group_name = argv[optind++];
+       16:  296:      chopt.group_name = (*group_name ? xstrdup (group_name) : nullptr);
+branch  0 taken 81% (fallthrough)
+branch  1 taken 19%
+call    2 returned 100%
+       16:  297:      gid = parse_group (group_name);
+call    0 returned 31%
+        -:  298:    }
+        -:  299:
+       5*:  300:  if (chopt.recurse && preserve_root)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  301:    {
+        -:  302:      static struct dev_ino dev_ino_buf;
+    #####:  303:      chopt.root_dev_ino = get_root_dev_ino (&dev_ino_buf);
+call    0 never executed
+    #####:  304:      if (chopt.root_dev_ino == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  305:        error (EXIT_FAILURE, errno, _("failed to get attributes of %s"),
+call    0 never executed
+call    1 never executed
+        -:  306:               quoteaf ("/"));
+        -:  307:    }
+        -:  308:
+        5:  309:  bit_flags |= FTS_DEFER_STAT;
+        5:  310:  ok = chown_files (argv + optind, bit_flags,
+call    0 returned 100%
+        -:  311:                    (uid_t) -1, gid,
+        -:  312:                    (uid_t) -1, (gid_t) -1, &chopt);
+        -:  313:
+        5:  314:  main_exit (ok ? EXIT_SUCCESS : EXIT_FAILURE);
+        -:  315:}

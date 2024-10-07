@@ -7,7 +7,7 @@ FROM ghcr.io/klee/z3:4.8.15_ubuntu_jammy-20230126 as z3_base
 FROM ghcr.io/klee/libcxx:130_ubuntu_jammy-20230126 as libcxx_base
 FROM ghcr.io/klee/sqlite:3400100_ubuntu_jammy-20230126 as sqlite3_base
 
-FROM llvm_base as recolossus_base
+FROM llvm_base as ifse_base
 COPY --from=gtest_base /tmp /tmp/
 COPY --from=uclibc_base /tmp /tmp/
 COPY --from=tcmalloc_base /tmp /tmp/
@@ -57,7 +57,7 @@ ENV PATH="$PATH:/tmp/llvm-130-install_O_D_A/bin/"
 USER user
 WORKDIR /home/user
 
-FROM recolossus_base as development
+FROM ifse_base as development
 
 RUN sudo ln -s "/tmp/"
 
@@ -70,10 +70,10 @@ RUN sudo pip install lit
 RUN echo "root:user" | sudo chpasswd
 RUN sudo sed -r -i 's/#?\s*PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 
-RUN mkdir -p /home/user/recolossus
+RUN mkdir -p /home/user/ifse
 RUN sudo chsh root -s /bin/bash
-RUN sudo ln -s /home/user/recolossus /root/recolossus
-WORKDIR /home/user/recolossus
+RUN sudo ln -s /home/user/ifse /root/ifse
+WORKDIR /home/user/ifse
 
 USER root
 RUN curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf > /tmp/rustup-init.sh

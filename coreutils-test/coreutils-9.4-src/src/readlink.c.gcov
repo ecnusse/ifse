@@ -1,0 +1,238 @@
+        -:    0:Source:src/readlink.c
+        -:    0:Graph:readlink.gcno
+        -:    0:Data:readlink.gcda
+        -:    0:Runs:5
+        -:    1:/* readlink -- display value of a symbolic link.
+        -:    2:   Copyright (C) 2002-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Dmitry V. Levin */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <stdio.h>
+        -:   21:#include <getopt.h>
+        -:   22:#include <sys/types.h>
+        -:   23:
+        -:   24:#include "system.h"
+        -:   25:#include "canonicalize.h"
+        -:   26:#include "areadlink.h"
+        -:   27:
+        -:   28:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   29:#define PROGRAM_NAME "readlink"
+        -:   30:
+        -:   31:#define AUTHORS proper_name ("Dmitry V. Levin")
+        -:   32:
+        -:   33:/* If true, do not output the trailing newline.  */
+        -:   34:static bool no_newline;
+        -:   35:
+        -:   36:/* If true, report error messages.  */
+        -:   37:static bool verbose;
+        -:   38:
+        -:   39:static struct option const longopts[] =
+        -:   40:{
+        -:   41:  {"canonicalize", no_argument, nullptr, 'f'},
+        -:   42:  {"canonicalize-existing", no_argument, nullptr, 'e'},
+        -:   43:  {"canonicalize-missing", no_argument, nullptr, 'm'},
+        -:   44:  {"no-newline", no_argument, nullptr, 'n'},
+        -:   45:  {"quiet", no_argument, nullptr, 'q'},
+        -:   46:  {"silent", no_argument, nullptr, 's'},
+        -:   47:  {"verbose", no_argument, nullptr, 'v'},
+        -:   48:  {"zero", no_argument, nullptr, 'z'},
+        -:   49:  {GETOPT_HELP_OPTION_DECL},
+        -:   50:  {GETOPT_VERSION_OPTION_DECL},
+        -:   51:  {nullptr, 0, nullptr, 0}
+        -:   52:};
+        -:   53:
+        -:   54:void
+function usage called 2 returned 0% blocks executed 30%
+        2:   55:usage (int status)
+        -:   56:{
+        2:   57:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        2:   58:    emit_try_help ();
+call    0 returned 100%
+        -:   59:  else
+        -:   60:    {
+    #####:   61:      printf (_("Usage: %s [OPTION]... FILE...\n"), program_name);
+call    0 never executed
+    #####:   62:      fputs (_("Print value of a symbolic link or canonical file name\n\n"),
+call    0 never executed
+        -:   63:             stdout);
+    #####:   64:      fputs (_("\
+call    0 never executed
+        -:   65:  -f, --canonicalize            canonicalize by following every symlink in\n\
+        -:   66:                                every component of the given name recursively;\
+        -:   67:\n\
+        -:   68:                                all but the last component must exist\n\
+        -:   69:  -e, --canonicalize-existing   canonicalize by following every symlink in\n\
+        -:   70:                                every component of the given name recursively,\
+        -:   71:\n\
+        -:   72:                                all components must exist\n\
+        -:   73:"), stdout);
+    #####:   74:      fputs (_("\
+call    0 never executed
+        -:   75:  -m, --canonicalize-missing    canonicalize by following every symlink in\n\
+        -:   76:                                every component of the given name recursively,\
+        -:   77:\n\
+        -:   78:                                without requirements on components existence\n\
+        -:   79:  -n, --no-newline              do not output the trailing delimiter\n\
+        -:   80:  -q, --quiet\n\
+        -:   81:  -s, --silent                  suppress most error messages (on by default)\n\
+        -:   82:  -v, --verbose                 report error messages\n\
+        -:   83:  -z, --zero                    end each output line with NUL, not newline\n\
+        -:   84:"), stdout);
+    #####:   85:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   86:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   87:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   88:    }
+        2:   89:  exit (status);
+        -:   90:}
+        -:   91:
+        -:   92:int
+function main called 5 returned 60% blocks executed 43%
+        5:   93:main (int argc, char **argv)
+        -:   94:{
+        -:   95:  /* If not -1, use this method to canonicalize.  */
+        5:   96:  int can_mode = -1;
+        5:   97:  int status = EXIT_SUCCESS;
+        -:   98:  int optc;
+        5:   99:  bool use_nuls = false;
+        -:  100:
+        -:  101:  initialize_main (&argc, &argv);
+        5:  102:  set_program_name (argv[0]);
+call    0 returned 100%
+        5:  103:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  104:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  105:  textdomain (PACKAGE);
+        -:  106:
+        5:  107:  atexit (close_stdout);
+call    0 returned 100%
+        -:  108:
+        5:  109:  while ((optc = getopt_long (argc, argv, "efmnqsvz", longopts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 20%
+branch  2 taken 80% (fallthrough)
+        -:  110:    {
+        1:  111:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 100%
+        -:  112:        {
+    #####:  113:        case 'e':
+    #####:  114:          can_mode = CAN_EXISTING;
+    #####:  115:          break;
+    #####:  116:        case 'f':
+    #####:  117:          can_mode = CAN_ALL_BUT_LAST;
+    #####:  118:          break;
+    #####:  119:        case 'm':
+    #####:  120:          can_mode = CAN_MISSING;
+    #####:  121:          break;
+    #####:  122:        case 'n':
+    #####:  123:          no_newline = true;
+    #####:  124:          break;
+    #####:  125:        case 'q':
+        -:  126:        case 's':
+    #####:  127:          verbose = false;
+    #####:  128:          break;
+    #####:  129:        case 'v':
+    #####:  130:          verbose = true;
+    #####:  131:          break;
+    #####:  132:        case 'z':
+    #####:  133:          use_nuls = true;
+    #####:  134:          break;
+    #####:  135:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  136:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        1:  137:        default:
+        1:  138:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  139:        }
+        -:  140:    }
+        -:  141:
+        4:  142:  if (optind >= argc)
+branch  0 taken 25% (fallthrough)
+branch  1 taken 75%
+        -:  143:    {
+        -:  144:      error (0, 0, _("missing operand"));
+        1:  145:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  146:    }
+        -:  147:
+        3:  148:  if (argc - optind > 1)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  149:    {
+    #####:  150:      if (no_newline)
+branch  0 never executed
+branch  1 never executed
+        -:  151:        error (0, 0, _("ignoring --no-newline with multiple arguments"));
+    #####:  152:      no_newline = false;
+        -:  153:    }
+        -:  154:
+        6:  155:  for (; optind < argc; ++optind)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -:  156:    {
+        3:  157:      char const *fname = argv[optind];
+        3:  158:      char *value = (can_mode != -1
+    #####:  159:                     ? canonicalize_filename_mode (fname, can_mode)
+call    0 never executed
+        3:  160:                     : areadlink_with_size (fname, 63));
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 returned 100%
+        3:  161:      if (value)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  162:        {
+    #####:  163:          fputs (value, stdout);
+call    0 never executed
+    #####:  164:          if (! no_newline)
+branch  0 never executed
+branch  1 never executed
+    #####:  165:            putchar (use_nuls ? '\0' : '\n');
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####:  166:          free (value);
+        -:  167:        }
+        -:  168:      else
+        -:  169:        {
+        3:  170:          status = EXIT_FAILURE;
+        3:  171:          if (verbose)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  172:            error (0, errno, "%s", quotef (fname));
+call    0 never executed
+        -:  173:        }
+        -:  174:    }
+        -:  175:
+        3:  176:  return status;
+        -:  177:}

@@ -1,0 +1,490 @@
+        -:    0:Source:src/rm.c
+        -:    0:Graph:rm.gcno
+        -:    0:Data:rm.gcda
+        -:    0:Runs:12
+        -:    1:/* 'rm' file deletion utility for GNU.
+        -:    2:   Copyright (C) 1988-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Initially written by Paul Rubin, David MacKenzie, and Richard Stallman.
+        -:   18:   Reworked to use chdir and avoid recursion, and later, rewritten
+        -:   19:   once again, to use fts, by Jim Meyering.  */
+        -:   20:
+        -:   21:#include <config.h>
+        -:   22:#include <stdio.h>
+        -:   23:#include <getopt.h>
+        -:   24:#include <sys/types.h>
+        -:   25:
+        -:   26:#include "system.h"
+        -:   27:#include "argmatch.h"
+        -:   28:#include "assure.h"
+        -:   29:#include "remove.h"
+        -:   30:#include "root-dev-ino.h"
+        -:   31:#include "yesno.h"
+        -:   32:#include "priv-set.h"
+        -:   33:
+        -:   34:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   35:#define PROGRAM_NAME "rm"
+        -:   36:
+        -:   37:#define AUTHORS \
+        -:   38:  proper_name ("Paul Rubin"), \
+        -:   39:  proper_name ("David MacKenzie"), \
+        -:   40:  proper_name ("Richard M. Stallman"), \
+        -:   41:  proper_name ("Jim Meyering")
+        -:   42:
+        -:   43:/* For long options that have no equivalent short option, use a
+        -:   44:   non-character as a pseudo short option, starting with CHAR_MAX + 1.  */
+        -:   45:enum
+        -:   46:{
+        -:   47:  INTERACTIVE_OPTION = CHAR_MAX + 1,
+        -:   48:  ONE_FILE_SYSTEM,
+        -:   49:  NO_PRESERVE_ROOT,
+        -:   50:  PRESERVE_ROOT,
+        -:   51:  PRESUME_INPUT_TTY_OPTION
+        -:   52:};
+        -:   53:
+        -:   54:enum interactive_type
+        -:   55:  {
+        -:   56:    interactive_never,		/* 0: no option or --interactive=never */
+        -:   57:    interactive_once,		/* 1: -I or --interactive=once */
+        -:   58:    interactive_always		/* 2: default, -i or --interactive=always */
+        -:   59:  };
+        -:   60:
+        -:   61:static struct option const long_opts[] =
+        -:   62:{
+        -:   63:  {"force", no_argument, nullptr, 'f'},
+        -:   64:  {"interactive", optional_argument, nullptr, INTERACTIVE_OPTION},
+        -:   65:
+        -:   66:  {"one-file-system", no_argument, nullptr, ONE_FILE_SYSTEM},
+        -:   67:  {"no-preserve-root", no_argument, nullptr, NO_PRESERVE_ROOT},
+        -:   68:  {"preserve-root", optional_argument, nullptr, PRESERVE_ROOT},
+        -:   69:
+        -:   70:  /* This is solely for testing.  Do not document.  */
+        -:   71:  /* It is relatively difficult to ensure that there is a tty on stdin.
+        -:   72:     Since rm acts differently depending on that, without this option,
+        -:   73:     it'd be harder to test the parts of rm that depend on that setting.  */
+        -:   74:  {"-presume-input-tty", no_argument, nullptr, PRESUME_INPUT_TTY_OPTION},
+        -:   75:
+        -:   76:  {"recursive", no_argument, nullptr, 'r'},
+        -:   77:  {"dir", no_argument, nullptr, 'd'},
+        -:   78:  {"verbose", no_argument, nullptr, 'v'},
+        -:   79:  {GETOPT_HELP_OPTION_DECL},
+        -:   80:  {GETOPT_VERSION_OPTION_DECL},
+        -:   81:  {nullptr, 0, nullptr, 0}
+        -:   82:};
+        -:   83:
+        -:   84:static char const *const interactive_args[] =
+        -:   85:{
+        -:   86:  "never", "no", "none",
+        -:   87:  "once",
+        -:   88:  "always", "yes", nullptr
+        -:   89:};
+        -:   90:static enum interactive_type const interactive_types[] =
+        -:   91:{
+        -:   92:  interactive_never, interactive_never, interactive_never,
+        -:   93:  interactive_once,
+        -:   94:  interactive_always, interactive_always
+        -:   95:};
+        -:   96:ARGMATCH_VERIFY (interactive_args, interactive_types);
+        -:   97:
+        -:   98:/* Advise the user about invalid usages like "rm -foo" if the file
+        -:   99:   "-foo" exists, assuming ARGC and ARGV are as with 'main'.  */
+        -:  100:
+        -:  101:static void
+function diagnose_leading_hyphen called 5 returned 100% blocks executed 67%
+        5:  102:diagnose_leading_hyphen (int argc, char **argv)
+        -:  103:{
+        -:  104:  /* OPTIND is unreliable, so iterate through the arguments looking
+        -:  105:     for a file name that looks like an option.  */
+        -:  106:
+       18:  107:  for (int i = 1; i < argc; i++)
+branch  0 taken 72%
+branch  1 taken 28% (fallthrough)
+        -:  108:    {
+       13:  109:      char const *arg = argv[i];
+        -:  110:      struct stat st;
+        -:  111:
+       13:  112:      if (arg[0] == '-' && arg[1] && lstat (arg, &st) == 0)
+branch  0 taken 92% (fallthrough)
+branch  1 taken 8%
+branch  2 taken 92% (fallthrough)
+branch  3 taken 8%
+call    4 returned 100%
+branch  5 taken 0% (fallthrough)
+branch  6 taken 100%
+        -:  113:        {
+    #####:  114:          fprintf (stderr,
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  115:                   _("Try '%s ./%s' to remove the file %s.\n"),
+        -:  116:                   argv[0],
+        -:  117:                   quotearg_n_style (1, shell_escape_quoting_style, arg),
+        -:  118:                   quoteaf (arg));
+    #####:  119:          break;
+        -:  120:        }
+        -:  121:    }
+        5:  122:}
+        -:  123:
+        -:  124:void
+function usage called 6 returned 0% blocks executed 20%
+        6:  125:usage (int status)
+        -:  126:{
+        6:  127:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        6:  128:    emit_try_help ();
+call    0 returned 100%
+        -:  129:  else
+        -:  130:    {
+    #####:  131:      printf (_("Usage: %s [OPTION]... [FILE]...\n"), program_name);
+call    0 never executed
+    #####:  132:      fputs (_("\
+call    0 never executed
+        -:  133:Remove (unlink) the FILE(s).\n\
+        -:  134:\n\
+        -:  135:  -f, --force           ignore nonexistent files and arguments, never prompt\n\
+        -:  136:  -i                    prompt before every removal\n\
+        -:  137:"), stdout);
+    #####:  138:      fputs (_("\
+call    0 never executed
+        -:  139:  -I                    prompt once before removing more than three files, or\n\
+        -:  140:                          when removing recursively; less intrusive than -i,\n\
+        -:  141:                          while still giving protection against most mistakes\n\
+        -:  142:      --interactive[=WHEN]  prompt according to WHEN: never, once (-I), or\n\
+        -:  143:                          always (-i); without WHEN, prompt always\n\
+        -:  144:"), stdout);
+    #####:  145:      fputs (_("\
+call    0 never executed
+        -:  146:      --one-file-system  when removing a hierarchy recursively, skip any\n\
+        -:  147:                          directory that is on a file system different from\n\
+        -:  148:                          that of the corresponding command line argument\n\
+        -:  149:"), stdout);
+    #####:  150:      fputs (_("\
+call    0 never executed
+        -:  151:      --no-preserve-root  do not treat '/' specially\n\
+        -:  152:      --preserve-root[=all]  do not remove '/' (default);\n\
+        -:  153:                              with 'all', reject any command line argument\n\
+        -:  154:                              on a separate device from its parent\n\
+        -:  155:"), stdout);
+    #####:  156:      fputs (_("\
+call    0 never executed
+        -:  157:  -r, -R, --recursive   remove directories and their contents recursively\n\
+        -:  158:  -d, --dir             remove empty directories\n\
+        -:  159:  -v, --verbose         explain what is being done\n\
+        -:  160:"), stdout);
+    #####:  161:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  162:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  163:      fputs (_("\
+call    0 never executed
+        -:  164:\n\
+        -:  165:By default, rm does not remove directories.  Use the --recursive (-r or -R)\n\
+        -:  166:option to remove each listed directory, too, along with all of its contents.\n\
+        -:  167:"), stdout);
+    #####:  168:      printf (_("\
+call    0 never executed
+        -:  169:\n\
+        -:  170:To remove a file whose name starts with a '-', for example '-foo',\n\
+        -:  171:use one of these commands:\n\
+        -:  172:  %s -- -foo\n\
+        -:  173:\n\
+        -:  174:  %s ./-foo\n\
+        -:  175:"),
+        -:  176:              program_name, program_name);
+    #####:  177:      fputs (_("\
+call    0 never executed
+        -:  178:\n\
+        -:  179:Note that if you use rm to remove a file, it might be possible to recover\n\
+        -:  180:some of its contents, given sufficient expertise and/or time.  For greater\n\
+        -:  181:assurance that the contents are truly unrecoverable, consider using shred(1).\n\
+        -:  182:"), stdout);
+    #####:  183:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  184:    }
+        6:  185:  exit (status);
+        -:  186:}
+        -:  187:
+        -:  188:static void
+function rm_option_init called 12 returned 100% blocks executed 100%
+       12:  189:rm_option_init (struct rm_options *x)
+        -:  190:{
+       12:  191:  x->ignore_missing_files = false;
+       12:  192:  x->interactive = RMI_SOMETIMES;
+       12:  193:  x->one_file_system = false;
+       12:  194:  x->remove_empty_directories = false;
+       12:  195:  x->recursive = false;
+       12:  196:  x->root_dev_ino = nullptr;
+       12:  197:  x->preserve_all_root = false;
+       12:  198:  x->stdin_tty = isatty (STDIN_FILENO);
+call    0 returned 100%
+       12:  199:  x->verbose = false;
+        -:  200:
+        -:  201:  /* Since this program exits immediately after calling 'rm', rm need not
+        -:  202:     expend unnecessary effort to preserve the initial working directory.  */
+       12:  203:  x->require_restore_cwd = false;
+       12:  204:}
+        -:  205:
+        -:  206:int
+function main called 12 returned 50% blocks executed 29%
+       12:  207:main (int argc, char **argv)
+        -:  208:{
+       12:  209:  bool preserve_root = true;
+        -:  210:  struct rm_options x;
+       12:  211:  bool prompt_once = false;
+        -:  212:  int c;
+        -:  213:
+        -:  214:  initialize_main (&argc, &argv);
+       12:  215:  set_program_name (argv[0]);
+call    0 returned 100%
+       12:  216:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  217:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  218:  textdomain (PACKAGE);
+        -:  219:
+       12:  220:  atexit (close_stdin);
+call    0 returned 100%
+        -:  221:
+       12:  222:  rm_option_init (&x);
+call    0 returned 100%
+        -:  223:
+        -:  224:  /* Try to disable the ability to unlink a directory.  */
+       12:  225:  priv_set_remove_linkdir ();
+call    0 returned 100%
+        -:  226:
+       12:  227:  while ((c = getopt_long (argc, argv, "dfirvIR", long_opts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 42%
+branch  2 taken 58% (fallthrough)
+        -:  228:    {
+        5:  229:      switch (c)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 0%
+branch 13 taken 100%
+        -:  230:        {
+    #####:  231:        case 'd':
+    #####:  232:          x.remove_empty_directories = true;
+    #####:  233:          break;
+        -:  234:
+    #####:  235:        case 'f':
+    #####:  236:          x.interactive = RMI_NEVER;
+    #####:  237:          x.ignore_missing_files = true;
+    #####:  238:          prompt_once = false;
+    #####:  239:          break;
+        -:  240:
+    #####:  241:        case 'i':
+    #####:  242:          x.interactive = RMI_ALWAYS;
+    #####:  243:          x.ignore_missing_files = false;
+    #####:  244:          prompt_once = false;
+    #####:  245:          break;
+        -:  246:
+    #####:  247:        case 'I':
+    #####:  248:          x.interactive = RMI_SOMETIMES;
+    #####:  249:          x.ignore_missing_files = false;
+    #####:  250:          prompt_once = true;
+    #####:  251:          break;
+        -:  252:
+    #####:  253:        case 'r':
+        -:  254:        case 'R':
+    #####:  255:          x.recursive = true;
+    #####:  256:          break;
+        -:  257:
+    #####:  258:        case INTERACTIVE_OPTION:
+        -:  259:          {
+        -:  260:            int i;
+    #####:  261:            if (optarg)
+branch  0 never executed
+branch  1 never executed
+    #####:  262:              i = XARGMATCH ("--interactive", optarg, interactive_args,
+call    0 never executed
+        -:  263:                             interactive_types);
+        -:  264:            else
+    #####:  265:              i = interactive_always;
+        -:  266:            switch (i)
+        -:  267:              {
+    #####:  268:              case interactive_never:
+    #####:  269:                x.interactive = RMI_NEVER;
+    #####:  270:                prompt_once = false;
+    #####:  271:                break;
+        -:  272:
+    #####:  273:              case interactive_once:
+    #####:  274:                x.interactive = RMI_SOMETIMES;
+    #####:  275:                x.ignore_missing_files = false;
+    #####:  276:                prompt_once = true;
+    #####:  277:                break;
+        -:  278:
+    #####:  279:              case interactive_always:
+    #####:  280:                x.interactive = RMI_ALWAYS;
+    #####:  281:                x.ignore_missing_files = false;
+    #####:  282:                prompt_once = false;
+    #####:  283:                break;
+        -:  284:              }
+    #####:  285:            break;
+        -:  286:          }
+        -:  287:
+    #####:  288:        case ONE_FILE_SYSTEM:
+    #####:  289:          x.one_file_system = true;
+    #####:  290:          break;
+        -:  291:
+    #####:  292:        case NO_PRESERVE_ROOT:
+    #####:  293:          if (! STREQ (argv[optind - 1], "--no-preserve-root"))
+branch  0 never executed
+branch  1 never executed
+    #####:  294:            error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  295:                   _("you may not abbreviate the --no-preserve-root option"));
+    #####:  296:          preserve_root = false;
+    #####:  297:          break;
+        -:  298:
+    #####:  299:        case PRESERVE_ROOT:
+    #####:  300:          if (optarg)
+branch  0 never executed
+branch  1 never executed
+        -:  301:            {
+    #####:  302:              if STREQ (optarg, "all")
+branch  0 never executed
+branch  1 never executed
+    #####:  303:                x.preserve_all_root = true;
+        -:  304:              else
+    #####:  305:                error (EXIT_FAILURE, 0,
+call    0 never executed
+call    1 never executed
+        -:  306:                       _("unrecognized --preserve-root argument: %s"),
+        -:  307:                       quoteaf (optarg));
+        -:  308:            }
+    #####:  309:          preserve_root = true;
+    #####:  310:          break;
+        -:  311:
+    #####:  312:        case PRESUME_INPUT_TTY_OPTION:
+    #####:  313:          x.stdin_tty = true;
+    #####:  314:          break;
+        -:  315:
+    #####:  316:        case 'v':
+    #####:  317:          x.verbose = true;
+    #####:  318:          break;
+        -:  319:
+    #####:  320:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  321:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+call    4 never executed
+call    5 never executed
+        5:  322:        default:
+        5:  323:          diagnose_leading_hyphen (argc, argv);
+call    0 returned 100%
+        5:  324:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  325:        }
+        -:  326:    }
+        -:  327:
+        7:  328:  if (argc <= optind)
+branch  0 taken 14% (fallthrough)
+branch  1 taken 86%
+        -:  329:    {
+        1:  330:      if (x.ignore_missing_files)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  331:        return EXIT_SUCCESS;
+        -:  332:      else
+        -:  333:        {
+        -:  334:          error (0, 0, _("missing operand"));
+        1:  335:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  336:        }
+        -:  337:    }
+        -:  338:
+       6*:  339:  if (x.recursive && preserve_root)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  340:    {
+        -:  341:      static struct dev_ino dev_ino_buf;
+    #####:  342:      x.root_dev_ino = get_root_dev_ino (&dev_ino_buf);
+call    0 never executed
+    #####:  343:      if (x.root_dev_ino == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  344:        error (EXIT_FAILURE, errno, _("failed to get attributes of %s"),
+call    0 never executed
+call    1 never executed
+        -:  345:               quoteaf ("/"));
+        -:  346:    }
+        -:  347:
+        6:  348:  uintmax_t n_files = argc - optind;
+        6:  349:  char **file =  argv + optind;
+        -:  350:
+       6*:  351:  if (prompt_once && (x.recursive || 3 < n_files))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  352:    {
+    #####:  353:      fprintf (stderr,
+call    0 never executed
+    #####:  354:               (x.recursive
+branch  0 never executed
+branch  1 never executed
+    #####:  355:                ? ngettext ("%s: remove %"PRIuMAX" argument recursively? ",
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  356:                            "%s: remove %"PRIuMAX" arguments recursively? ",
+        -:  357:                            select_plural (n_files))
+    #####:  358:                : ngettext ("%s: remove %"PRIuMAX" argument? ",
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  359:                            "%s: remove %"PRIuMAX" arguments? ",
+        -:  360:                            select_plural (n_files))),
+        -:  361:               program_name, n_files);
+    #####:  362:      if (!yesno ())
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  363:        return EXIT_SUCCESS;
+        -:  364:    }
+        -:  365:
+        6:  366:  enum RM_status status = rm (file, &x);
+call    0 returned 100%
+       6*:  367:  affirm (VALID_STATUS (status));
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+branch  6 taken 0% (fallthrough)
+branch  7 taken 100%
+call    8 never executed
+        6:  368:  return status == RM_ERROR ? EXIT_FAILURE : EXIT_SUCCESS;
+        -:  369:}

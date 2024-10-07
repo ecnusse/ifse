@@ -1,0 +1,312 @@
+        -:    0:Source:src/nice.c
+        -:    0:Graph:nice.gcno
+        -:    0:Data:nice.gcda
+        -:    0:Runs:31
+        -:    1:/* nice -- run a program with modified niceness
+        -:    2:   Copyright (C) 1990-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* David MacKenzie <djm@gnu.ai.mit.edu> */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <stdio.h>
+        -:   21:#include <getopt.h>
+        -:   22:#include <sys/types.h>
+        -:   23:
+        -:   24:#include "system.h"
+        -:   25:
+        -:   26:#if ! HAVE_NICE
+        -:   27:/* Include this after "system.h" so we're sure to have definitions
+        -:   28:   (from time.h or sys/time.h) required for e.g. the ru_utime member.  */
+        -:   29:# include <sys/resource.h>
+        -:   30:#endif
+        -:   31:
+        -:   32:#include "quote.h"
+        -:   33:#include "xstrtol.h"
+        -:   34:
+        -:   35:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   36:#define PROGRAM_NAME "nice"
+        -:   37:
+        -:   38:#define AUTHORS proper_name ("David MacKenzie")
+        -:   39:
+        -:   40:#if HAVE_NICE
+        -:   41:# define GET_NICENESS() nice (0)
+        -:   42:#else
+        -:   43:# define GET_NICENESS() getpriority (PRIO_PROCESS, 0)
+        -:   44:#endif
+        -:   45:
+        -:   46:#ifndef NZERO
+        -:   47:# define NZERO 20
+        -:   48:#endif
+        -:   49:
+        -:   50:/* This is required for Darwin Kernel Version 7.7.0.  */
+        -:   51:#if NZERO == 0
+        -:   52:# undef  NZERO
+        -:   53:# define NZERO 20
+        -:   54:#endif
+        -:   55:
+        -:   56:static struct option const longopts[] =
+        -:   57:{
+        -:   58:  {"adjustment", required_argument, nullptr, 'n'},
+        -:   59:  {GETOPT_HELP_OPTION_DECL},
+        -:   60:  {GETOPT_VERSION_OPTION_DECL},
+        -:   61:  {nullptr, 0, nullptr, 0}
+        -:   62:};
+        -:   63:
+        -:   64:void
+function usage called 5 returned 0% blocks executed 25%
+        5:   65:usage (int status)
+        -:   66:{
+        5:   67:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        5:   68:    emit_try_help ();
+call    0 returned 100%
+        -:   69:  else
+        -:   70:    {
+    #####:   71:      printf (_("Usage: %s [OPTION] [COMMAND [ARG]...]\n"), program_name);
+call    0 never executed
+    #####:   72:      printf (_("\
+call    0 never executed
+        -:   73:Run COMMAND with an adjusted niceness, which affects process scheduling.\n\
+        -:   74:With no COMMAND, print the current niceness.  Niceness values range from\n\
+        -:   75:%d (most favorable to the process) to %d (least favorable to the process).\n\
+        -:   76:"),
+        -:   77:              - NZERO, NZERO - 1);
+        -:   78:
+    #####:   79:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:   80:
+    #####:   81:      fputs (_("\
+call    0 never executed
+        -:   82:  -n, --adjustment=N   add integer N to the niceness (default 10)\n\
+        -:   83:"), stdout);
+    #####:   84:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   85:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   86:      printf (USAGE_BUILTIN_WARNING, PROGRAM_NAME);
+call    0 never executed
+    #####:   87:      emit_exec_status (PROGRAM_NAME);
+call    0 never executed
+    #####:   88:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   89:    }
+        5:   90:  exit (status);
+        -:   91:}
+        -:   92:
+        -:   93:static bool
+function perm_related_errno called 0 returned 0% blocks executed 0%
+    #####:   94:perm_related_errno (int err)
+        -:   95:{
+    #####:   96:  return err == EACCES || err == EPERM;
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:   97:}
+        -:   98:
+        -:   99:int
+function main called 31 returned 65% blocks executed 62%
+       31:  100:main (int argc, char **argv)
+        -:  101:{
+        -:  102:  int current_niceness;
+       31:  103:  int adjustment = 10;
+       31:  104:  char const *adjustment_given = nullptr;
+        -:  105:  bool ok;
+        -:  106:  int i;
+        -:  107:
+        -:  108:  initialize_main (&argc, &argv);
+       31:  109:  set_program_name (argv[0]);
+call    0 returned 100%
+       31:  110:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  111:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  112:  textdomain (PACKAGE);
+        -:  113:
+       31:  114:  initialize_exit_failure (EXIT_CANCELED);
+call    0 returned 100%
+       31:  115:  atexit (close_stdout);
+call    0 returned 100%
+        -:  116:
+       44:  117:  for (i = 1; i < argc; /* empty */)
+branch  0 taken 75%
+branch  1 taken 25% (fallthrough)
+        -:  118:    {
+       33:  119:      char const *s = argv[i];
+        -:  120:
+       33:  121:      if (s[0] == '-' && ISDIGIT (s[1 + (s[1] == '-' || s[1] == '+')]))
+branch  0 taken 97% (fallthrough)
+branch  1 taken 3%
+branch  2 taken 9% (fallthrough)
+branch  3 taken 91%
+branch  4 taken 67% (fallthrough)
+branch  5 taken 33%
+branch  6 taken 41% (fallthrough)
+branch  7 taken 59%
+        -:  122:        {
+       13:  123:          adjustment_given = s + 1;
+       13:  124:          ++i;
+        -:  125:        }
+        -:  126:      else
+        -:  127:        {
+        -:  128:          int c;
+       20:  129:          int fake_argc = argc - (i - 1);
+       20:  130:          char **fake_argv = argv + (i - 1);
+        -:  131:
+        -:  132:          /* Ensure that any getopt diagnostics use the right name.  */
+       20:  133:          fake_argv[0] = argv[0];
+        -:  134:
+        -:  135:          /* Initialize getopt_long's internal state.  */
+       20:  136:          optind = 0;
+        -:  137:
+       20:  138:          c = getopt_long (fake_argc, fake_argv, "+n:", longopts, nullptr);
+call    0 returned 100%
+       20:  139:          i += optind - 1;
+        -:  140:
+       20:  141:          switch (c)
+branch  0 taken 0%
+branch  1 taken 95%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 5%
+        -:  142:            {
+    #####:  143:            case 'n':
+    #####:  144:              adjustment_given = optarg;
+    #####:  145:              break;
+        -:  146:
+       19:  147:            case -1:
+       19:  148:              break;
+        -:  149:
+    #####:  150:            case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  151:
+    #####:  152:            case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        -:  153:
+        1:  154:            default:
+        1:  155:              usage (EXIT_CANCELED);
+call    0 returned 0%
+        -:  156:              break;
+        -:  157:            }
+        -:  158:
+       19:  159:          if (c == -1)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       19:  160:            break;
+        -:  161:        }
+        -:  162:    }
+        -:  163:
+       30:  164:  if (adjustment_given)
+branch  0 taken 33% (fallthrough)
+branch  1 taken 67%
+        -:  165:    {
+        -:  166:      /* If the requested adjustment is outside the valid range,
+        -:  167:         silently bring it to just within range; this mimics what
+        -:  168:         "setpriority" and "nice" do.  */
+        -:  169:      enum { MIN_ADJUSTMENT = 1 - 2 * NZERO, MAX_ADJUSTMENT = 2 * NZERO - 1 };
+        -:  170:      long int tmp;
+       10:  171:      if (LONGINT_OVERFLOW < xstrtol (adjustment_given, nullptr, 10, &tmp, ""))
+call    0 returned 100%
+branch  1 taken 60% (fallthrough)
+branch  2 taken 40%
+       6*:  172:        error (EXIT_CANCELED, 0, _("invalid adjustment %s"),
+call    0 returned 100%
+call    1 never executed
+        -:  173:               quote (adjustment_given));
+       4*:  174:      adjustment = MAX (MIN_ADJUSTMENT, MIN (tmp, MAX_ADJUSTMENT));
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  175:    }
+        -:  176:
+       24:  177:  if (i == argc)
+branch  0 taken 25% (fallthrough)
+branch  1 taken 75%
+        -:  178:    {
+        6:  179:      if (adjustment_given)
+branch  0 taken 67% (fallthrough)
+branch  1 taken 33%
+        -:  180:        {
+        -:  181:          error (0, 0, _("a command must be given with an adjustment"));
+        4:  182:          usage (EXIT_CANCELED);
+call    0 returned 0%
+        -:  183:        }
+        -:  184:      /* No command given; print the niceness.  */
+        2:  185:      errno = 0;
+        2:  186:      current_niceness = GET_NICENESS ();
+call    0 returned 100%
+       2*:  187:      if (current_niceness == -1 && errno != 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  188:        error (EXIT_CANCELED, errno, _("cannot get niceness"));
+call    0 never executed
+        2:  189:      printf ("%d\n", current_niceness);
+call    0 returned 100%
+        2:  190:      return EXIT_SUCCESS;
+        -:  191:    }
+        -:  192:
+       18:  193:  errno = 0;
+        -:  194:#if HAVE_NICE
+        -:  195:  ok = (nice (adjustment) != -1 || errno == 0);
+        -:  196:#else
+       18:  197:  current_niceness = GET_NICENESS ();
+call    0 returned 100%
+      18*:  198:  if (current_niceness == -1 && errno != 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  199:    error (EXIT_CANCELED, errno, _("cannot get niceness"));
+call    0 never executed
+       18:  200:  ok = (setpriority (PRIO_PROCESS, 0, current_niceness + adjustment) == 0);
+call    0 returned 100%
+        -:  201:#endif
+       18:  202:  if (!ok)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  203:    {
+    #####:  204:      error (perm_related_errno (errno) ? 0
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+call    5 never executed
+        -:  205:             : EXIT_CANCELED, errno, _("cannot set niceness"));
+        -:  206:      /* error() flushes stderr, but does not check for write failure.
+        -:  207:         Normally, we would catch this via our atexit() hook of
+        -:  208:         close_stdout, but execvp() gets in the way.  If stderr
+        -:  209:         encountered a write failure, there is no need to try calling
+        -:  210:         error() again.  */
+    #####:  211:      if (ferror (stderr))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  212:        return EXIT_CANCELED;
+        -:  213:    }
+        -:  214:
+       18:  215:  execvp (argv[i], &argv[i]);
+        -:  216:
+      18*:  217:  int exit_status = errno == ENOENT ? EXIT_ENOENT : EXIT_CANNOT_INVOKE;
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       18:  218:  error (0, errno, "%s", quote (argv[i]));
+call    0 returned 100%
+       18:  219:  return exit_status;
+        -:  220:}

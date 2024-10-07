@@ -1,0 +1,413 @@
+        -:    0:Source:src/mknod.c
+        -:    0:Graph:mknod.gcno
+        -:    0:Data:mknod.gcda
+        -:    0:Runs:55
+        -:    1:/* mknod -- make special files
+        -:    2:   Copyright (C) 1990-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by David MacKenzie <djm@ai.mit.edu>  */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <stdio.h>
+        -:   21:#include <getopt.h>
+        -:   22:#include <sys/types.h>
+        -:   23:#include <selinux/label.h>
+        -:   24:
+        -:   25:#include "system.h"
+        -:   26:#include "modechange.h"
+        -:   27:#include "quote.h"
+        -:   28:#include "selinux.h"
+        -:   29:#include "smack.h"
+        -:   30:#include "xstrtol.h"
+        -:   31:
+        -:   32:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   33:#define PROGRAM_NAME "mknod"
+        -:   34:
+        -:   35:#define AUTHORS proper_name ("David MacKenzie")
+        -:   36:
+        -:   37:static struct option const longopts[] =
+        -:   38:{
+        -:   39:  {GETOPT_SELINUX_CONTEXT_OPTION_DECL},
+        -:   40:  {"mode", required_argument, nullptr, 'm'},
+        -:   41:  {GETOPT_HELP_OPTION_DECL},
+        -:   42:  {GETOPT_VERSION_OPTION_DECL},
+        -:   43:  {nullptr, 0, nullptr, 0}
+        -:   44:};
+        -:   45:
+        -:   46:void
+function usage called 29 returned 0% blocks executed 21%
+       29:   47:usage (int status)
+        -:   48:{
+       29:   49:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       29:   50:    emit_try_help ();
+call    0 returned 100%
+        -:   51:  else
+        -:   52:    {
+    #####:   53:      printf (_("Usage: %s [OPTION]... NAME TYPE [MAJOR MINOR]\n"),
+call    0 never executed
+        -:   54:              program_name);
+    #####:   55:      fputs (_("\
+call    0 never executed
+        -:   56:Create the special file NAME of the given TYPE.\n\
+        -:   57:"), stdout);
+        -:   58:
+    #####:   59:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:   60:
+    #####:   61:      fputs (_("\
+call    0 never executed
+        -:   62:  -m, --mode=MODE    set file permission bits to MODE, not a=rw - umask\n\
+        -:   63:"), stdout);
+    #####:   64:      fputs (_("\
+call    0 never executed
+        -:   65:  -Z                   set the SELinux security context to default type\n\
+        -:   66:      --context[=CTX]  like -Z, or if CTX is specified then set the SELinux\n\
+        -:   67:                         or SMACK security context to CTX\n\
+        -:   68:"), stdout);
+    #####:   69:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   70:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   71:      fputs (_("\
+call    0 never executed
+        -:   72:\n\
+        -:   73:Both MAJOR and MINOR must be specified when TYPE is b, c, or u, and they\n\
+        -:   74:must be omitted when TYPE is p.  If MAJOR or MINOR begins with 0x or 0X,\n\
+        -:   75:it is interpreted as hexadecimal; otherwise, if it begins with 0, as octal;\n\
+        -:   76:otherwise, as decimal.  TYPE may be:\n\
+        -:   77:"), stdout);
+    #####:   78:      fputs (_("\
+call    0 never executed
+        -:   79:\n\
+        -:   80:  b      create a block (buffered) special file\n\
+        -:   81:  c, u   create a character (unbuffered) special file\n\
+        -:   82:  p      create a FIFO\n\
+        -:   83:"), stdout);
+    #####:   84:      printf (USAGE_BUILTIN_WARNING, PROGRAM_NAME);
+call    0 never executed
+    #####:   85:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   86:    }
+       29:   87:  exit (status);
+        -:   88:}
+        -:   89:
+        -:   90:int
+function main called 55 returned 33% blocks executed 55%
+       55:   91:main (int argc, char **argv)
+        -:   92:{
+        -:   93:  mode_t newmode;
+       55:   94:  char const *specified_mode = nullptr;
+        -:   95:  int optc;
+        -:   96:  size_t expected_operands;
+        -:   97:  mode_t node_type;
+       55:   98:  char const *scontext = nullptr;
+       55:   99:  struct selabel_handle *set_security_context = nullptr;
+        -:  100:
+        -:  101:  initialize_main (&argc, &argv);
+       55:  102:  set_program_name (argv[0]);
+call    0 returned 100%
+       55:  103:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  104:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  105:  textdomain (PACKAGE);
+        -:  106:
+       55:  107:  atexit (close_stdout);
+call    0 returned 100%
+        -:  108:
+       55:  109:  while ((optc = getopt_long (argc, argv, "m:Z", longopts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 2%
+branch  2 taken 98% (fallthrough)
+        -:  110:    {
+        1:  111:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 100%
+        -:  112:        {
+    #####:  113:        case 'm':
+    #####:  114:          specified_mode = optarg;
+    #####:  115:          break;
+    #####:  116:        case 'Z':
+    #####:  117:          if (is_smack_enabled ())
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  118:            {
+        -:  119:              /* We don't yet support -Z to restore context with SMACK.  */
+    #####:  120:              scontext = optarg;
+        -:  121:            }
+        -:  122:          else if (is_selinux_enabled () > 0)
+        -:  123:            {
+        -:  124:              if (optarg)
+        -:  125:                scontext = optarg;
+        -:  126:              else
+        -:  127:                {
+        -:  128:                  set_security_context = selabel_open (SELABEL_CTX_FILE,
+        -:  129:                                                       nullptr, 0);
+        -:  130:                  if (! set_security_context)
+        -:  131:                    error (0, errno, _("warning: ignoring --context"));
+        -:  132:                }
+        -:  133:            }
+    #####:  134:          else if (optarg)
+branch  0 never executed
+branch  1 never executed
+        -:  135:            {
+        -:  136:              error (0, 0,
+        -:  137:                     _("warning: ignoring --context; "
+        -:  138:                       "it requires an SELinux/SMACK-enabled kernel"));
+        -:  139:            }
+    #####:  140:          break;
+    #####:  141:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  142:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        1:  143:        default:
+        1:  144:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  145:        }
+        -:  146:    }
+        -:  147:
+       54:  148:  newmode = MODE_RW_UGO;
+       54:  149:  if (specified_mode)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  150:    {
+        -:  151:      mode_t umask_value;
+    #####:  152:      struct mode_change *change = mode_compile (specified_mode);
+call    0 never executed
+    #####:  153:      if (!change)
+branch  0 never executed
+branch  1 never executed
+    #####:  154:        error (EXIT_FAILURE, 0, _("invalid mode"));
+call    0 never executed
+    #####:  155:      umask_value = umask (0);
+call    0 never executed
+    #####:  156:      umask (umask_value);
+call    0 never executed
+    #####:  157:      newmode = mode_adjust (newmode, false, umask_value, change, nullptr);
+    #####:  158:      free (change);
+    #####:  159:      if (newmode & ~S_IRWXUGO)
+branch  0 never executed
+branch  1 never executed
+    #####:  160:        error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  161:               _("mode must specify only file permission bits"));
+        -:  162:    }
+        -:  163:
+        -:  164:  /* If the number of arguments is 0 or 1,
+        -:  165:     or (if it's 2 or more and the second one starts with 'p'), then there
+        -:  166:     must be exactly two operands.  Otherwise, there must be four.  */
+      108:  167:  expected_operands = (argc <= optind
+       53:  168:                       || (optind + 1 < argc && argv[optind + 1][0] == 'p')
+branch  0 taken 64% (fallthrough)
+branch  1 taken 36%
+branch  2 taken 65% (fallthrough)
+branch  3 taken 35%
+      107:  169:                       ? 2 : 4);
+branch  0 taken 98% (fallthrough)
+branch  1 taken 2%
+        -:  170:
+       54:  171:  if (argc - optind < expected_operands)
+branch  0 taken 43% (fallthrough)
+branch  1 taken 57%
+        -:  172:    {
+       23:  173:      if (argc <= optind)
+branch  0 taken 4% (fallthrough)
+branch  1 taken 96%
+        -:  174:        error (0, 0, _("missing operand"));
+        -:  175:      else
+       22:  176:        error (0, 0, _("missing operand after %s"), quote (argv[argc - 1]));
+call    0 returned 100%
+       23:  177:      if (expected_operands == 4 && argc - optind == 2)
+branch  0 taken 96% (fallthrough)
+branch  1 taken 4%
+branch  2 taken 9% (fallthrough)
+branch  3 taken 91%
+        2:  178:        fprintf (stderr, "%s\n",
+call    0 returned 100%
+        -:  179:                 _("Special files require major and minor device numbers."));
+       23:  180:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  181:    }
+        -:  182:
+       31:  183:  if (expected_operands < argc - optind)
+branch  0 taken 13% (fallthrough)
+branch  1 taken 87%
+        -:  184:    {
+        4:  185:      error (0, 0, _("extra operand %s"),
+call    0 returned 100%
+        -:  186:             quote (argv[optind + expected_operands]));
+        4:  187:      if (expected_operands == 2 && argc - optind == 4)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 50% (fallthrough)
+branch  3 taken 50%
+        2:  188:        fprintf (stderr, "%s\n",
+call    0 returned 100%
+        -:  189:                 _("Fifos do not have major and minor device numbers."));
+        4:  190:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  191:    }
+        -:  192:
+       27:  193:  if (scontext)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  194:    {
+    #####:  195:      int ret = 0;
+    #####:  196:      if (is_smack_enabled ())
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  197:        ret = smack_set_label_for_self (scontext);
+call    0 never executed
+        -:  198:      else
+    #####:  199:        ret = setfscreatecon (scontext);
+call    0 never executed
+        -:  200:
+    #####:  201:      if (ret < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  202:        error (EXIT_FAILURE, errno,
+call    0 never executed
+call    1 never executed
+        -:  203:               _("failed to set default file creation context to %s"),
+        -:  204:               quote (scontext));
+        -:  205:    }
+        -:  206:
+        -:  207:  /* Only check the first character, to allow mnemonic usage like
+        -:  208:     'mknod /dev/rst0 character 18 0'. */
+        -:  209:
+       27:  210:  switch (argv[optind + 1][0])
+branch  0 taken 19%
+branch  1 taken 11%
+branch  2 taken 67%
+branch  3 taken 4%
+        -:  211:    {
+        5:  212:    case 'b':			/* 'block' or 'buffered' */
+        -:  213:#ifndef S_IFBLK
+        -:  214:      error (EXIT_FAILURE, 0, _("block special files not supported"));
+        -:  215:#else
+        5:  216:      node_type = S_IFBLK;
+        -:  217:#endif
+        5:  218:      goto block_or_character;
+        -:  219:
+        3:  220:    case 'c':			/* 'character' */
+        -:  221:    case 'u':			/* 'unbuffered' */
+        -:  222:#ifndef S_IFCHR
+        -:  223:      error (EXIT_FAILURE, 0, _("character special files not supported"));
+        -:  224:#else
+        3:  225:      node_type = S_IFCHR;
+        -:  226:#endif
+        3:  227:      goto block_or_character;
+        -:  228:
+        8:  229:    block_or_character:
+        -:  230:      {
+        8:  231:        char const *s_major = argv[optind + 2];
+        8:  232:        char const *s_minor = argv[optind + 3];
+        -:  233:        uintmax_t i_major, i_minor;
+        -:  234:        dev_t device;
+        -:  235:
+        8:  236:        if (xstrtoumax (s_major, nullptr, 0, &i_major, "") != LONGINT_OK
+call    0 returned 100%
+branch  1 taken 38% (fallthrough)
+branch  2 taken 62%
+        3:  237:            || i_major != (major_t) i_major)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+       5*:  238:          error (EXIT_FAILURE, 0,
+call    0 returned 100%
+call    1 never executed
+        -:  239:                 _("invalid major device number %s"), quote (s_major));
+        -:  240:
+        3:  241:        if (xstrtoumax (s_minor, nullptr, 0, &i_minor, "") != LONGINT_OK
+call    0 returned 100%
+branch  1 taken 33% (fallthrough)
+branch  2 taken 67%
+        1:  242:            || i_minor != (minor_t) i_minor)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+       2*:  243:          error (EXIT_FAILURE, 0,
+call    0 returned 100%
+call    1 never executed
+        -:  244:                 _("invalid minor device number %s"), quote (s_minor));
+        -:  245:
+        1:  246:        device = makedev (i_major, i_minor);
+        -:  247:#ifdef NODEV
+        1:  248:        if (device == NODEV)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  249:          error (EXIT_FAILURE, 0, _("invalid device %s %s"),
+call    0 never executed
+        -:  250:                 s_major, s_minor);
+        -:  251:#endif
+        -:  252:
+        1:  253:        if (set_security_context)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  254:          defaultcon (set_security_context, argv[optind], node_type);
+call    0 never executed
+        -:  255:
+        1:  256:        if (mknod (argv[optind], newmode | node_type, device) != 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  257:          error (EXIT_FAILURE, errno, "%s", quotef (argv[optind]));
+call    0 never executed
+call    1 never executed
+        -:  258:      }
+        1:  259:      break;
+        -:  260:
+       18:  261:    case 'p':			/* 'pipe' */
+       18:  262:      if (set_security_context)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  263:        defaultcon (set_security_context, argv[optind], S_IFIFO);
+call    0 never executed
+       18:  264:      if (mkfifo (argv[optind], newmode) != 0)
+call    0 returned 100%
+branch  1 taken 6% (fallthrough)
+branch  2 taken 94%
+       1*:  265:        error (EXIT_FAILURE, errno, "%s", quotef (argv[optind]));
+call    0 returned 100%
+call    1 never executed
+       17:  266:      break;
+        -:  267:
+        1:  268:    default:
+        1:  269:      error (0, 0, _("invalid device type %s"), quote (argv[optind + 1]));
+call    0 returned 100%
+        1:  270:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  271:    }
+        -:  272:
+      18*:  273:  if (specified_mode && lchmod (argv[optind], newmode) != 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  274:    error (EXIT_FAILURE, errno, _("cannot set permissions of %s"),
+call    0 never executed
+call    1 never executed
+        -:  275:           quoteaf (argv[optind]));
+        -:  276:
+       18:  277:  return EXIT_SUCCESS;
+        -:  278:}

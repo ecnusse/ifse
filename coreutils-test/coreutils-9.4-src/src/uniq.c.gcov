@@ -1,0 +1,940 @@
+        -:    0:Source:src/uniq.c
+        -:    0:Graph:uniq.gcno
+        -:    0:Data:uniq.gcda
+        -:    0:Runs:4
+        -:    1:/* uniq -- remove duplicate lines from a sorted file
+        -:    2:   Copyright (C) 1986-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Richard M. Stallman and David MacKenzie. */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:
+        -:   21:#include <getopt.h>
+        -:   22:#include <sys/types.h>
+        -:   23:
+        -:   24:#include "system.h"
+        -:   25:#include "argmatch.h"
+        -:   26:#include "linebuffer.h"
+        -:   27:#include "fadvise.h"
+        -:   28:#include "posixver.h"
+        -:   29:#include "stdio--.h"
+        -:   30:#include "xstrtol.h"
+        -:   31:#include "memcasecmp.h"
+        -:   32:#include "quote.h"
+        -:   33:
+        -:   34:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   35:#define PROGRAM_NAME "uniq"
+        -:   36:
+        -:   37:#define AUTHORS \
+        -:   38:  proper_name ("Richard M. Stallman"), \
+        -:   39:  proper_name ("David MacKenzie")
+        -:   40:
+        -:   41:#define SWAP_LINES(A, B)			\
+        -:   42:  do						\
+        -:   43:    {						\
+        -:   44:      struct linebuffer *_tmp;			\
+        -:   45:      _tmp = (A);				\
+        -:   46:      (A) = (B);				\
+        -:   47:      (B) = _tmp;				\
+        -:   48:    }						\
+        -:   49:  while (0)
+        -:   50:
+        -:   51:/* Number of fields to skip on each line when doing comparisons. */
+        -:   52:static size_t skip_fields;
+        -:   53:
+        -:   54:/* Number of chars to skip after skipping any fields. */
+        -:   55:static size_t skip_chars;
+        -:   56:
+        -:   57:/* Number of chars to compare. */
+        -:   58:static size_t check_chars;
+        -:   59:
+        -:   60:enum countmode
+        -:   61:{
+        -:   62:  count_occurrences,		/* -c Print count before output lines. */
+        -:   63:  count_none			/* Default.  Do not print counts. */
+        -:   64:};
+        -:   65:
+        -:   66:/* Whether and how to precede the output lines with a count of the number of
+        -:   67:   times they occurred in the input. */
+        -:   68:static enum countmode countmode;
+        -:   69:
+        -:   70:/* Which lines to output: unique lines, the first of a group of
+        -:   71:   repeated lines, and the second and subsequent of a group of
+        -:   72:   repeated lines.  */
+        -:   73:static bool output_unique;
+        -:   74:static bool output_first_repeated;
+        -:   75:static bool output_later_repeated;
+        -:   76:
+        -:   77:/* If true, ignore case when comparing.  */
+        -:   78:static bool ignore_case;
+        -:   79:
+        -:   80:enum delimit_method
+        -:   81:{
+        -:   82:  /* No delimiters output.  --all-repeated[=none] */
+        -:   83:  DM_NONE,
+        -:   84:
+        -:   85:  /* Delimiter precedes all groups.  --all-repeated=prepend */
+        -:   86:  DM_PREPEND,
+        -:   87:
+        -:   88:  /* Delimit all groups.  --all-repeated=separate */
+        -:   89:  DM_SEPARATE
+        -:   90:};
+        -:   91:
+        -:   92:static char const *const delimit_method_string[] =
+        -:   93:{
+        -:   94:  "none", "prepend", "separate", nullptr
+        -:   95:};
+        -:   96:
+        -:   97:static enum delimit_method const delimit_method_map[] =
+        -:   98:{
+        -:   99:  DM_NONE, DM_PREPEND, DM_SEPARATE
+        -:  100:};
+        -:  101:
+        -:  102:/* Select whether/how to delimit groups of duplicate lines.  */
+        -:  103:static enum delimit_method delimit_groups;
+        -:  104:
+        -:  105:enum grouping_method
+        -:  106:{
+        -:  107:  /* No grouping, when "--group" isn't used */
+        -:  108:  GM_NONE,
+        -:  109:
+        -:  110:  /* Delimiter precedes all groups.  --group=prepend */
+        -:  111:  GM_PREPEND,
+        -:  112:
+        -:  113:  /* Delimiter follows all groups.   --group=append */
+        -:  114:  GM_APPEND,
+        -:  115:
+        -:  116:  /* Delimiter between groups.    --group[=separate] */
+        -:  117:  GM_SEPARATE,
+        -:  118:
+        -:  119:  /* Delimiter before and after each group. --group=both */
+        -:  120:  GM_BOTH
+        -:  121:};
+        -:  122:
+        -:  123:static char const *const grouping_method_string[] =
+        -:  124:{
+        -:  125:  "prepend", "append", "separate", "both", nullptr
+        -:  126:};
+        -:  127:
+        -:  128:static enum grouping_method const grouping_method_map[] =
+        -:  129:{
+        -:  130:  GM_PREPEND, GM_APPEND, GM_SEPARATE, GM_BOTH
+        -:  131:};
+        -:  132:
+        -:  133:static enum grouping_method grouping = GM_NONE;
+        -:  134:
+        -:  135:enum
+        -:  136:{
+        -:  137:  GROUP_OPTION = CHAR_MAX + 1
+        -:  138:};
+        -:  139:
+        -:  140:static struct option const longopts[] =
+        -:  141:{
+        -:  142:  {"count", no_argument, nullptr, 'c'},
+        -:  143:  {"repeated", no_argument, nullptr, 'd'},
+        -:  144:  {"all-repeated", optional_argument, nullptr, 'D'},
+        -:  145:  {"group", optional_argument, nullptr, GROUP_OPTION},
+        -:  146:  {"ignore-case", no_argument, nullptr, 'i'},
+        -:  147:  {"unique", no_argument, nullptr, 'u'},
+        -:  148:  {"skip-fields", required_argument, nullptr, 'f'},
+        -:  149:  {"skip-chars", required_argument, nullptr, 's'},
+        -:  150:  {"check-chars", required_argument, nullptr, 'w'},
+        -:  151:  {"zero-terminated", no_argument, nullptr, 'z'},
+        -:  152:  {GETOPT_HELP_OPTION_DECL},
+        -:  153:  {GETOPT_VERSION_OPTION_DECL},
+        -:  154:  {nullptr, 0, nullptr, 0}
+        -:  155:};
+        -:  156:
+        -:  157:void
+function usage called 1 returned 0% blocks executed 17%
+        1:  158:usage (int status)
+        -:  159:{
+        1:  160:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  161:    emit_try_help ();
+call    0 returned 100%
+        -:  162:  else
+        -:  163:    {
+    #####:  164:      printf (_("\
+call    0 never executed
+        -:  165:Usage: %s [OPTION]... [INPUT [OUTPUT]]\n\
+        -:  166:"),
+        -:  167:              program_name);
+    #####:  168:      fputs (_("\
+call    0 never executed
+        -:  169:Filter adjacent matching lines from INPUT (or standard input),\n\
+        -:  170:writing to OUTPUT (or standard output).\n\
+        -:  171:\n\
+        -:  172:With no options, matching lines are merged to the first occurrence.\n\
+        -:  173:"), stdout);
+        -:  174:
+    #####:  175:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:  176:
+    #####:  177:     fputs (_("\
+call    0 never executed
+        -:  178:  -c, --count           prefix lines by the number of occurrences\n\
+        -:  179:  -d, --repeated        only print duplicate lines, one for each group\n\
+        -:  180:"), stdout);
+    #####:  181:     fputs (_("\
+call    0 never executed
+        -:  182:  -D                    print all duplicate lines\n\
+        -:  183:      --all-repeated[=METHOD]  like -D, but allow separating groups\n\
+        -:  184:                                 with an empty line;\n\
+        -:  185:                                 METHOD={none(default),prepend,separate}\n\
+        -:  186:"), stdout);
+    #####:  187:     fputs (_("\
+call    0 never executed
+        -:  188:  -f, --skip-fields=N   avoid comparing the first N fields\n\
+        -:  189:"), stdout);
+    #####:  190:     fputs (_("\
+call    0 never executed
+        -:  191:      --group[=METHOD]  show all items, separating groups with an empty line;\n\
+        -:  192:                          METHOD={separate(default),prepend,append,both}\n\
+        -:  193:"), stdout);
+    #####:  194:     fputs (_("\
+call    0 never executed
+        -:  195:  -i, --ignore-case     ignore differences in case when comparing\n\
+        -:  196:  -s, --skip-chars=N    avoid comparing the first N characters\n\
+        -:  197:  -u, --unique          only print unique lines\n\
+        -:  198:"), stdout);
+    #####:  199:      fputs (_("\
+call    0 never executed
+        -:  200:  -z, --zero-terminated     line delimiter is NUL, not newline\n\
+        -:  201:"), stdout);
+    #####:  202:     fputs (_("\
+call    0 never executed
+        -:  203:  -w, --check-chars=N   compare no more than N characters in lines\n\
+        -:  204:"), stdout);
+    #####:  205:     fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  206:     fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  207:     fputs (_("\
+call    0 never executed
+        -:  208:\n\
+        -:  209:A field is a run of blanks (usually spaces and/or TABs), then non-blank\n\
+        -:  210:characters.  Fields are skipped before chars.\n\
+        -:  211:"), stdout);
+    #####:  212:     fputs (_("\
+call    0 never executed
+        -:  213:\n\
+        -:  214:Note: 'uniq' does not detect repeated lines unless they are adjacent.\n\
+        -:  215:You may want to sort the input first, or use 'sort -u' without 'uniq'.\n\
+        -:  216:"), stdout);
+    #####:  217:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  218:    }
+        1:  219:  exit (status);
+        -:  220:}
+        -:  221:
+        -:  222:static bool
+function strict_posix2 called 0 returned 0% blocks executed 0%
+    #####:  223:strict_posix2 (void)
+        -:  224:{
+    #####:  225:  int posix_ver = posix2_version ();
+call    0 never executed
+    #####:  226:  return 200112 <= posix_ver && posix_ver < 200809;
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  227:}
+        -:  228:
+        -:  229:/* Convert OPT to size_t, reporting an error using MSGID if OPT is
+        -:  230:   invalid.  Silently convert too-large values to SIZE_MAX.  */
+        -:  231:
+        -:  232:static size_t
+function size_opt called 0 returned 0% blocks executed 0%
+    #####:  233:size_opt (char const *opt, char const *msgid)
+        -:  234:{
+        -:  235:  uintmax_t size;
+        -:  236:
+    #####:  237:  switch (xstrtoumax (opt, nullptr, 10, &size, ""))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  238:    {
+    #####:  239:    case LONGINT_OK:
+        -:  240:    case LONGINT_OVERFLOW:
+    #####:  241:      break;
+        -:  242:
+    #####:  243:    default:
+    #####:  244:      error (EXIT_FAILURE, 0, "%s: %s", opt, _(msgid));
+call    0 never executed
+        -:  245:    }
+        -:  246:
+    #####:  247:  return MIN (size, SIZE_MAX);
+        -:  248:}
+        -:  249:
+        -:  250:/* Given a linebuffer LINE,
+        -:  251:   return a pointer to the beginning of the line's field to be compared. */
+        -:  252:
+        -:  253:ATTRIBUTE_PURE
+        -:  254:static char *
+function find_field called 1 returned 100% blocks executed 25%
+        1:  255:find_field (struct linebuffer const *line)
+        -:  256:{
+        -:  257:  size_t count;
+        1:  258:  char const *lp = line->buffer;
+        1:  259:  size_t size = line->length - 1;
+        1:  260:  size_t i = 0;
+        -:  261:
+       1*:  262:  for (count = 0; count < skip_fields && i < size; count++)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  263:    {
+    #####:  264:      while (i < size && field_sep (lp[i]))
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  265:        i++;
+    #####:  266:      while (i < size && !field_sep (lp[i]))
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  267:        i++;
+        -:  268:    }
+        -:  269:
+        1:  270:  i += MIN (skip_chars, size - i);
+        -:  271:
+        1:  272:  return line->buffer + i;
+        -:  273:}
+        -:  274:
+        -:  275:/* Return false if two strings OLD and NEW match, true if not.
+        -:  276:   OLD and NEW point not to the beginnings of the lines
+        -:  277:   but rather to the beginnings of the fields to compare.
+        -:  278:   OLDLEN and NEWLEN are their lengths. */
+        -:  279:
+        -:  280:static bool
+function different called 0 returned 0% blocks executed 0%
+    #####:  281:different (char *old, char *new, size_t oldlen, size_t newlen)
+        -:  282:{
+    #####:  283:  if (check_chars < oldlen)
+branch  0 never executed
+branch  1 never executed
+    #####:  284:    oldlen = check_chars;
+    #####:  285:  if (check_chars < newlen)
+branch  0 never executed
+branch  1 never executed
+    #####:  286:    newlen = check_chars;
+        -:  287:
+    #####:  288:  if (ignore_case)
+branch  0 never executed
+branch  1 never executed
+    #####:  289:    return oldlen != newlen || memcasecmp (old, new, oldlen);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  290:  else
+    #####:  291:    return oldlen != newlen || memcmp (old, new, oldlen);
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  292:}
+        -:  293:
+        -:  294:/* Output the line in linebuffer LINE to standard output
+        -:  295:   provided that the switches say it should be output.
+        -:  296:   MATCH is true if the line matches the previous line.
+        -:  297:   If requested, print the number of times it occurred, as well;
+        -:  298:   LINECOUNT + 1 is the number of times that the line occurred. */
+        -:  299:
+        -:  300:static void
+function writeline called 0 returned 0% blocks executed 0%
+    #####:  301:writeline (struct linebuffer const *line,
+        -:  302:           bool match, uintmax_t linecount)
+        -:  303:{
+    #####:  304:  if (! (linecount == 0 ? output_unique
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  305:         : !match ? output_first_repeated
+branch  0 never executed
+branch  1 never executed
+        -:  306:         : output_later_repeated))
+    #####:  307:    return;
+        -:  308:
+    #####:  309:  if (countmode == count_occurrences)
+branch  0 never executed
+branch  1 never executed
+    #####:  310:    printf ("%7" PRIuMAX " ", linecount + 1);
+call    0 never executed
+        -:  311:
+    #####:  312:  if (fwrite (line->buffer, sizeof (char), line->length, stdout)
+call    0 never executed
+    #####:  313:      != line->length)
+branch  0 never executed
+branch  1 never executed
+    #####:  314:    write_error ();
+call    0 never executed
+        -:  315:}
+        -:  316:
+        -:  317:/* Process input file INFILE with output to OUTFILE.
+        -:  318:   If either is "-", use the standard I/O stream for it instead. */
+        -:  319:
+        -:  320:static void
+function check_file called 3 returned 33% blocks executed 37%
+        3:  321:check_file (char const *infile, char const *outfile, char delimiter)
+        -:  322:{
+        -:  323:  struct linebuffer lb1, lb2;
+        -:  324:  struct linebuffer *thisline, *prevline;
+        -:  325:
+        3:  326:  if (! (STREQ (infile, "-") || freopen (infile, "r", stdin)))
+branch  0 taken 67% (fallthrough)
+branch  1 taken 33%
+call    2 returned 100%
+branch  3 taken 100% (fallthrough)
+branch  4 taken 0%
+       2*:  327:    error (EXIT_FAILURE, errno, "%s", quotef (infile));
+call    0 returned 100%
+call    1 never executed
+       1*:  328:  if (! (STREQ (outfile, "-") || freopen (outfile, "w", stdout)))
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:  329:    error (EXIT_FAILURE, errno, "%s", quotef (outfile));
+call    0 never executed
+call    1 never executed
+        -:  330:
+        1:  331:  fadvise (stdin, FADVISE_SEQUENTIAL);
+call    0 returned 100%
+        -:  332:
+        1:  333:  thisline = &lb1;
+        1:  334:  prevline = &lb2;
+        -:  335:
+        1:  336:  initbuffer (thisline);
+call    0 returned 100%
+        1:  337:  initbuffer (prevline);
+call    0 returned 100%
+        -:  338:
+        -:  339:  /* The duplication in the following 'if' and 'else' blocks is an
+        -:  340:     optimization to distinguish between when we can print input
+        -:  341:     lines immediately (1. & 2.) or not.
+        -:  342:
+        -:  343:     1. --group => all input lines are printed.
+        -:  344:        checking for unique/duplicated lines is used only for printing
+        -:  345:        group separators.
+        -:  346:
+        -:  347:     2. The default case in which none of these options has been specified:
+        -:  348:          --count, --repeated,  --all-repeated, --unique
+        -:  349:        In the default case, this optimization lets uniq output each different
+        -:  350:        line right away, without waiting to see if the next one is different.
+        -:  351:
+        -:  352:     3. All other cases.
+        -:  353:  */
+        1:  354:  if (output_unique && output_first_repeated && countmode == count_none)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+        1:  355:    {
+        1:  356:      char *prevfield = nullptr;
+        -:  357:      size_t prevlen;
+        1:  358:      bool first_group_printed = false;
+        -:  359:
+        2:  360:      while (!feof (stdin))
+call    0 returned 100%
+branch  1 taken 50%
+branch  2 taken 50% (fallthrough)
+        -:  361:        {
+        -:  362:          char *thisfield;
+        -:  363:          size_t thislen;
+        -:  364:          bool new_group;
+        -:  365:
+        1:  366:          if (readlinebuffer_delim (thisline, stdin, delimiter) == 0)
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  367:            break;
+        -:  368:
+        1:  369:          thisfield = find_field (thisline);
+        1:  370:          thislen = thisline->length - 1 - (thisfield - thisline->buffer);
+        -:  371:
+        1:  372:          new_group = (!prevfield
+       1*:  373:                       || different (thisfield, prevfield, thislen, prevlen));
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+        -:  374:
+        1:  375:          if (new_group && grouping != GM_NONE
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+    #####:  376:              && (grouping == GM_PREPEND || grouping == GM_BOTH
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  377:                  || (first_group_printed && (grouping == GM_APPEND
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  378:                                              || grouping == GM_SEPARATE))))
+branch  0 never executed
+branch  1 never executed
+    #####:  379:            putchar (delimiter);
+call    0 never executed
+        -:  380:
+       1*:  381:          if (new_group || grouping != GM_NONE)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  382:            {
+        1:  383:              if (fwrite (thisline->buffer, sizeof (char), thisline->length,
+call    0 returned 100%
+        1:  384:                  stdout) != thisline->length)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  385:                write_error ();
+call    0 never executed
+        -:  386:
+        1:  387:              SWAP_LINES (prevline, thisline);
+        1:  388:              prevfield = thisfield;
+        1:  389:              prevlen = thislen;
+        1:  390:              first_group_printed = true;
+        -:  391:            }
+        -:  392:        }
+       1*:  393:      if ((grouping == GM_BOTH || grouping == GM_APPEND) && first_group_printed)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+branch  4 never executed
+branch  5 never executed
+    #####:  394:        putchar (delimiter);
+call    0 never executed
+        -:  395:    }
+        -:  396:  else
+        -:  397:    {
+        -:  398:      char *prevfield;
+        -:  399:      size_t prevlen;
+    #####:  400:      uintmax_t match_count = 0;
+    #####:  401:      bool first_delimiter = true;
+        -:  402:
+    #####:  403:      if (readlinebuffer_delim (prevline, stdin, delimiter) == 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  404:        goto closefiles;
+    #####:  405:      prevfield = find_field (prevline);
+    #####:  406:      prevlen = prevline->length - 1 - (prevfield - prevline->buffer);
+        -:  407:
+    #####:  408:      while (!feof (stdin))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  409:        {
+        -:  410:          bool match;
+        -:  411:          char *thisfield;
+        -:  412:          size_t thislen;
+    #####:  413:          if (readlinebuffer_delim (thisline, stdin, delimiter) == 0)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  414:            {
+    #####:  415:              if (ferror (stdin))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  416:                goto closefiles;
+    #####:  417:              break;
+        -:  418:            }
+    #####:  419:          thisfield = find_field (thisline);
+    #####:  420:          thislen = thisline->length - 1 - (thisfield - thisline->buffer);
+    #####:  421:          match = !different (thisfield, prevfield, thislen, prevlen);
+call    0 never executed
+    #####:  422:          match_count += match;
+        -:  423:
+    #####:  424:          if (match_count == UINTMAX_MAX)
+branch  0 never executed
+branch  1 never executed
+        -:  425:            {
+        -:  426:              if (count_occurrences)
+        -:  427:                error (EXIT_FAILURE, 0, _("too many repeated lines"));
+    #####:  428:              match_count--;
+        -:  429:            }
+        -:  430:
+    #####:  431:          if (delimit_groups != DM_NONE)
+branch  0 never executed
+branch  1 never executed
+        -:  432:            {
+    #####:  433:              if (!match)
+branch  0 never executed
+branch  1 never executed
+        -:  434:                {
+    #####:  435:                  if (match_count) /* a previous match */
+branch  0 never executed
+branch  1 never executed
+    #####:  436:                    first_delimiter = false; /* Only used when DM_SEPARATE */
+        -:  437:                }
+    #####:  438:              else if (match_count == 1)
+branch  0 never executed
+branch  1 never executed
+        -:  439:                {
+    #####:  440:                  if ((delimit_groups == DM_PREPEND)
+branch  0 never executed
+branch  1 never executed
+    #####:  441:                      || (delimit_groups == DM_SEPARATE
+branch  0 never executed
+branch  1 never executed
+    #####:  442:                          && !first_delimiter))
+branch  0 never executed
+branch  1 never executed
+    #####:  443:                    putchar (delimiter);
+call    0 never executed
+        -:  444:                }
+        -:  445:            }
+        -:  446:
+    #####:  447:          if (!match || output_later_repeated)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+        -:  448:            {
+    #####:  449:              writeline (prevline, match, match_count);
+call    0 never executed
+    #####:  450:              SWAP_LINES (prevline, thisline);
+    #####:  451:              prevfield = thisfield;
+    #####:  452:              prevlen = thislen;
+    #####:  453:              if (!match)
+branch  0 never executed
+branch  1 never executed
+    #####:  454:                match_count = 0;
+        -:  455:            }
+        -:  456:        }
+        -:  457:
+    #####:  458:      writeline (prevline, false, match_count);
+call    0 never executed
+        -:  459:    }
+        -:  460:
+        1:  461: closefiles:
+        1:  462:  if (ferror (stdin) || fclose (stdin) != 0)
+call    0 returned 100%
+branch  1 taken 100% (fallthrough)
+branch  2 taken 0%
+call    3 returned 100%
+branch  4 taken 0% (fallthrough)
+branch  5 taken 100%
+    #####:  463:    error (EXIT_FAILURE, errno, _("error reading %s"), quoteaf (infile));
+call    0 never executed
+call    1 never executed
+        -:  464:
+        -:  465:  /* stdout is handled via the atexit-invoked close_stdout function.  */
+        -:  466:
+        1:  467:  free (lb1.buffer);
+        1:  468:  free (lb2.buffer);
+        1:  469:}
+        -:  470:
+        -:  471:enum Skip_field_option_type
+        -:  472:  {
+        -:  473:    SFO_NONE,
+        -:  474:    SFO_OBSOLETE,
+        -:  475:    SFO_NEW
+        -:  476:  };
+        -:  477:
+        -:  478:int
+function main called 4 returned 25% blocks executed 30%
+        4:  479:main (int argc, char **argv)
+        -:  480:{
+        4:  481:  int optc = 0;
+        4:  482:  bool posixly_correct = (getenv ("POSIXLY_CORRECT") != nullptr);
+call    0 returned 100%
+        4:  483:  enum Skip_field_option_type skip_field_option_type = SFO_NONE;
+        4:  484:  unsigned int nfiles = 0;
+        -:  485:  char const *file[2];
+        4:  486:  char delimiter = '\n';	/* change with --zero-terminated, -z */
+        4:  487:  bool output_option_used = false;   /* if true, one of -u/-d/-D/-c was used */
+        -:  488:
+        4:  489:  file[0] = file[1] = "-";
+        -:  490:  initialize_main (&argc, &argv);
+        4:  491:  set_program_name (argv[0]);
+call    0 returned 100%
+        4:  492:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  493:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  494:  textdomain (PACKAGE);
+        -:  495:
+        4:  496:  atexit (close_stdout);
+call    0 returned 100%
+        -:  497:
+        4:  498:  skip_chars = 0;
+        4:  499:  skip_fields = 0;
+        4:  500:  check_chars = SIZE_MAX;
+        4:  501:  output_unique = output_first_repeated = true;
+        4:  502:  output_later_repeated = false;
+        4:  503:  countmode = count_none;
+        4:  504:  delimit_groups = DM_NONE;
+        -:  505:
+        -:  506:  while (true)
+        -:  507:    {
+        -:  508:      /* Parse an operand with leading "+" as a file after "--" was
+        -:  509:         seen; or if pedantic and a file was seen; or if not
+        -:  510:         obsolete.  */
+        -:  511:
+        9:  512:      if (optc == -1
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       9*:  513:          || (posixly_correct && nfiles != 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        9:  514:          || ((optc = getopt_long (argc, argv,
+call    0 returned 100%
+branch  1 taken 33% (fallthrough)
+branch  2 taken 67%
+        -:  515:                                   "-0123456789Dcdf:is:uw:z",
+        -:  516:                                   longopts, nullptr))
+        -:  517:              == -1))
+        -:  518:        {
+        3:  519:          if (argc <= optind)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        3:  520:            break;
+    #####:  521:          if (nfiles == 2)
+branch  0 never executed
+branch  1 never executed
+        -:  522:            {
+    #####:  523:              error (0, 0, _("extra operand %s"), quote (argv[optind]));
+call    0 never executed
+    #####:  524:              usage (EXIT_FAILURE);
+call    0 never executed
+        -:  525:            }
+    #####:  526:          file[nfiles++] = argv[optind++];
+        -:  527:        }
+        6:  528:      else switch (optc)
+branch  0 taken 100%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 0%
+branch 11 taken 0%
+branch 12 taken 0%
+branch 13 taken 0%
+branch 14 taken 0%
+        -:  529:        {
+        6:  530:        case 1:
+        -:  531:          {
+        -:  532:            uintmax_t size;
+        6:  533:            if (optarg[0] == '+'
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  534:                && ! strict_posix2 ()
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  535:                && xstrtoumax (optarg, nullptr, 10, &size, "") == LONGINT_OK
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  536:                && size <= SIZE_MAX)
+    #####:  537:              skip_chars = size;
+        6:  538:            else if (nfiles == 2)
+branch  0 taken 17% (fallthrough)
+branch  1 taken 83%
+        -:  539:              {
+        1:  540:                error (0, 0, _("extra operand %s"), quote (optarg));
+call    0 returned 100%
+        1:  541:                usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  542:              }
+        -:  543:            else
+        5:  544:              file[nfiles++] = optarg;
+        -:  545:          }
+        5:  546:          break;
+        -:  547:
+    #####:  548:        case '0':
+        -:  549:        case '1':
+        -:  550:        case '2':
+        -:  551:        case '3':
+        -:  552:        case '4':
+        -:  553:        case '5':
+        -:  554:        case '6':
+        -:  555:        case '7':
+        -:  556:        case '8':
+        -:  557:        case '9':
+        -:  558:          {
+    #####:  559:            if (skip_field_option_type == SFO_NEW)
+branch  0 never executed
+branch  1 never executed
+    #####:  560:              skip_fields = 0;
+        -:  561:
+    #####:  562:            if (!DECIMAL_DIGIT_ACCUMULATE (skip_fields, optc - '0', size_t))
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+    #####:  563:              skip_fields = SIZE_MAX;
+        -:  564:
+    #####:  565:            skip_field_option_type = SFO_OBSOLETE;
+        -:  566:          }
+    #####:  567:          break;
+        -:  568:
+    #####:  569:        case 'c':
+    #####:  570:          countmode = count_occurrences;
+    #####:  571:          output_option_used = true;
+    #####:  572:          break;
+        -:  573:
+    #####:  574:        case 'd':
+    #####:  575:          output_unique = false;
+    #####:  576:          output_option_used = true;
+    #####:  577:          break;
+        -:  578:
+    #####:  579:        case 'D':
+    #####:  580:          output_unique = false;
+    #####:  581:          output_later_repeated = true;
+    #####:  582:          if (optarg == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  583:            delimit_groups = DM_NONE;
+        -:  584:          else
+    #####:  585:            delimit_groups = XARGMATCH ("--all-repeated", optarg,
+call    0 never executed
+        -:  586:                                        delimit_method_string,
+        -:  587:                                        delimit_method_map);
+    #####:  588:          output_option_used = true;
+    #####:  589:          break;
+        -:  590:
+    #####:  591:        case GROUP_OPTION:
+    #####:  592:          if (optarg == nullptr)
+branch  0 never executed
+branch  1 never executed
+    #####:  593:            grouping = GM_SEPARATE;
+        -:  594:          else
+    #####:  595:            grouping = XARGMATCH ("--group", optarg,
+call    0 never executed
+        -:  596:                                  grouping_method_string,
+        -:  597:                                  grouping_method_map);
+    #####:  598:          break;
+        -:  599:
+    #####:  600:        case 'f':
+    #####:  601:          skip_field_option_type = SFO_NEW;
+    #####:  602:          skip_fields = size_opt (optarg,
+call    0 never executed
+        -:  603:                                  N_("invalid number of fields to skip"));
+    #####:  604:          break;
+        -:  605:
+    #####:  606:        case 'i':
+    #####:  607:          ignore_case = true;
+    #####:  608:          break;
+        -:  609:
+    #####:  610:        case 's':
+    #####:  611:          skip_chars = size_opt (optarg,
+call    0 never executed
+        -:  612:                                 N_("invalid number of bytes to skip"));
+    #####:  613:          break;
+        -:  614:
+    #####:  615:        case 'u':
+    #####:  616:          output_first_repeated = false;
+    #####:  617:          output_option_used = true;
+    #####:  618:          break;
+        -:  619:
+    #####:  620:        case 'w':
+    #####:  621:          check_chars = size_opt (optarg,
+call    0 never executed
+        -:  622:                                  N_("invalid number of bytes to compare"));
+    #####:  623:          break;
+        -:  624:
+    #####:  625:        case 'z':
+    #####:  626:          delimiter = '\0';
+    #####:  627:          break;
+        -:  628:
+    #####:  629:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+        -:  630:
+    #####:  631:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+        -:  632:
+    #####:  633:        default:
+    #####:  634:          usage (EXIT_FAILURE);
+call    0 never executed
+        -:  635:        }
+        -:  636:    }
+        -:  637:
+        -:  638:  /* Note we could allow --group with -D at least, and that would
+        -:  639:     avoid the need to specify a grouping method to --all-repeated.
+        -:  640:     It was thought best to avoid deprecating those parameters though
+        -:  641:     and keep --group separate to other options.  */
+       3*:  642:  if (grouping != GM_NONE && output_option_used)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  643:    {
+        -:  644:      error (0, 0, _("--group is mutually exclusive with -c/-d/-D/-u"));
+    #####:  645:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  646:    }
+        -:  647:
+       3*:  648:  if (grouping != GM_NONE && countmode != count_none)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  649:    {
+        -:  650:      error (0, 0,
+        -:  651:           _("grouping and printing repeat counts is meaningless"));
+    #####:  652:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  653:    }
+        -:  654:
+       3*:  655:  if (countmode == count_occurrences && output_later_repeated)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+        -:  656:    {
+        -:  657:      error (0, 0,
+        -:  658:           _("printing all duplicated lines and repeat counts is meaningless"));
+    #####:  659:      usage (EXIT_FAILURE);
+call    0 never executed
+        -:  660:    }
+        -:  661:
+        3:  662:  check_file (file[0], file[1], delimiter);
+call    0 returned 33%
+        -:  663:
+        1:  664:  return EXIT_SUCCESS;
+        -:  665:}

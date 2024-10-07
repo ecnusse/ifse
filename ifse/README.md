@@ -1,12 +1,12 @@
-# User guide
+# User Guide
 As a symbolic execution tool based on KLEE, IFSE interacts with users through the command line. This document guides how to use IFSE through the command line.
 
 ## Usage
 
-After building, the binaries are located in `build/bin`. Use the following command to run it.
+After building, the binaries are located in `/home/user/ifse/build/bin`. Use the following command to run it.
 
 ```bash
-build/bin/klee --search=bfs --recolossus --recolossus-range=<selected_ranges> --recolossus-external-function=<external_functions>
+/home/user/ifse/build/bin/klee --search=bfs --recolossus --recolossus-range=<selected_ranges> --recolossus-external-function=<external_functions>
 --recolossus-line=<selected_line> --external-calls=all --max-fuzz-solver-time=<number_of_seconds>s --output-dir=<path_to_output> <path_to_bitcode>
 ```
 For example: There are two source code files and one header file below. We compile them separately and link them into a single bc file, program.bc.
@@ -72,7 +72,7 @@ SourceFile2: main.c
 | main.c  | abs,strchr  |   | Enable the algorithm only for abs and strchr appearing in main.c  |
 |   | abs  |   | Enable the algorithm only for all abs encountered in the test |
 |   |strchr |   | Enable the algorithm only for all strchr encountered in the test  |
-| main.c,another  | | 5  |Enable the algorithm only for the external library function (if any) that appears at line 5 in main.c and another.c   |
+| main.c,another.c  | | 5  |Enable the algorithm only for the external library function (if any) that appears at line 5 in main.c and another.c   |
 | main.c |abs |   | Enable the algorithm only to abs appearing in main.c  |
 | main.c  |abs | 5  | Enable the algorithm for the external library function abs (if any) that appears on the fifth line of the main file  |
 | main.c,another.c  | abs|   | Enable the algorithm for using the external library function abs only as it appears in main.c and another.c Note the comma splitting and the strict matching here  |

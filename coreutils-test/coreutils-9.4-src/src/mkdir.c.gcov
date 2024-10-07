@@ -1,0 +1,427 @@
+        -:    0:Source:src/mkdir.c
+        -:    0:Graph:mkdir.gcno
+        -:    0:Data:mkdir.gcda
+        -:    0:Runs:30
+        -:    1:/* mkdir -- make directories
+        -:    2:   Copyright (C) 1990-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* David MacKenzie <djm@ai.mit.edu>  */
+        -:   18:
+        -:   19:#include <config.h>
+        -:   20:#include <stdio.h>
+        -:   21:#include <getopt.h>
+        -:   22:#include <sys/types.h>
+        -:   23:#include <selinux/label.h>
+        -:   24:
+        -:   25:#include "system.h"
+        -:   26:#include "mkdir-p.h"
+        -:   27:#include "modechange.h"
+        -:   28:#include "prog-fprintf.h"
+        -:   29:#include "quote.h"
+        -:   30:#include "savewd.h"
+        -:   31:#include "selinux.h"
+        -:   32:#include "smack.h"
+        -:   33:
+        -:   34:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   35:#define PROGRAM_NAME "mkdir"
+        -:   36:
+        -:   37:#define AUTHORS proper_name ("David MacKenzie")
+        -:   38:
+        -:   39:static struct option const longopts[] =
+        -:   40:{
+        -:   41:  {GETOPT_SELINUX_CONTEXT_OPTION_DECL},
+        -:   42:  {"mode", required_argument, nullptr, 'm'},
+        -:   43:  {"parents", no_argument, nullptr, 'p'},
+        -:   44:  {"verbose", no_argument, nullptr, 'v'},
+        -:   45:  {GETOPT_HELP_OPTION_DECL},
+        -:   46:  {GETOPT_VERSION_OPTION_DECL},
+        -:   47:  {nullptr, 0, nullptr, 0}
+        -:   48:};
+        -:   49:
+        -:   50:void
+function usage called 2 returned 0% blocks executed 27%
+        2:   51:usage (int status)
+        -:   52:{
+        2:   53:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        2:   54:    emit_try_help ();
+call    0 returned 100%
+        -:   55:  else
+        -:   56:    {
+    #####:   57:      printf (_("Usage: %s [OPTION]... DIRECTORY...\n"), program_name);
+call    0 never executed
+    #####:   58:      fputs (_("\
+call    0 never executed
+        -:   59:Create the DIRECTORY(ies), if they do not already exist.\n\
+        -:   60:"), stdout);
+        -:   61:
+    #####:   62:      emit_mandatory_arg_note ();
+call    0 never executed
+        -:   63:
+    #####:   64:      fputs (_("\
+call    0 never executed
+        -:   65:  -m, --mode=MODE   set file mode (as in chmod), not a=rwx - umask\n\
+        -:   66:  -p, --parents     no error if existing, make parent directories as needed,\n\
+        -:   67:                    with their file modes unaffected by any -m option.\n\
+        -:   68:  -v, --verbose     print a message for each created directory\n\
+        -:   69:"), stdout);
+    #####:   70:      fputs (_("\
+call    0 never executed
+        -:   71:  -Z                   set SELinux security context of each created directory\n\
+        -:   72:                         to the default type\n\
+        -:   73:      --context[=CTX]  like -Z, or if CTX is specified then set the SELinux\n\
+        -:   74:                         or SMACK security context to CTX\n\
+        -:   75:"), stdout);
+    #####:   76:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   77:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:   78:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:   79:    }
+        2:   80:  exit (status);
+        -:   81:}
+        -:   82:
+        -:   83:/* Options passed to subsidiary functions.  */
+        -:   84:struct mkdir_options
+        -:   85:{
+        -:   86:  /* Function to make an ancestor, or nullptr if ancestors should not be
+        -:   87:     made.  */
+        -:   88:  int (*make_ancestor_function) (char const *, char const *, void *);
+        -:   89:
+        -:   90:  /* Umask value for when making an ancestor.  */
+        -:   91:  mode_t umask_ancestor;
+        -:   92:
+        -:   93:  /* Umask value for when making the directory itself.  */
+        -:   94:  mode_t umask_self;
+        -:   95:
+        -:   96:  /* Mode for directory itself.  */
+        -:   97:  mode_t mode;
+        -:   98:
+        -:   99:  /* File mode bits affected by MODE.  */
+        -:  100:  mode_t mode_bits;
+        -:  101:
+        -:  102:  /* Set the SELinux File Context.  */
+        -:  103:  struct selabel_handle *set_security_context;
+        -:  104:
+        -:  105:  /* If not null, format to use when reporting newly made directories.  */
+        -:  106:  char const *created_directory_format;
+        -:  107:};
+        -:  108:
+        -:  109:/* Report that directory DIR was made, if OPTIONS requests this.  */
+        -:  110:static void
+function announce_mkdir called 10 returned 100% blocks executed 50%
+       10:  111:announce_mkdir (char const *dir, void *options)
+        -:  112:{
+       10:  113:  struct mkdir_options const *o = options;
+       10:  114:  if (o->created_directory_format)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  115:    prog_fprintf (stdout, o->created_directory_format, quoteaf (dir));
+call    0 never executed
+call    1 never executed
+       10:  116:}
+        -:  117:
+        -:  118:/* Make ancestor directory DIR, whose last component is COMPONENT,
+        -:  119:   with options OPTIONS.  Assume the working directory is COMPONENT's
+        -:  120:   parent.  Return 0 if successful and the resulting directory is
+        -:  121:   readable, 1 if successful but the resulting directory is not
+        -:  122:   readable, -1 (setting errno) otherwise.  */
+        -:  123:static int
+function make_ancestor called 0 returned 0% blocks executed 0%
+    #####:  124:make_ancestor (char const *dir, char const *component, void *options)
+        -:  125:{
+    #####:  126:  struct mkdir_options const *o = options;
+        -:  127:
+    #####:  128:  if (o->set_security_context
+branch  0 never executed
+branch  1 never executed
+    #####:  129:      && defaultcon (o->set_security_context, component, S_IFDIR) < 0
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  130:      && ! ignorable_ctx_err (errno))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  131:    error (0, errno, _("failed to set default creation context for %s"),
+call    0 never executed
+        -:  132:           quoteaf (dir));
+        -:  133:
+    #####:  134:  if (o->umask_ancestor != o->umask_self)
+branch  0 never executed
+branch  1 never executed
+    #####:  135:    umask (o->umask_ancestor);
+call    0 never executed
+    #####:  136:  int r = mkdir (component, S_IRWXUGO);
+call    0 never executed
+    #####:  137:  if (o->umask_ancestor != o->umask_self)
+branch  0 never executed
+branch  1 never executed
+        -:  138:    {
+    #####:  139:      int mkdir_errno = errno;
+    #####:  140:      umask (o->umask_self);
+call    0 never executed
+    #####:  141:      errno = mkdir_errno;
+        -:  142:    }
+    #####:  143:  if (r == 0)
+branch  0 never executed
+branch  1 never executed
+        -:  144:    {
+    #####:  145:      r = (o->umask_ancestor & S_IRUSR) != 0;
+    #####:  146:      announce_mkdir (dir, options);
+call    0 never executed
+        -:  147:    }
+    #####:  148:  return r;
+        -:  149:}
+        -:  150:
+        -:  151:/* Process a command-line file name.  */
+        -:  152:static int
+function process_dir called 38 returned 100% blocks executed 23%
+       38:  153:process_dir (char *dir, struct savewd *wd, void *options)
+        -:  154:{
+       38:  155:  struct mkdir_options const *o = options;
+        -:  156:
+        -:  157:  /* If possible set context before DIR created.  */
+       38:  158:  if (o->set_security_context)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  159:    {
+    #####:  160:      if (! o->make_ancestor_function
+branch  0 never executed
+branch  1 never executed
+    #####:  161:          && defaultcon (o->set_security_context, dir, S_IFDIR) < 0
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  162:          && ! ignorable_ctx_err (errno))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  163:        error (0, errno, _("failed to set default creation context for %s"),
+call    0 never executed
+        -:  164:               quoteaf (dir));
+        -:  165:    }
+        -:  166:
+       76:  167:  int ret = (make_dir_parents (dir, wd, o->make_ancestor_function, options,
+       38:  168:                               o->mode, announce_mkdir,
+       38:  169:                               o->mode_bits, (uid_t) -1, (gid_t) -1, true)
+call    0 returned 100%
+        -:  170:             ? EXIT_SUCCESS
+       38:  171:             : EXIT_FAILURE);
+        -:  172:
+        -:  173:  /* FIXME: Due to the current structure of make_dir_parents()
+        -:  174:     we don't have the facility to call defaultcon() before the
+        -:  175:     final component of DIR is created.  So for now, create the
+        -:  176:     final component with the context from previous component
+        -:  177:     and here we set the context for the final component. */
+       38:  178:  if (ret == EXIT_SUCCESS && o->set_security_context
+branch  0 taken 26% (fallthrough)
+branch  1 taken 74%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+    #####:  179:      && o->make_ancestor_function)
+branch  0 never executed
+branch  1 never executed
+        -:  180:    {
+    #####:  181:      if (! restorecon (o->set_security_context, last_component (dir), false)
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  182:          && ! ignorable_ctx_err (errno))
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  183:        error (0, errno, _("failed to restore context for %s"),
+call    0 never executed
+        -:  184:               quoteaf (dir));
+        -:  185:    }
+        -:  186:
+       38:  187:  return ret;
+        -:  188:}
+        -:  189:
+        -:  190:int
+function main called 30 returned 93% blocks executed 33%
+       30:  191:main (int argc, char **argv)
+        -:  192:{
+       30:  193:  char const *specified_mode = nullptr;
+        -:  194:  int optc;
+       30:  195:  char const *scontext = nullptr;
+        -:  196:  struct mkdir_options options;
+        -:  197:
+       30:  198:  options.make_ancestor_function = nullptr;
+       30:  199:  options.mode = S_IRWXUGO;
+       30:  200:  options.mode_bits = 0;
+       30:  201:  options.created_directory_format = nullptr;
+       30:  202:  options.set_security_context = nullptr;
+        -:  203:
+        -:  204:  initialize_main (&argc, &argv);
+       30:  205:  set_program_name (argv[0]);
+call    0 returned 100%
+       30:  206:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  207:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  208:  textdomain (PACKAGE);
+        -:  209:
+       30:  210:  atexit (close_stdout);
+call    0 returned 100%
+        -:  211:
+       30:  212:  while ((optc = getopt_long (argc, argv, "pm:vZ", longopts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 3%
+branch  2 taken 97% (fallthrough)
+        -:  213:    {
+        1:  214:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 100%
+        -:  215:        {
+    #####:  216:        case 'p':
+    #####:  217:          options.make_ancestor_function = make_ancestor;
+    #####:  218:          break;
+    #####:  219:        case 'm':
+    #####:  220:          specified_mode = optarg;
+    #####:  221:          break;
+    #####:  222:        case 'v': /* --verbose  */
+    #####:  223:          options.created_directory_format = _("created directory %s");
+    #####:  224:          break;
+    #####:  225:        case 'Z':
+    #####:  226:          if (is_smack_enabled ())
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+        -:  227:            {
+        -:  228:              /* We don't yet support -Z to restore context with SMACK.  */
+    #####:  229:              scontext = optarg;
+        -:  230:            }
+        -:  231:          else if (is_selinux_enabled () > 0)
+        -:  232:            {
+        -:  233:              if (optarg)
+        -:  234:                scontext = optarg;
+        -:  235:              else
+        -:  236:                {
+        -:  237:                  options.set_security_context = selabel_open (SELABEL_CTX_FILE,
+        -:  238:                                                               nullptr, 0);
+        -:  239:                  if (! options.set_security_context)
+        -:  240:                    error (0, errno, _("warning: ignoring --context"));
+        -:  241:                }
+        -:  242:            }
+    #####:  243:          else if (optarg)
+branch  0 never executed
+branch  1 never executed
+        -:  244:            {
+        -:  245:              error (0, 0,
+        -:  246:                     _("warning: ignoring --context; "
+        -:  247:                       "it requires an SELinux/SMACK-enabled kernel"));
+        -:  248:            }
+    #####:  249:          break;
+    #####:  250:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  251:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+        1:  252:        default:
+        1:  253:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  254:        }
+        -:  255:    }
+        -:  256:
+       29:  257:  if (optind == argc)
+branch  0 taken 3% (fallthrough)
+branch  1 taken 97%
+        -:  258:    {
+        -:  259:      error (0, 0, _("missing operand"));
+        1:  260:      usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  261:    }
+        -:  262:
+        -:  263:  /* FIXME: This assumes mkdir() is done in the same process.
+        -:  264:     If that's not always the case we would need to call this
+        -:  265:     like we do when options.set_security_context.  */
+       28:  266:  if (scontext)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  267:    {
+    #####:  268:      int ret = 0;
+    #####:  269:      if (is_smack_enabled ())
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  270:        ret = smack_set_label_for_self (scontext);
+call    0 never executed
+        -:  271:      else
+    #####:  272:        ret = setfscreatecon (scontext);
+call    0 never executed
+        -:  273:
+    #####:  274:      if (ret < 0)
+branch  0 never executed
+branch  1 never executed
+    #####:  275:        error (EXIT_FAILURE, errno,
+call    0 never executed
+call    1 never executed
+        -:  276:               _("failed to set default file creation context to %s"),
+        -:  277:               quote (scontext));
+        -:  278:    }
+        -:  279:
+        -:  280:
+       28:  281:  if (options.make_ancestor_function || specified_mode)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+        -:  282:    {
+    #####:  283:      mode_t umask_value = umask (0);
+call    0 never executed
+    #####:  284:      options.umask_ancestor = umask_value & ~(S_IWUSR | S_IXUSR);
+        -:  285:
+    #####:  286:      if (specified_mode)
+branch  0 never executed
+branch  1 never executed
+        -:  287:        {
+    #####:  288:          struct mode_change *change = mode_compile (specified_mode);
+call    0 never executed
+    #####:  289:          if (!change)
+branch  0 never executed
+branch  1 never executed
+    #####:  290:            error (EXIT_FAILURE, 0, _("invalid mode %s"),
+call    0 never executed
+call    1 never executed
+        -:  291:                   quote (specified_mode));
+    #####:  292:          options.mode = mode_adjust (S_IRWXUGO, true, umask_value, change,
+        -:  293:                                      &options.mode_bits);
+    #####:  294:          options.umask_self = umask_value & ~options.mode;
+    #####:  295:          free (change);
+        -:  296:        }
+        -:  297:      else
+        -:  298:        {
+    #####:  299:          options.mode = S_IRWXUGO;
+    #####:  300:          options.umask_self = umask_value;
+        -:  301:        }
+        -:  302:
+    #####:  303:      umask (options.umask_self);
+call    0 never executed
+        -:  304:    }
+        -:  305:
+       28:  306:  return savewd_process_files (argc - optind, argv + optind,
+call    0 returned 100%
+        -:  307:                               process_dir, &options);
+        -:  308:}

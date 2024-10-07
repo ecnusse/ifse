@@ -1,0 +1,730 @@
+        -:    0:Source:src/id.c
+        -:    0:Graph:id.gcno
+        -:    0:Data:id.gcda
+        -:    0:Runs:24
+        -:    1:/* id -- print real and effective UIDs and GIDs
+        -:    2:   Copyright (C) 1989-2023 Free Software Foundation, Inc.
+        -:    3:
+        -:    4:   This program is free software: you can redistribute it and/or modify
+        -:    5:   it under the terms of the GNU General Public License as published by
+        -:    6:   the Free Software Foundation, either version 3 of the License, or
+        -:    7:   (at your option) any later version.
+        -:    8:
+        -:    9:   This program is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   12:   GNU General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU General Public License
+        -:   15:   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+        -:   16:
+        -:   17:/* Written by Arnold Robbins.
+        -:   18:   Major rewrite by David MacKenzie, djm@gnu.ai.mit.edu. */
+        -:   19:
+        -:   20:#include <config.h>
+        -:   21:#include <stdio.h>
+        -:   22:#include <sys/types.h>
+        -:   23:#include <pwd.h>
+        -:   24:#include <grp.h>
+        -:   25:#include <getopt.h>
+        -:   26:#include <selinux/selinux.h>
+        -:   27:
+        -:   28:#include "system.h"
+        -:   29:#include "mgetgroups.h"
+        -:   30:#include "quote.h"
+        -:   31:#include "group-list.h"
+        -:   32:#include "smack.h"
+        -:   33:#include "userspec.h"
+        -:   34:
+        -:   35:/* The official name of this program (e.g., no 'g' prefix).  */
+        -:   36:#define PROGRAM_NAME "id"
+        -:   37:
+        -:   38:#define AUTHORS \
+        -:   39:  proper_name ("Arnold Robbins"), \
+        -:   40:  proper_name ("David MacKenzie")
+        -:   41:
+        -:   42:/* If nonzero, output only the SELinux context.  */
+        -:   43:static bool just_context = 0;
+        -:   44:/* If true, delimit entries with NUL characters, not whitespace */
+        -:   45:static bool opt_zero = false;
+        -:   46:/* If true, output the list of all group IDs. -G */
+        -:   47:static bool just_group_list = false;
+        -:   48:/* If true, output only the group ID(s). -g */
+        -:   49:static bool just_group = false;
+        -:   50:/* If true, output real UID/GID instead of default effective UID/GID. -r */
+        -:   51:static bool use_real = false;
+        -:   52:/* If true, output only the user ID(s). -u */
+        -:   53:static bool just_user = false;
+        -:   54:/* True unless errors have been encountered.  */
+        -:   55:static bool ok = true;
+        -:   56:/* If true, we are using multiple users. Terminate -G with double NUL. */
+        -:   57:static bool multiple_users = false;
+        -:   58:/* If true, output user/group name instead of ID number. -n */
+        -:   59:static bool use_name = false;
+        -:   60:
+        -:   61:/* The real and effective IDs of the user to print. */
+        -:   62:static uid_t ruid, euid;
+        -:   63:static gid_t rgid, egid;
+        -:   64:
+        -:   65:/* The SELinux context.  Start with a known invalid value so print_full_info
+        -:   66:   knows when 'context' has not been set to a meaningful value.  */
+        -:   67:static char *context = nullptr;
+        -:   68:
+        -:   69:static void print_user (uid_t uid);
+        -:   70:static void print_full_info (char const *username);
+        -:   71:static void print_stuff (char const *pw_name);
+        -:   72:
+        -:   73:static struct option const longopts[] =
+        -:   74:{
+        -:   75:  {"context", no_argument, nullptr, 'Z'},
+        -:   76:  {"group", no_argument, nullptr, 'g'},
+        -:   77:  {"groups", no_argument, nullptr, 'G'},
+        -:   78:  {"name", no_argument, nullptr, 'n'},
+        -:   79:  {"real", no_argument, nullptr, 'r'},
+        -:   80:  {"user", no_argument, nullptr, 'u'},
+        -:   81:  {"zero", no_argument, nullptr, 'z'},
+        -:   82:  {GETOPT_HELP_OPTION_DECL},
+        -:   83:  {GETOPT_VERSION_OPTION_DECL},
+        -:   84:  {nullptr, 0, nullptr, 0}
+        -:   85:};
+        -:   86:
+        -:   87:void
+function usage called 1 returned 0% blocks executed 30%
+        1:   88:usage (int status)
+        -:   89:{
+        1:   90:  if (status != EXIT_SUCCESS)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:   91:    emit_try_help ();
+call    0 returned 100%
+        -:   92:  else
+        -:   93:    {
+    #####:   94:      printf (_("Usage: %s [OPTION]... [USER]...\n"), program_name);
+call    0 never executed
+    #####:   95:      fputs (_("\
+call    0 never executed
+        -:   96:Print user and group information for each specified USER,\n\
+        -:   97:or (when USER omitted) for the current process.\n\
+        -:   98:\n"),
+        -:   99:             stdout);
+    #####:  100:      fputs (_("\
+call    0 never executed
+        -:  101:  -a             ignore, for compatibility with other versions\n\
+        -:  102:  -Z, --context  print only the security context of the process\n\
+        -:  103:  -g, --group    print only the effective group ID\n\
+        -:  104:  -G, --groups   print all group IDs\n\
+        -:  105:  -n, --name     print a name instead of a number, for -ugG\n\
+        -:  106:  -r, --real     print the real ID instead of the effective ID, with -ugG\n\
+        -:  107:  -u, --user     print only the effective user ID\n\
+        -:  108:  -z, --zero     delimit entries with NUL characters, not whitespace;\n\
+        -:  109:                   not permitted in default format\n\
+        -:  110:"), stdout);
+    #####:  111:      fputs (HELP_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  112:      fputs (VERSION_OPTION_DESCRIPTION, stdout);
+call    0 never executed
+    #####:  113:      fputs (_("\
+call    0 never executed
+        -:  114:\n\
+        -:  115:Without any OPTION, print some useful set of identified information.\n\
+        -:  116:"), stdout);
+    #####:  117:      emit_ancillary_info (PROGRAM_NAME);
+call    0 never executed
+        -:  118:    }
+        1:  119:  exit (status);
+        -:  120:}
+        -:  121:
+        -:  122:int
+function main called 24 returned 96% blocks executed 48%
+       24:  123:main (int argc, char **argv)
+        -:  124:{
+        -:  125:  int optc;
+       24:  126:  int selinux_enabled = (is_selinux_enabled () > 0);
+       24:  127:  bool smack_enabled = is_smack_enabled ();
+call    0 returned 100%
+        -:  128:
+        -:  129:  initialize_main (&argc, &argv);
+       24:  130:  set_program_name (argv[0]);
+call    0 returned 100%
+       24:  131:  setlocale (LC_ALL, "");
+call    0 returned 100%
+        -:  132:  bindtextdomain (PACKAGE, LOCALEDIR);
+        -:  133:  textdomain (PACKAGE);
+        -:  134:
+       24:  135:  atexit (close_stdout);
+call    0 returned 100%
+        -:  136:
+       24:  137:  while ((optc = getopt_long (argc, argv, "agnruzGZ", longopts, nullptr)) != -1)
+call    0 returned 100%
+branch  1 taken 4%
+branch  2 taken 96% (fallthrough)
+        -:  138:    {
+        1:  139:      switch (optc)
+branch  0 taken 0%
+branch  1 taken 0%
+branch  2 taken 0%
+branch  3 taken 0%
+branch  4 taken 0%
+branch  5 taken 0%
+branch  6 taken 0%
+branch  7 taken 0%
+branch  8 taken 0%
+branch  9 taken 0%
+branch 10 taken 100%
+        -:  140:        {
+    #####:  141:        case 'a':
+        -:  142:          /* Ignore -a, for compatibility with SVR4.  */
+    #####:  143:          break;
+        -:  144:
+    #####:  145:        case 'Z':
+        -:  146:          /* politely decline if we're not on a SELinux/SMACK-enabled kernel. */
+        -:  147:#ifdef HAVE_SMACK
+        -:  148:          if (!selinux_enabled && !smack_enabled)
+        -:  149:            error (EXIT_FAILURE, 0,
+        -:  150:                   _("--context (-Z) works only on "
+        -:  151:                     "an SELinux/SMACK-enabled kernel"));
+        -:  152:#else
+    #####:  153:          if (!selinux_enabled)
+branch  0 never executed
+branch  1 never executed
+    #####:  154:            error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  155:                   _("--context (-Z) works only on an SELinux-enabled kernel"));
+        -:  156:#endif
+    #####:  157:          just_context = true;
+    #####:  158:          break;
+        -:  159:
+    #####:  160:        case 'g':
+    #####:  161:          just_group = true;
+    #####:  162:          break;
+    #####:  163:        case 'n':
+    #####:  164:          use_name = true;
+    #####:  165:          break;
+    #####:  166:        case 'r':
+    #####:  167:          use_real = true;
+    #####:  168:          break;
+    #####:  169:        case 'u':
+    #####:  170:          just_user = true;
+    #####:  171:          break;
+    #####:  172:        case 'z':
+    #####:  173:          opt_zero = true;
+    #####:  174:          break;
+    #####:  175:        case 'G':
+    #####:  176:          just_group_list = true;
+    #####:  177:          break;
+    #####:  178:        case_GETOPT_HELP_CHAR;
+call    0 never executed
+    #####:  179:        case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
+call    0 never executed
+call    1 never executed
+call    2 never executed
+call    3 never executed
+        1:  180:        default:
+        1:  181:          usage (EXIT_FAILURE);
+call    0 returned 0%
+        -:  182:        }
+        -:  183:    }
+        -:  184:
+       23:  185:  size_t n_ids = argc - optind;
+        -:  186:
+       23:  187:  if (n_ids && just_context)
+branch  0 taken 96% (fallthrough)
+branch  1 taken 4%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+    #####:  188:    error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  189:           _("cannot print security context when user specified"));
+        -:  190:
+       23:  191:  if (just_user + just_group + just_group_list + just_context > 1)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  192:    error (EXIT_FAILURE, 0, _("cannot print \"only\" of more than one choice"));
+call    0 never executed
+        -:  193:
+      46*:  194:  bool default_format = ! (just_user
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       23:  195:                           || just_group
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       23:  196:                           || just_group_list
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+       23:  197:                           || just_context);
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  198:
+       23:  199:  if (default_format && (use_real || use_name))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 0% (fallthrough)
+branch  5 taken 100%
+    #####:  200:    error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  201:           _("cannot print only names or real IDs in default format"));
+        -:  202:
+       23:  203:  if (default_format && opt_zero)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 0% (fallthrough)
+branch  3 taken 100%
+    #####:  204:    error (EXIT_FAILURE, 0,
+call    0 never executed
+        -:  205:           _("option --zero not permitted in default format"));
+        -:  206:
+        -:  207:  /* If we are on a SELinux/SMACK-enabled kernel, no user is specified, and
+        -:  208:     either --context is specified or none of (-u,-g,-G) is specified,
+        -:  209:     and we're not in POSIXLY_CORRECT mode, get our context.  Otherwise,
+        -:  210:     leave the context variable alone - it has been initialized to an
+        -:  211:     invalid value that will be not displayed in print_full_info().  */
+       23:  212:  if (n_ids == 0
+branch  0 taken 4% (fallthrough)
+branch  1 taken 96%
+        1:  213:      && (just_context
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  214:          || (default_format && ! getenv ("POSIXLY_CORRECT"))))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+call    2 returned 100%
+branch  3 taken 100% (fallthrough)
+branch  4 taken 0%
+        -:  215:    {
+        -:  216:      /* Report failure only if --context (-Z) was explicitly requested.  */
+       1*:  217:      if ((selinux_enabled && getcon (&context) && just_context)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+branch  6 never executed
+        1:  218:          || (smack_enabled
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  219:              && smack_new_label_from_self (&context) < 0
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:  220:              && just_context))
+branch  0 never executed
+branch  1 never executed
+    #####:  221:        error (EXIT_FAILURE, 0, _("can't get process context"));
+call    0 never executed
+        -:  222:    }
+        -:  223:
+       23:  224:  if (n_ids >= 1)
+branch  0 taken 96% (fallthrough)
+branch  1 taken 4%
+        -:  225:    {
+       22:  226:      multiple_users = n_ids > 1 ? true : false;
+        -:  227:      /* Changing the value of n_ids to the last index in the array where we
+        -:  228:         have the last possible user id. This helps us because we don't have
+        -:  229:         to declare a different variable to keep a track of where the
+        -:  230:         last username lies in argv[].  */
+       22:  231:      n_ids += optind;
+        -:  232:      /* For each username/userid to get its pw_name field */
+       48:  233:      for (; optind < n_ids; optind++)
+branch  0 taken 54%
+branch  1 taken 46%
+        -:  234:        {
+       26:  235:          char *pw_name = nullptr;
+       26:  236:          struct passwd *pwd = nullptr;
+       26:  237:          char const *spec = argv[optind];
+        -:  238:          /* Disallow an empty spec here as parse_user_spec() doesn't
+        -:  239:             give an error for that as it seems it's a valid way to
+        -:  240:             specify a noop or "reset special bits" depending on the system.  */
+       26:  241:          if (*spec)
+branch  0 taken 77% (fallthrough)
+branch  1 taken 23%
+        -:  242:            {
+       20:  243:              if (! parse_user_spec (spec, &euid, nullptr, &pw_name, nullptr))
+call    0 returned 100%
+branch  1 taken 0% (fallthrough)
+branch  2 taken 100%
+    #####:  244:                pwd = pw_name ? getpwnam (pw_name) : getpwuid (euid);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+call    3 never executed
+        -:  245:            }
+       26:  246:          if (pwd == nullptr)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        -:  247:            {
+       26:  248:              error (0, errno, _("%s: no such user"), quote (spec));
+call    0 returned 100%
+       26:  249:              ok &= false;
+        -:  250:            }
+        -:  251:          else
+        -:  252:            {
+    #####:  253:              if (!pw_name)
+branch  0 never executed
+branch  1 never executed
+    #####:  254:                pw_name = xstrdup (pwd->pw_name);
+call    0 never executed
+    #####:  255:              ruid = euid = pwd->pw_uid;
+    #####:  256:              rgid = egid = pwd->pw_gid;
+    #####:  257:              print_stuff (pw_name);
+call    0 never executed
+        -:  258:            }
+       26:  259:          free (pw_name);
+        -:  260:        }
+        -:  261:    }
+        -:  262:  else
+        -:  263:    {
+        -:  264:      /* POSIX says identification functions (getuid, getgid, and
+        -:  265:         others) cannot fail, but they can fail under GNU/Hurd and a
+        -:  266:         few other systems.  Test for failure by checking errno.  */
+        1:  267:      uid_t NO_UID = -1;
+        1:  268:      gid_t NO_GID = -1;
+        -:  269:
+       2*:  270:      if (just_user ? !use_real
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+       1*:  271:          : !just_group && !just_group_list && !just_context)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+        -:  272:        {
+        1:  273:          errno = 0;
+        1:  274:          euid = geteuid ();
+call    0 returned 100%
+       1*:  275:          if (euid == NO_UID && errno)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  276:            error (EXIT_FAILURE, errno, _("cannot get effective UID"));
+call    0 never executed
+        -:  277:        }
+        -:  278:
+       2*:  279:      if (just_user ? use_real
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+       1*:  280:          : !just_group && (just_group_list || !just_context))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+        -:  281:        {
+        1:  282:          errno = 0;
+        1:  283:          ruid = getuid ();
+call    0 returned 100%
+       1*:  284:          if (ruid == NO_UID && errno)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  285:            error (EXIT_FAILURE, errno, _("cannot get real UID"));
+call    0 never executed
+        -:  286:        }
+        -:  287:
+        1:  288:      if (!just_user && (just_group || just_group_list || !just_context))
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+branch  2 taken 100% (fallthrough)
+branch  3 taken 0%
+branch  4 taken 100% (fallthrough)
+branch  5 taken 0%
+branch  6 taken 100% (fallthrough)
+branch  7 taken 0%
+        -:  289:        {
+        1:  290:          errno = 0;
+        1:  291:          egid = getegid ();
+call    0 returned 100%
+       1*:  292:          if (egid == NO_GID && errno)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  293:            error (EXIT_FAILURE, errno, _("cannot get effective GID"));
+call    0 never executed
+        -:  294:
+        1:  295:          errno = 0;
+        1:  296:          rgid = getgid ();
+call    0 returned 100%
+       1*:  297:          if (rgid == NO_GID && errno)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+    #####:  298:            error (EXIT_FAILURE, errno, _("cannot get real GID"));
+call    0 never executed
+        -:  299:        }
+        1:  300:        print_stuff (nullptr);
+call    0 returned 100%
+        -:  301:    }
+        -:  302:
+       23:  303:  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        -:  304:}
+        -:  305:
+        -:  306:/* Convert a gid_t to string.  Do not use this function directly.
+        -:  307:   Instead, use it via the gidtostr macro.
+        -:  308:   Beware that it returns a pointer to static storage.  */
+        -:  309:static char *
+function gidtostr_ptr called 2 returned 100% blocks executed 100%
+        2:  310:gidtostr_ptr (gid_t const *gid)
+        -:  311:{
+        -:  312:  static char buf[INT_BUFSIZE_BOUND (uintmax_t)];
+        2:  313:  return umaxtostr (*gid, buf);
+call    0 returned 100%
+        -:  314:}
+        -:  315:#define gidtostr(g) gidtostr_ptr (&(g))
+        -:  316:
+        -:  317:/* Convert a uid_t to string.  Do not use this function directly.
+        -:  318:   Instead, use it via the uidtostr macro.
+        -:  319:   Beware that it returns a pointer to static storage.  */
+        -:  320:static char *
+function uidtostr_ptr called 1 returned 100% blocks executed 100%
+        1:  321:uidtostr_ptr (uid_t const *uid)
+        -:  322:{
+        -:  323:  static char buf[INT_BUFSIZE_BOUND (uintmax_t)];
+        1:  324:  return umaxtostr (*uid, buf);
+call    0 returned 100%
+        -:  325:}
+        -:  326:#define uidtostr(u) uidtostr_ptr (&(u))
+        -:  327:
+        -:  328:/* Print the name or value of user ID UID. */
+        -:  329:
+        -:  330:static void
+function print_user called 0 returned 0% blocks executed 0%
+    #####:  331:print_user (uid_t uid)
+        -:  332:{
+    #####:  333:  struct passwd *pwd = nullptr;
+        -:  334:
+    #####:  335:  if (use_name)
+branch  0 never executed
+branch  1 never executed
+        -:  336:    {
+    #####:  337:      pwd = getpwuid (uid);
+call    0 never executed
+    #####:  338:      if (pwd == nullptr)
+branch  0 never executed
+branch  1 never executed
+        -:  339:        {
+    #####:  340:          error (0, 0, _("cannot find name for user ID %s"),
+call    0 never executed
+        -:  341:                 uidtostr (uid));
+    #####:  342:          ok &= false;
+        -:  343:        }
+        -:  344:    }
+        -:  345:
+    #####:  346:  char *s = pwd ? pwd->pw_name : uidtostr (uid);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####:  347:  fputs (s, stdout);
+call    0 never executed
+    #####:  348:}
+        -:  349:
+        -:  350:/* Print all of the info about the user's user and group IDs. */
+        -:  351:
+        -:  352:static void
+function print_full_info called 1 returned 100% blocks executed 52%
+        1:  353:print_full_info (char const *username)
+        -:  354:{
+        -:  355:  struct passwd *pwd;
+        -:  356:  struct group *grp;
+        -:  357:
+        1:  358:  printf (_("uid=%s"), uidtostr (ruid));
+call    0 returned 100%
+call    1 returned 100%
+        1:  359:  pwd = getpwuid (ruid);
+call    0 returned 100%
+        1:  360:  if (pwd)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  361:    printf ("(%s)", pwd->pw_name);
+call    0 returned 100%
+        -:  362:
+        1:  363:  printf (_(" gid=%s"), gidtostr (rgid));
+call    0 returned 100%
+call    1 returned 100%
+        1:  364:  grp = getgrgid (rgid);
+call    0 returned 100%
+        1:  365:  if (grp)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  366:    printf ("(%s)", grp->gr_name);
+call    0 returned 100%
+        -:  367:
+        1:  368:  if (euid != ruid)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  369:    {
+    #####:  370:      printf (_(" euid=%s"), uidtostr (euid));
+call    0 never executed
+call    1 never executed
+    #####:  371:      pwd = getpwuid (euid);
+call    0 never executed
+    #####:  372:      if (pwd)
+branch  0 never executed
+branch  1 never executed
+    #####:  373:        printf ("(%s)", pwd->pw_name);
+call    0 never executed
+        -:  374:    }
+        -:  375:
+        1:  376:  if (egid != rgid)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  377:    {
+    #####:  378:      printf (_(" egid=%s"), gidtostr (egid));
+call    0 never executed
+call    1 never executed
+    #####:  379:      grp = getgrgid (egid);
+call    0 never executed
+    #####:  380:      if (grp)
+branch  0 never executed
+branch  1 never executed
+    #####:  381:        printf ("(%s)", grp->gr_name);
+call    0 never executed
+        -:  382:    }
+        -:  383:
+        -:  384:  {
+        -:  385:    gid_t *groups;
+        -:  386:
+        -:  387:    gid_t primary_group;
+        1:  388:    if (username)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  389:      primary_group = pwd ? pwd->pw_gid : -1;
+branch  0 never executed
+branch  1 never executed
+        -:  390:    else
+        1:  391:      primary_group = egid;
+        -:  392:
+        1:  393:    int n_groups = xgetgroups (username, primary_group, &groups);
+call    0 returned 100%
+        1:  394:    if (n_groups < 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+        -:  395:      {
+    #####:  396:        if (username)
+branch  0 never executed
+branch  1 never executed
+    #####:  397:          error (0, errno, _("failed to get groups for user %s"),
+call    0 never executed
+        -:  398:                 quote (username));
+        -:  399:        else
+    #####:  400:          error (0, errno, _("failed to get groups for the current process"));
+    #####:  401:        ok &= false;
+    #####:  402:        return;
+        -:  403:      }
+        -:  404:
+        1:  405:    if (n_groups > 0)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  406:      fputs (_(" groups="), stdout);
+call    0 returned 100%
+        2:  407:    for (int i = 0; i < n_groups; i++)
+branch  0 taken 50%
+branch  1 taken 50% (fallthrough)
+        -:  408:      {
+        1:  409:        if (i > 0)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  410:          putchar (',');
+call    0 never executed
+        1:  411:        fputs (gidtostr (groups[i]), stdout);
+call    0 returned 100%
+call    1 returned 100%
+        1:  412:        grp = getgrgid (groups[i]);
+call    0 returned 100%
+        1:  413:        if (grp)
+branch  0 taken 100% (fallthrough)
+branch  1 taken 0%
+        1:  414:          printf ("(%s)", grp->gr_name);
+call    0 returned 100%
+        -:  415:      }
+        1:  416:    free (groups);
+        -:  417:  }
+        -:  418:
+        -:  419:  /* POSIX mandates the precise output format, and that it not include
+        -:  420:     any context=... part, so skip that if POSIXLY_CORRECT is set.  */
+        1:  421:  if (context)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  422:    printf (_(" context=%s"), context);
+call    0 never executed
+        -:  423:}
+        -:  424:
+        -:  425:/* Print information about the user based on the arguments passed. */
+        -:  426:
+        -:  427:static void
+function print_stuff called 1 returned 100% blocks executed 33%
+        1:  428:print_stuff (char const *pw_name)
+        -:  429:{
+        1:  430:  if (just_user)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  431:      print_user (use_real ? ruid : euid);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:  432:
+        -:  433:  /* print_group and print_group_list return true on successful
+        -:  434:     execution but false if something goes wrong. We then AND this value with
+        -:  435:     the current value of 'ok' because we want to know if one of the previous
+        -:  436:     users faced a problem in these functions. This value of 'ok' is later used
+        -:  437:     to understand what status program should exit with. */
+        1:  438:  else if (just_group)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  439:    ok &= print_group (use_real ? rgid : egid, use_name);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        1:  440:  else if (just_group_list)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  441:    ok &= print_group_list (pw_name, ruid, rgid, egid,
+call    0 never executed
+    #####:  442:                            use_name, opt_zero ? '\0' : ' ');
+branch  0 never executed
+branch  1 never executed
+        1:  443:  else if (just_context)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+    #####:  444:    fputs (context, stdout);
+call    0 never executed
+        -:  445:  else
+        1:  446:    print_full_info (pw_name);
+call    0 returned 100%
+        -:  447:
+        -:  448:  /* When printing records for more than 1 user, at the end of groups
+        -:  449:     of each user terminate the record with two consequent NUL characters
+        -:  450:     to make parsing and distinguishing between two records possible. */
+       1*:  451:  if (opt_zero && just_group_list && multiple_users)
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+branch  5 never executed
+        -:  452:    {
+    #####:  453:      putchar ('\0');
+call    0 never executed
+    #####:  454:      putchar ('\0');
+call    0 never executed
+        -:  455:    }
+        -:  456:  else
+        -:  457:    {
+       1*:  458:      putchar (opt_zero ? '\0' : '\n');
+branch  0 taken 0% (fallthrough)
+branch  1 taken 100%
+call    2 returned 100%
+        -:  459:    }
+        1:  460:}
