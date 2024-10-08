@@ -28,7 +28,7 @@ Follow these links for installation instructions on [Ubuntu](https://docs.docker
 We have packaged and pushed the docker image of IFSE to DockerHub, you can pull the docker image by following instruction:
 
 ```sh
-docker pull achilles0425/ifse-image:stable
+docker pull ifseanalysis/ifse-image:stable
 ```
 
  This command builds a Docker image named `ifse-image`, which contains the complete runtime environment, source code and evaluation scripts. 
@@ -38,7 +38,7 @@ If the image is pulled successfully, you can use the following command to have a
 ```sh
 $ docker images
 REPOSITORY                                     TAG       IMAGE ID       CREATED         SIZE
-achilles0425/ifse-image                        stable    a78bcd0cfa67   2 months ago    11.3GB
+ifseanalysis/ifse-image                       stable    a78bcd0cfa67   2 months ago    11.7GB
 ```
 
 
@@ -48,7 +48,7 @@ achilles0425/ifse-image                        stable    a78bcd0cfa67   2 months
 To run the image, use the following command:
 
 ```sh
-docker run -it ifse-image:stable
+docker run -it ifseanalysis/ifse-image:stable 
 ```
 
 
