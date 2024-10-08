@@ -9,10 +9,10 @@ IFSE (**I**ntegrating **F**uzz Solving into **S**ymbolic **E**xecution) is an op
 
 You can refer to the following documents for a deeper understanding of IFSE.
 
-| Document      | Brief Introduction                                          |
-| ------------- | ----------------------------------------------------------- |
+| &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Document &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; | &nbsp; &nbsp; &nbsp; &nbsp; Brief Introduction &nbsp; &nbsp; &nbsp; &nbsp; |
+| :-------------: | ----------------------------------------------------------- |
 | [SETUP.md](https://github.com/xuruiyang2002/ifse/blob/main/SETUP.md)  | Guide on how to set up IFSE and recompile IFSE when needed. |
-| [GUIDE.md](https://github.com/xuruiyang2002/ifse/blob/main/GUIDE.md)      | Guide on how to use IFSE.                                   |
+| [GUIDE.md](https://github.com/xuruiyang2002/ifse/blob/main/GUIDE.md)      | Guide on how to use IFSE through command line.                                   |
 | [EVALUATION.md](https://github.com/xuruiyang2002/ifse/blob/main/EVALUATION.md) | Evaluation result of IFSE.                                  |
 | [REPRODUCE.md](https://github.com/xuruiyang2002/ifse/blob/main/REPRODUCE.md)  | Guide on how to reproduce the evaluation result.            |
 
