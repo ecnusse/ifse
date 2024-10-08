@@ -91,5 +91,6 @@ RUN rm -rf /root/.cargo/registry/cache
 
 COPY ./ifse /home/user/ifse
 COPY ./coreutils-test /home/user/coreutils-test
+COPY ./README.md /home/user/README.md
 
 WORKDIR /home/user/ifse
