@@ -47,7 +47,7 @@ ${KLEE_EXE_PATH} \
     --output-dir=${KLEE_OUT_DIR} \
     --external-calls=all \
     --only-output-states-covering-new \
-    ${driver_name}".bc" ${ARGS} &> ${KLEE_OUT_DIR_ALL}/${driver_name}-original-"error.log"
+    ${driver_name}".bc" ${ARGS}
 wait
 end_second=$(date +%s)
 touch ${TIME_LOG_TXT}
