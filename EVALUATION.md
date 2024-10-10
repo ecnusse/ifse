@@ -243,15 +243,27 @@ To study their impact on the performance of IFSE, we conducted ablation experime
 3. **IFSE with splitter**
 4. **IFSE with both**
 
-#### Results
+#### Line Coverage
 
 In evaluating 79 CoreUtils programs, the results show:
 
-- The **splitter** improves the average branch coverage by **15.8%**.
-- The **predictor** improves the average branch coverage by **3.5%**.
-- Using both together enhances the coverage by **23.5%**, indicating that the two optimizations are complementary. The **predictor** may assess the satisfiability of large constraints **more accurately** when these constraints are scaled down first by the **splitter**.
+- The **splitter** improves the average branch coverage by **37.3%**.
+- The **predictor** improves the average branch coverage by **2.9%**.
+- Using both together enhances the coverage by **43.8%**, indicating that the two optimizations are complementary. The **predictor** may assess the satisfiability of large constraints **more accurately** when these constraints are scaled down first by the **splitter**.
 
-The following figure shows the branch coverage of 12 programs in CoreUtils with the largest coverage improvement, as detailed in Table 2, under different configurations. Other programs show a similar trend.
+The following figure shows the branch coverage of 12 programs in CoreUtils with the largest coverage improvement under different configurations. Other programs show a similar trend.
+
+![alt text](images/opt_cmp_line.jpg)
+
+#### Branch Coverage
+
+In evaluating 79 CoreUtils programs, the results show:
+
+- The **splitter** improves the average branch coverage by **21.7%**.
+- The **predictor** improves the average branch coverage by **2.2%**.
+- Using both together enhances the coverage by **25.6%**.
+
+The following figure shows the branch coverage of 12 programs in CoreUtils with the largest coverage improvement under different configurations. Other programs show a similar trend.
 
 
-![alt text](images/opt_cmp.jpg)
+![alt text](images/opt_cmp_branch.jpg)
