@@ -35,7 +35,7 @@ Line Coverage Comparison of IFSE and KLEE:
 
 #### Details
 
-|     &nbsp; &nbsp; &nbsp; &nbsp;   #    &nbsp; &nbsp; &nbsp; &nbsp;   |  &nbsp; &nbsp; &nbsp; &nbsp; Program  &nbsp; &nbsp; &nbsp; &nbsp;  |  &nbsp; &nbsp; &nbsp; &nbsp;  KLEE   &nbsp; &nbsp; &nbsp; &nbsp;  |   &nbsp; &nbsp; &nbsp; &nbsp;  IFSE   &nbsp; &nbsp; &nbsp; &nbsp;  |   &nbsp; &nbsp; &nbsp; &nbsp; Union &nbsp; &nbsp; &nbsp; &nbsp;  |  &nbsp; &nbsp; &nbsp; &nbsp; Improvement  &nbsp; &nbsp; &nbsp; &nbsp; |
+|     &nbsp; &nbsp; &nbsp; &nbsp;  &nbsp; &nbsp;  #   &nbsp; &nbsp;  &nbsp; &nbsp; &nbsp; &nbsp;   |  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Program  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  |  &nbsp; &nbsp; &nbsp; &nbsp;  &nbsp; &nbsp; KLEE  &nbsp; &nbsp;  &nbsp; &nbsp; &nbsp; &nbsp;  |   &nbsp; &nbsp; &nbsp; &nbsp;  &nbsp; &nbsp; IFSE  &nbsp; &nbsp;  &nbsp; &nbsp; &nbsp; &nbsp;  |  &nbsp; &nbsp;  &nbsp; &nbsp; &nbsp; &nbsp; Union &nbsp; &nbsp; &nbsp; &nbsp;  &nbsp; &nbsp; |  &nbsp; &nbsp; &nbsp; &nbsp;  &nbsp; &nbsp; Improvement  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; |
 | :---------: | :------: | :------: | :------: | :------: | :---------: |
 |      1      |  base64  |   49.2   |   72.5   |   72.8   |    47.4     |
 |      2      | basename |   64.1   |   81.9   |   81.6   |    27.8     |
@@ -143,7 +143,7 @@ Branch Coverage Comparison of IFSE and KLEE:
 
 #### Details
  
-|       &nbsp; &nbsp; &nbsp; &nbsp;  #  &nbsp; &nbsp; &nbsp; &nbsp; |    &nbsp; &nbsp; &nbsp; &nbsp; Program  &nbsp; &nbsp; &nbsp; &nbsp;  |   &nbsp; &nbsp; &nbsp; &nbsp; KLEE  &nbsp; &nbsp; &nbsp; &nbsp;    |    &nbsp; &nbsp; &nbsp; &nbsp; IFSE  &nbsp; &nbsp; &nbsp; &nbsp;   |   &nbsp; &nbsp; &nbsp; &nbsp; Union  &nbsp; &nbsp; &nbsp; &nbsp;   |    &nbsp; &nbsp; &nbsp; &nbsp; Improvement  &nbsp; &nbsp; &nbsp; &nbsp; |
+|     &nbsp; &nbsp; &nbsp; &nbsp;  &nbsp; &nbsp;  #   &nbsp; &nbsp;  &nbsp; &nbsp; &nbsp; &nbsp;   |  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Program  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  |  &nbsp; &nbsp; &nbsp; &nbsp;  &nbsp; &nbsp; KLEE  &nbsp; &nbsp;  &nbsp; &nbsp; &nbsp; &nbsp;  |   &nbsp; &nbsp; &nbsp; &nbsp;  &nbsp; &nbsp; IFSE  &nbsp; &nbsp;  &nbsp; &nbsp; &nbsp; &nbsp;  |  &nbsp; &nbsp;  &nbsp; &nbsp; &nbsp; &nbsp; Union &nbsp; &nbsp; &nbsp; &nbsp;  &nbsp; &nbsp; |  &nbsp; &nbsp; &nbsp; &nbsp;  &nbsp; &nbsp; Improvement  &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; |
 | :---------: | :------: | :------: | :------: | :------: | :---------: |
 |      1      |  base64  |    50    |   73.5   |   74.1   |    47.0     |
 |      2      | basename |   88.9   |   98.9   |   98.8   |    11.2     |
